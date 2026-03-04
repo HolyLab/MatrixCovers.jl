@@ -97,31 +97,77 @@ function symcover_tropical(A::AbstractMatrix; exact::Bool=false, itermax=10, rto
     end
 
     # Start α at the unconstrained minimizer of the objective function
-    α = B \ sumlogA
+    α = αstar = B \ sumlogA
     α .= max.(α, diag(logA)/2)
     objval0 = symcover_objective(α, A, logA)
     atol = rtol * sqrt(objval0)
+    pr = first(ax) - 1 => typemin(T)
+    boundidx = fill((pr, pr), ax)
     iter = 0
     while iter < itermax
-        maxviol = typemin(T)
-        # @show α objval0
-        # display(logA)
-        # display(α .+ α')
+        tightest_sym!(boundidx, logA, α, A)
+        Δα = zero(T)
         for j in ax
-            violpre, violpost = maxviolation(logA, α, A, j)
-            # @show j violpre violpost
-            Δα = max(pre * violpre, post * violpost)
-            # abs(Δα) > 1e-8 && @show j violpre violpost Δα
-            Δα > typemin(T) && (maxviol = max(maxviol, abs(Δα)))
-            α[j] += Δα
-            # display(α .+ α')
+            for i in first(ax):j-1
+                αibound, αjbound, αijbound = pairbounds(boundidx, logA, i, j)
+                # FINISH ME
+            end
         end
-        # @show α symcover_objective(α, A, logA)
-        abs(maxviol) <= atol && break
-        # iter >= 3 && error("stop")
-        iter += 1
+        # maxviol = typemin(T)
+        # # @show α objval0
+        # # display(logA)
+        # # display(α .+ α')
+        # for j in ax
+        #     violpre, violpost = maxviolation(logA, α, A, j)
+        #     # @show j violpre violpost
+        #     Δα = max(pre * violpre, post * violpost)
+        #     # abs(Δα) > 1e-8 && @show j violpre violpost Δα
+        #     Δα > typemin(T) && (maxviol = max(maxviol, abs(Δα)))
+        #     α[j] += Δα
+        #     # display(α .+ α')
+        # end
+        # # @show α symcover_objective(α, A, logA)
+        # abs(maxviol) <= atol && break
+        # # iter >= 3 && error("stop")
+        # iter += 1
     end
     return exp.(α)
+end
+
+function tightest_sym!(boundidx, logA, α, A)
+    ax = axes(A, 1)
+    axes(A, 2) == ax || throw(ArgumentError("tightest_sym! requires a square matrix"))
+    axes(A) == axes(logA) || throw(ArgumentError("tightest_sym! requires logA to have the same shape as A"))
+    eachindex(boundidx) == ax || throw(ArgumentError("tightest_sym! requires boundidx to have the same indices as the axes of A"))
+    length(ax) >= 3 || throw(ArgumentError("tightest_sym! requires A to be at least 3x3"))
+    sentinel = typemin(eltype(logA))
+    for j in ax
+        pr1 = pr2 = first(ax) - 1 => sentinel
+        for i = first(ax):j-1
+            Aij = A[i, j]
+            iszero(Aij) && continue
+            logAij = logA[i, j]
+            Δ = logAij - α[i]
+            if Δ > pr1.second
+                pr2 = pr1
+                pr1 = i => Δ
+            elseif Δ > pr2.second
+                pr2 = i => Δ
+            end
+        end
+        boundidx[j] = (pr1, pr2)
+    end
+    return boundidx
+end
+
+function pairbounds(boundidx, logA, A, i, j)
+    pr1i, pr2i = boundidx[i]
+    pr1j, pr2j = boundidx[j]
+    αibound = iszero(A[i, i]) ? typemin(eltype(logA)) : logA[i, i] / 2
+    αibound = pr1i.first == j ? max(αibound, pr2i.second) : max(αibound, pr1i.second)
+    αjbound = iszero(A[j, j]) ? typemin(eltype(logA)) : logA[j, j] / 2
+    αjbound = pr1j.first == i ? max(αjbound, pr2j.second) : max(αjbound, pr1j.second)
+    return αibound, αjbound, iszero(A[i, j]) ? typemin(eltype(logA)) : logA[i, j]
 end
 
 function maxviolation(logA, α, A, j)
