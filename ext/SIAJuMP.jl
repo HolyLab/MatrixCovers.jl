@@ -6,9 +6,11 @@ using ScaleInvariantAnalysis
 using ScaleInvariantAnalysis: AbsLog
 using LinearAlgebra: dot
 
-function ScaleInvariantAnalysis.symcover_min(::AbsLog{2}, A)
+# Exact reference for the native `symcover_min(::AbsLog{2})`: same QP, solved by
+# HiGHS. Not exported; used by the test suite to cross-check the native solver.
+function ScaleInvariantAnalysis.symcover_min_jump(::AbsLog{2}, A)
     ax = axes(A, 1)
-    axes(A, 2) == ax || throw(ArgumentError("symcover_min requires a square matrix"))
+    axes(A, 2) == ax || throw(ArgumentError("symcover_min_jump requires a square matrix"))
     logA = log.(abs.(A))
     n = size(A, 1)
     model = JuMP.Model(HiGHS.Optimizer)

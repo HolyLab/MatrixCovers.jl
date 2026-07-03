@@ -4,6 +4,7 @@ using JuMP, HiGHS, Ipopt   # triggers SIAJuMP and SIAIpopt extensions
 using SparseArrays  # triggers SIASparseArrays extension
 using LinearAlgebra
 using Statistics: median
+using Random: MersenneTwister
 using Test
 
 @testset "ScaleInvariantAnalysis.jl" begin
@@ -232,8 +233,9 @@ using Test
             # qmin is a valid cover
             @test all(a_qmin[i] * a_qmin[j] >= abs(A[i, j]) - 1e-10 for i in axes(A, 1), j in axes(A, 2))
             # qmin achieves lower or equal AbsLog{2} objective than symcover and lmin
-            @test cover_objective(AbsLog{2}(), a_qmin, A) <= cover_objective(AbsLog{2}(), a_fast, A) + 1e-8
-            @test cover_objective(AbsLog{2}(), a_qmin, A) <= cover_objective(AbsLog{2}(), a_lmin, A) + 1e-8
+            # (up to the near-exact solver's penalty-continuation tolerance).
+            @test cover_objective(AbsLog{2}(), a_qmin, A) <= cover_objective(AbsLog{2}(), a_fast, A) * (1 + 1e-6) + 1e-10
+            @test cover_objective(AbsLog{2}(), a_qmin, A) <= cover_objective(AbsLog{2}(), a_lmin, A) * (1 + 1e-6) + 1e-10
         end
         # Exact case with zeros
         A = [0 0 1; 0 0 2; 1 2 1]
@@ -272,6 +274,61 @@ using Test
         A_rank1 = [2.0 1.0 4.0; 1.0 0.5 2.0; 4.0 2.0 8.0]
         a_soft = soft_symcover_min(AbsLog{2}(), A_rank1)
         @test cover_objective(AbsLog{2}(), a_soft, A_rank1) < 1e-8
+    end
+
+    @testset "symcover_min native AbsLog{2}" begin
+        # Non-square rejected.
+        @test_throws ArgumentError symcover_min(AbsLog{2}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
+
+        # Native solver matches the HiGHS reference in objective across the whole
+        # committed symmetric library, and returns a feasible cover.
+        if !isdefined(@__MODULE__, :symmetric_matrices)
+            include("testmatrices.jl")
+        end
+        for (_, A) in symmetric_matrices
+            Af = Float64.(A)
+            a  = symcover_min(AbsLog{2}(), Af)
+            aj = ScaleInvariantAnalysis.symcover_min_jump(AbsLog{2}(), Af)
+            @test all(a[i] * a[j] >= abs(Af[i, j]) - 1e-8 for i in axes(Af, 1), j in axes(Af, 2))
+            oj = cover_objective(AbsLog{2}(), aj, Af)
+            o  = cover_objective(AbsLog{2}(), a, Af)
+            @test o <= oj * (1 + 1e-6) + 1e-10
+        end
+
+        # Scale-covariance: for a positive diagonal D, the optimal cover of D*A*D
+        # is D times the optimal cover of A (up to the a·aᵀ gauge), so the product
+        # a[i]*a[j] covaries as d[i]*d[j].
+        rng = MersenneTwister(1234)
+        for (_, A) in symmetric_matrices[1:30]
+            Af = Float64.(A); n = size(Af, 1)
+            d = exp.(2 .* randn(rng, n))
+            AD = (d .* Af) .* d'
+            a  = symcover_min(AbsLog{2}(), Af)
+            aD = symcover_min(AbsLog{2}(), AD)
+            for i in 1:n, j in 1:n
+                (a[i] == 0 || a[j] == 0) && continue
+                @test aD[i] * aD[j] ≈ d[i] * d[j] * a[i] * a[j] rtol=1e-6
+            end
+        end
+
+        # Edge cases.
+        @test symcover_min(AbsLog{2}(), reshape([4.0], 1, 1)) ≈ [2.0]           # n = 1
+        # [0 1; 1 0]: a₁a₂ = 1 is the (gauge-invariant) optimum, objective 0.
+        a = symcover_min(AbsLog{2}(), [0.0 1.0; 1.0 0.0])
+        @test a[1] * a[2] ≈ 1.0
+        @test cover_objective(AbsLog{2}(), a, [0.0 1.0; 1.0 0.0]) < 1e-12
+        # A zero row/column leaves its scale at 0 while the rest is covered.
+        Az = [1.0 0.0 2.0; 0.0 0.0 0.0; 2.0 0.0 3.0]
+        a = symcover_min(AbsLog{2}(), Az)
+        @test a[2] == 0.0
+        @test all(a[i] * a[j] >= abs(Az[i, j]) - 1e-8 for i in 1:3, j in 1:3)
+        # Scattered zeros with an exact rank-1 cover.
+        A = [0 0 1; 0 0 2; 1 2 1]
+        a = symcover_min(AbsLog{2}(), A)
+        @test a ≈ [1, 2, 1]
+        @test abs(cover_objective(AbsLog{2}(), a, A)) < 1e-8
+        # κs keyword is accepted.
+        @test symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; κs=(1e2, 1e4, 1e6, 1e8, 1e10)) isa Vector
     end
 
     @testset "symcover_min and soft_symcover_min (JuMP/Ipopt, AbsLinear)" begin

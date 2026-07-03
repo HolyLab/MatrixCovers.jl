@@ -851,6 +851,102 @@ function tighten_cover!(a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractM
     return a, b
 end
 
+# ============================================================
+# Native AbsLog{2} MCM solver
+# ============================================================
+
+# Symmetric AbsLog{2} hard cover via a one-sided quadratic penalty on the
+# log-residuals z_ij = α_i + α_j - log|A_ij| (α = log a):
+#
+#   f_κ(α) = ∑_{ij ∈ support} w(z_ij) z_ij²,   w = 1 for z ≥ 0, κ for z < 0.
+#
+# As κ → ∞ the minimizer approaches the constrained (hard-cover) optimum. Each κ
+# stage runs a damped semismooth Newton iteration: freeze the weights at the
+# current α, solve the reweighted normal equations `B α = f` (an SDD system with
+# the sparsity of the nonzero-pattern graph), and take a backtracking line
+# search toward that point (which ensures convergence). A final uniform shift
+# makes the cover exactly feasible.
+function symcover_min(::AbsLog{2}, A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8), maxouter::Int=40)
+    ax = axes(A, 1)
+    axes(A, 2) == ax || throw(ArgumentError("symcover_min requires a square matrix"))
+    T = float(eltype(A))
+    n = length(ax)
+    # log|A| on the support S; the Newton solve runs on 1-based positions 1:n and
+    # is scattered back onto `a` through `ax` so `A`'s own axes are honored.
+    C = zeros(T, n, n)
+    S = falses(n, n)
+    for (jp, j) in enumerate(ax), (ip, i) in enumerate(ax)
+        Aij = abs(T(A[i, j]))
+        iszero(Aij) && continue
+        C[ip, jp] = log(Aij)
+        S[ip, jp] = true
+    end
+    hassupp = [any(@view S[ip, :]) for ip in 1:n]
+    fκ = function (α, κ)
+        v = zero(T)
+        for jp in 1:n, ip in 1:n
+            S[ip, jp] || continue
+            z = α[ip] + α[jp] - C[ip, jp]
+            v += (z < 0 ? T(κ) : oneunit(T)) * z^2
+        end
+        return v
+    end
+    # Reweighted normal equations. `κ === nothing` gives all-unit weights (the
+    # unconstrained minimum used for initialization).
+    solve_weighted = function (α, κ)
+        B = zeros(T, n, n)
+        f = zeros(T, n)
+        for jp in 1:n, ip in 1:n
+            S[ip, jp] || continue
+            w = κ === nothing ? oneunit(T) : ((α[ip] + α[jp] - C[ip, jp]) < 0 ? T(κ) : oneunit(T))
+            B[ip, ip] += w
+            B[ip, jp] += w
+            f[ip] += w * C[ip, jp]
+        end
+        # A support-free row leaves its variable free; decouple it. A minimal
+        # scale-relative ridge lifts the bipartite gauge null space (e.g. the
+        # `[0 1; 1 0]` support graph, whose signless Laplacian is singular). `f`
+        # lies in the range of `B`, so it is orthogonal to that null space and
+        # the ridge leaves the recovered α essentially unperturbed.
+        dmax = zero(T)
+        for ip in 1:n
+            dmax = max(dmax, B[ip, ip])
+        end
+        ridge = (dmax > 0 ? dmax : one(T)) * eps(T)
+        for ip in 1:n
+            B[ip, ip] += hassupp[ip] ? ridge : one(T)
+        end
+        return Symmetric(B) \ f
+    end
+    α = solve_weighted(zeros(T, n), nothing)
+    for κ in κs
+        fcur = fκ(α, κ)
+        for _ in 1:maxouter
+            αnew = solve_weighted(α, κ)
+            t = one(T)
+            fnew = fκ(αnew, κ)
+            while fnew > fcur && t > 1e-10
+                t /= 2
+                fnew = fκ(α .+ t .* (αnew .- α), κ)
+            end
+            α = α .+ t .* (αnew .- α)
+            fcur - fnew <= 1e-12 * max(fcur, one(T)) && break
+            fcur = fnew
+        end
+    end
+    # Uniform boost to exact feasibility: α_i + α_j ≥ log|A_ij| for all support.
+    γ = zero(T)
+    for jp in 1:n, ip in 1:n
+        S[ip, jp] || continue
+        γ = max(γ, (C[ip, jp] - α[ip] - α[jp]) / 2)
+    end
+    a = similar(A, T, ax)
+    for (ip, i) in enumerate(ax)
+        a[i] = hassupp[ip] ? exp(α[ip] + γ) : zero(T)
+    end
+    return a
+end
+
 
 # ============================================================
 # Extension function stubs
@@ -858,19 +954,29 @@ end
 # ============================================================
 
 """
-    a = symcover_min(ϕ, A)
+    a = symcover_min(ϕ, A; kwargs...)
 
-Return the ϕ-minimal symmetric hard cover of `A`: minimizes `∑_{i,j} ϕ(|A[i,j]|/(a[i]*a[j]))`
-subject to `a[i]*a[j] >= |A[i,j]|` for all `i,j`.
+Return the ϕ-minimal symmetric hard cover of `A`: the vector `a` minimizing
+`∑_{i,j} ϕ(|A[i,j]|/(a[i]*a[j]))` subject to `a[i]*a[j] >= |A[i,j]|` for every nonzero
+entry of `A`.
 
-Supported ϕ values and required extensions:
-- `AbsLog{1}()`, `AbsLog{2}()`: requires JuMP and HiGHS.
+Supported ϕ values:
+- `AbsLog{2}()`: solved natively (no external solver). Accepts keyword arguments
+  `κs` (the penalty-continuation schedule, default `(1e2, 1e4, 1e6, 1e8)`) and
+  `maxouter` (Newton steps per stage, default `40`).
+- `AbsLog{1}()`: requires JuMP and HiGHS.
 - `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt.
 
 !!! note
-    This function is exact but slow. See [`symcover`](@ref) for a fast heuristic.
+    Even the native solver is more expensive than the [`symcover`](@ref) heuristic.
+
+See also: [`cover_min`](@ref), [`symcover`](@ref).
 """
 function symcover_min end
+
+# Internal exact reference implemented by the SIAJuMP extension; used only to
+# cross-check the native `symcover_min(::AbsLog{2})` in the test suite.
+function symcover_min_jump end
 
 """
     a, b = cover_min(ϕ, A)
