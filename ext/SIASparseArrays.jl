@@ -3,7 +3,7 @@ module SIASparseArrays
 using LinearAlgebra
 using SparseArrays
 using ScaleInvariantAnalysis
-using ScaleInvariantAnalysis: AbsLog, AbsLinear, unconstrained_min!, _abslog2_greatest_curvature_eigvec, _abslinear2_linesearch, _abslinear2_iter!, _abslinear1_iter!
+using ScaleInvariantAnalysis: AbsLog, AbsLinear, unconstrained_min!, _abslog2_greatest_curvature_eigvec, _abslinear2_linesearch, _abslinear2_iter!, _abslinear1_iter!, _symcover_min_abslog2, _cover_min_abslog2
 
 # ============================================================
 # Private helpers (operate on a plain SparseMatrixCSC parent)
@@ -236,6 +236,35 @@ function ScaleInvariantAnalysis.cover(ϕ, A::SparseMatrixCSC; iter::Int=3)
     return _tighten_cover_asym_sparse!(a, b, A; iter)
 end
 ScaleInvariantAnalysis.cover(A::SparseMatrixCSC; kwargs...) = ScaleInvariantAnalysis.cover(AbsLinear{2}(), A; kwargs...)
+
+# Native AbsLog{2} MCM solvers on sparse supports default to the matrix-free LSQR
+# inner solve, whose per-iteration cost is O(nnz) and whose accuracy tracks the
+# conditioning of √W·R (≈ √κ) rather than that of the normal equations (≈ κ). This
+# is the intended path when nnz ≪ n²; pass `linsolve=:auto`/`:dense` to force the
+# dense factorization. Only AbsLog{2} is native; other penalties dispatch to the
+# JuMP extension.
+# The worker allocates its scale vectors with `similar(A, ...)`, which is a
+# `SparseVector` for a sparse `A`; the scales are dense objects, so return plain
+# `Vector`s, matching `cover`/`symcover` on the same input.
+function ScaleInvariantAnalysis.symcover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
+    a, _ = _symcover_min_abslog2(A; linsolve, kwargs...)
+    return Vector(a)
+end
+
+function ScaleInvariantAnalysis.cover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
+    a, b, _ = _cover_min_abslog2(A; linsolve, kwargs...)
+    return Vector(a), Vector(b)
+end
+
+function ScaleInvariantAnalysis.symcover_min(ϕ::AbsLog{2}, S::Symmetric{<:Any, <:SparseMatrixCSC}; linsolve::Symbol=:lsqr, kwargs...)
+    a, _ = _symcover_min_abslog2(S; linsolve, kwargs...)
+    return Vector(a)
+end
+
+function ScaleInvariantAnalysis.symcover_min(ϕ::AbsLog{2}, H::Hermitian{<:Real, <:SparseMatrixCSC}; linsolve::Symbol=:lsqr, kwargs...)
+    a, _ = _symcover_min_abslog2(H; linsolve, kwargs...)
+    return Vector(a)
+end
 
 # ============================================================
 # Symmetric{<:Any, <:SparseMatrixCSC} methods

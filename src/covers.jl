@@ -1427,11 +1427,25 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                 B[p, q] += w
                 B[q, p] += w
             end
+            # A support whose bipartite graph splits into k connected components carries k
+            # independent (e; −e) gauges; v0*v0ᵀ pins only the global one, leaving k−1
+            # singular directions. A minimal scale-relative ridge on the supported
+            # diagonals lifts them (the same device the symmetric solver uses for the
+            # bipartite null space). The RHS is orthogonal to every gauge null vector, so
+            # the ridge leaves the recovered scales essentially unperturbed, and the
+            # per-component gauge it fixes is unobservable — no product a_i·b_j spans two
+            # components. Support-free variables get an identity row.
+            dmax = zero(T)
+            for p in 1:N
+                dmax = max(dmax, B[p, p])
+            end
+            ridge = (dmax > 0 ? dmax : oneunit(T)) * eps(T)
             for ip in 1:m
-                hasrow[ip] || (B[ip, ip] = one(T))
+                B[ip, ip] = hasrow[ip] ? B[ip, ip] + ridge : one(T)
             end
             for jp in 1:n
-                hascol[jp] || (B[m+jp, m+jp] = one(T))
+                q = m + jp
+                B[q, q] = hascol[jp] ? B[q, q] + ridge : one(T)
             end
             return Symmetric(B) \ f
         end

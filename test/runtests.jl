@@ -707,6 +707,89 @@ using Test
         end
     end
 
+    @testset "native solvers on sparse and structured inputs" begin
+        # The native AbsLog{2} MCM solvers (`symcover_min`/`cover_min`) and the AbsLinear
+        # soft covers must agree with the dense reference on `Matrix(A)` when handed a
+        # sparse-backed or structured input, and the hard MCM covers must stay feasible.
+        # On a `SparseMatrixCSC`/`Symmetric`/`Hermitian`-sparse the MCM solvers default to
+        # the matrix-free LSQR inner solve; structured inputs use the generic dense path.
+        feasible_sym(a, M) = all(a[i] * a[j] >= abs(M[i, j]) - 1e-7 for i in axes(M, 1), j in axes(M, 2))
+        feasible_asym(a, b, M) = all(a[i] * b[j] >= abs(M[i, j]) - 1e-7 for i in axes(M, 1), j in axes(M, 2))
+
+        symdenses = [[2.0 1.0 0.0; 1.0 3.0 2.0; 0.0 2.0 5.0],
+                     [4.0 0.0 1.0; 0.0 0.0 0.0; 1.0 0.0 2.0]]   # second has a zero row/column
+        for M in symdenses
+            ad = symcover_min(AbsLog{2}(), M)
+            asd = soft_symcover(AbsLinear{2}(), M)
+            for A in (sparse(M), Symmetric(sparse(triu(M)), :U), Symmetric(sparse(tril(M)), :L),
+                      Hermitian(sparse(triu(M)), :U))
+                a = symcover_min(AbsLog{2}(), A)
+                @test feasible_sym(a, M)
+                @test cover_objective(AbsLog{2}(), a, M) ≈ cover_objective(AbsLog{2}(), ad, M) rtol = 1e-7
+                as = soft_symcover(AbsLinear{2}(), A)
+                @test cover_objective(AbsLinear{2}(), as, M) ≈ cover_objective(AbsLinear{2}(), asd, M) rtol = 1e-7
+            end
+        end
+        @test symcover_min(AbsLog{2}(), sparse(symdenses[1])) isa Vector{Float64}
+
+        gendenses = [[1.0 2.0 0.0; 0.0 5.0 4.0; 3.0 0.0 6.0],
+                     [2.0 0.0; 0.0 3.0]]   # second is diagonal: disconnected support
+        for M in gendenses
+            A = sparse(M)
+            ad, bd = cover_min(AbsLog{2}(), M)
+            a, b = cover_min(AbsLog{2}(), A)
+            @test feasible_asym(a, b, M)
+            @test cover_objective(AbsLog{2}(), a, b, M) ≈ cover_objective(AbsLog{2}(), ad, bd, M) rtol = 1e-7
+            asd, bsd = soft_cover(AbsLinear{2}(), M)
+            as, bs = soft_cover(AbsLinear{2}(), A)
+            @test cover_objective(AbsLinear{2}(), as, bs, M) ≈ cover_objective(AbsLinear{2}(), asd, bsd, M) rtol = 1e-7
+        end
+        let (a, b) = cover_min(AbsLog{2}(), sparse(gendenses[1]))
+            @test a isa Vector{Float64} && b isa Vector{Float64}
+        end
+
+        for D in (Diagonal([4.0, 9.0, 1.0]), Diagonal([4.0, 0.0, 1.0]))
+            M = Matrix(D)
+            a = symcover_min(AbsLog{2}(), D)
+            @test feasible_sym(a, M)
+            @test cover_objective(AbsLog{2}(), a, M) ≈
+                  cover_objective(AbsLog{2}(), symcover_min(AbsLog{2}(), M), M) rtol = 1e-7
+            a2, b2 = cover_min(AbsLog{2}(), D)   # disconnected support: exercises the gauge ridge
+            @test feasible_asym(a2, b2, M)
+            @test cover_objective(AbsLog{2}(), a2, b2, M) ≈ 0.0 atol = 1e-8   # diagonal is exactly coverable
+        end
+        for A in (SymTridiagonal([4.0, 3.0, 1.0], [2.0, 0.5]),
+                  Tridiagonal([1.0, 0.5], [3.0, 2.0, 1.0], [4.0, 0.5]))
+            M = Matrix(A)
+            a2, b2 = cover_min(AbsLog{2}(), A)
+            @test feasible_asym(a2, b2, M)
+            @test cover_objective(AbsLog{2}(), a2, b2, M) ≈
+                  cover_objective(AbsLog{2}(), cover_min(AbsLog{2}(), M)..., M) rtol = 1e-7
+        end
+    end
+
+    @testset "MCM disconnected-support gauge" begin
+        # A support graph that splits into k connected components carries k independent
+        # (e; −e) gauges. The asymmetric dense normal equations pin only the global one
+        # with v0*v0ᵀ; a minimal scale-relative ridge lifts the remaining k−1, so
+        # `cover_min` no longer hits a SingularException on block-disconnected supports.
+        # The dense (`:auto`) and matrix-free (`:lsqr`) paths must agree.
+        singletons(vals) = Matrix(sparse(1:length(vals), 1:length(vals), float.(vals)))  # k singleton components
+        block2(k) = cat(([2.0+i i; i 3.0+i] for i in 1:k)...; dims = (1, 2))              # k dense 2×2 components
+        for M in (singletons([4.0, 9.0, 1.0]), singletons(1.0:6.0), block2(3), block2(6))
+            ad, bd = cover_min(AbsLog{2}(), M)                    # :auto = dense + ridge
+            al, bl = cover_min(AbsLog{2}(), M; linsolve = :lsqr)
+            @test all(ad[i] * bd[j] >= abs(M[i, j]) - 1e-8 for i in axes(M, 1), j in axes(M, 2))
+            @test all(al[i] * bl[j] >= abs(M[i, j]) - 1e-8 for i in axes(M, 1), j in axes(M, 2))
+            @test cover_objective(AbsLog{2}(), ad, bd, M) ≈
+                  cover_objective(AbsLog{2}(), al, bl, M) rtol = 1e-6 atol = 1e-8
+        end
+        # The canonical failure mode: `cover_min` on a Diagonal (n singleton components).
+        D = Diagonal([4.0, 9.0, 1.0])
+        a, b = cover_min(AbsLog{2}(), D)
+        @test cover_objective(AbsLog{2}(), a, b, Matrix(D)) ≈ 0.0 atol = 1e-10
+    end
+
     @testset "quality vs optimal (testmatrices)" begin
         if !isdefined(@__MODULE__, :symmetric_matrices) || !isdefined(@__MODULE__, :general_matrices)
             include("testmatrices.jl")
