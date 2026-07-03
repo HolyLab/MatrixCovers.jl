@@ -158,8 +158,9 @@ using Test
             end
         end
 
-        # Key property: continuity as a near-zero entry vanishes (AbsLinear has no discontinuity).
-        # The amplitude²-weighted init ignores the tiny entry, so both converge to the same point.
+        # Continuity as a near-zero entry vanishes: AbsLinear has no discontinuity at r=0, so
+        # the soft cover varies continuously as A[2,2] → 0. The leave-one-out start drops the
+        # most-outlying small entry, reaching the same basin as the exact-zero case.
         γ = 0.5
         A_zero  = [γ 1.0; 1.0 0.0]
         A_small = [γ 1.0; 1.0 1e-10]
@@ -167,6 +168,23 @@ using Test
             a_zero  = soft_symcover(ϕ, A_zero;  iter=50)
             a_small = soft_symcover(ϕ, A_small; iter=50)
             @test a_small ≈ a_zero atol=1e-5
+        end
+
+        # Covariance must survive the regime where the leave-one-out start wins: the entry
+        # dropped is selected by the scale-invariant log-residuals, so which basin wins
+        # cannot depend on the frame. (Weighting entries by raw |A[i,j]|² fails here: the
+        # entries' physical units differ, so their sums are incommensurate and a rescaling
+        # can flip the winning basin.) For A_small the residuals of the two diagonal entries
+        # tie exactly (true of every symmetric 2×2), where the tie-break uses raw magnitude;
+        # the scaling below preserves the magnitude ordering, as covariance under
+        # order-flipping scalings is unachievable on that degenerate class.
+        for ϕ in (AbsLinear{1}(), AbsLinear{2}())
+            for (B, d) in ((A_small, [50.0, 0.02]),
+                           ([3.0 7.6e-10; 7.6e-10 80.0], [35.0, 3400.0]))
+                a0 = soft_symcover(ϕ, B; iter=100)
+                as = soft_symcover(ϕ, B .* d .* d'; iter=100)
+                @test as .* as' ≈ (d .* d') .* (a0 .* a0') rtol=1e-6
+            end
         end
 
         # Default dispatch uses AbsLinear{2}
