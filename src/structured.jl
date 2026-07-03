@@ -5,7 +5,7 @@
 # via the PlusMinus1Banded union: all are square with entries only on the main
 # diagonal and the ±1 off-diagonals.  Structural zeros (e.g. the sub-diagonal
 # of an upper Bidiagonal) are returned as exact zero by getindex, so they are
-# skipped cheaply by the iszero checks.
+# handled correctly by the generic algorithms.
 
 const PlusMinus1Banded = Union{SymTridiagonal, Bidiagonal, Tridiagonal}
 
@@ -13,30 +13,7 @@ const PlusMinus1Banded = Union{SymTridiagonal, Bidiagonal, Tridiagonal}
 # Diagonal
 # ============================================================
 
-function cover_lobjective(a, b, D::Diagonal)
-    T = float(promote_type(eltype(a), eltype(b), eltype(D)))
-    s = zero(T)
-    for i in eachindex(D.diag)
-        Dii = abs(D.diag[i])
-        iszero(Dii) && continue
-        s += log(T(a[i]) * T(b[i]) / T(Dii))
-    end
-    return s
-end
-
-function cover_qobjective(a, b, D::Diagonal)
-    T = float(promote_type(eltype(a), eltype(b), eltype(D)))
-    s = zero(T)
-    for i in eachindex(D.diag)
-        Dii = abs(D.diag[i])
-        iszero(Dii) && continue
-        s += log(T(a[i]) * T(b[i]) / T(Dii))^2
-    end
-    return s
-end
-
-function tighten_cover!(a::AbstractVector{T}, D::Diagonal; iter::Int=3, exclude_diagonal::Bool=false) where T
-    exclude_diagonal && return a
+function tighten_cover!(a::AbstractVector{T}, D::Diagonal; iter::Int=3) where T
     for i in eachindex(a, D.diag)
         Dii = T(abs(D.diag[i]))
         iszero(Dii) || (a[i] = sqrt(Dii))
@@ -57,79 +34,39 @@ function tighten_cover!(a::AbstractVector{T}, b::AbstractVector{T}, D::Diagonal;
     return a, b
 end
 
-function symcover(D::Diagonal; exclude_diagonal::Bool=false, kwargs...)
+function _symcover_diagonal(D::Diagonal)
     T = float(eltype(D))
     a = zeros(T, length(D.diag))
-    exclude_diagonal && return a
     for i in eachindex(a, D.diag)
         a[i] = sqrt(T(abs(D.diag[i])))
     end
     return a
 end
+# Explicit ϕ-dispatch methods to resolve ambiguity with covers.jl
+symcover(ϕ::AbsLog,    D::Diagonal; kwargs...) = _symcover_diagonal(D)
+symcover(ϕ::AbsLinear, D::Diagonal; kwargs...) = _symcover_diagonal(D)
+symcover(              D::Diagonal; kwargs...) = _symcover_diagonal(D)
 
-function symdiagcover(D::Diagonal; kwargs...)
-    T = float(eltype(D))
-    return T.(abs.(D.diag)), zeros(T, length(D.diag))
+function cover(ϕ, D::Diagonal; kwargs...)
+    a = symcover(ϕ, D)
+    return tighten_cover!(a, copy(a), D)
 end
-
-function cover(D::Diagonal; kwargs...)
-    a = symcover(D)
-    return tighten_cover!(a, copy(a), D; kwargs...)
-end
+cover(D::Diagonal; kwargs...) = cover(AbsLinear{2}(), D; kwargs...)
 
 # ============================================================
 # PlusMinus1Banded  (SymTridiagonal, Bidiagonal, Tridiagonal)
 # ============================================================
 
-function cover_lobjective(a, b, A::PlusMinus1Banded)
-    T = float(promote_type(eltype(a), eltype(b), eltype(A)))
-    s = zero(T)
-    n = size(A, 1)
-    for i in 1:n
-        Aii = abs(A[i, i])
-        iszero(Aii) || (s += log(T(a[i]) * T(b[i]) / T(Aii)))
-    end
-    for i in 1:n-1
-        Aij = abs(A[i, i+1])
-        iszero(Aij) || (s += log(T(a[i]) * T(b[i+1]) / T(Aij)))
-        Aij = abs(A[i+1, i])
-        iszero(Aij) || (s += log(T(a[i+1]) * T(b[i]) / T(Aij)))
-    end
-    return s
-end
-
-function cover_qobjective(a, b, A::PlusMinus1Banded)
-    T = float(promote_type(eltype(a), eltype(b), eltype(A)))
-    s = zero(T)
-    n = size(A, 1)
-    for i in 1:n
-        Aii = abs(A[i, i])
-        iszero(Aii) || (s += log(T(a[i]) * T(b[i]) / T(Aii))^2)
-    end
-    for i in 1:n-1
-        Aij = abs(A[i, i+1])
-        iszero(Aij) || (s += log(T(a[i]) * T(b[i+1]) / T(Aij))^2)
-        Aij = abs(A[i+1, i])
-        iszero(Aij) || (s += log(T(a[i+1]) * T(b[i]) / T(Aij))^2)
-    end
-    return s
-end
-
 # Symmetric tighten: both A[i,i+1] and A[i+1,i] are checked independently.
-# For SymTridiagonal they are equal (no-op redundancy); for a Tridiagonal that
-# the caller asserts is symmetric, using both is consistent with the general
-# tighten_cover!(a, A::AbstractMatrix) which iterates over every entry.
-function tighten_cover!(a::AbstractVector{T}, A::PlusMinus1Banded; iter::Int=3, exclude_diagonal::Bool=false) where T
+function tighten_cover!(a::AbstractVector{T}, A::PlusMinus1Banded; iter::Int=3) where T
     n = size(A, 1)
     aratio = similar(a)
     for _ in 1:iter
         fill!(aratio, typemax(T))
-        if !exclude_diagonal
-            for i in 1:n
-                Aii = T(abs(A[i, i]))
-                iszero(Aii) && continue
-                aratio[i] = min(aratio[i], a[i]^2 / Aii)
-            end
+        for i in 1:n
+            Aii = T(abs(A[i, i]))
+            iszero(Aii) && continue
+            aratio[i] = min(aratio[i], a[i]^2 / Aii)
         end
         for i in 1:n-1
             Aij = T(abs(A[i, i+1]))
@@ -185,51 +122,37 @@ function tighten_cover!(a::AbstractVector{T}, b::AbstractVector{T}, A::PlusMinus
     return a, b
 end
 
-# symcover and symdiagcover apply to any PlusMinus1Banded matrix; the caller
-# asserts that A is symmetric in value (or accepts that only the upper triangle
-# is used for initialization).
-function symcover(A::PlusMinus1Banded; exclude_diagonal::Bool=false, prioritize::Symbol=:quality, kwargs...)
-    prioritize in (:quality, :speed) || throw(ArgumentError("prioritize must be :quality or :speed"))
+function _symcover_pm1banded(A::PlusMinus1Banded; iter::Int=3)
     n = size(A, 1)
     T = float(eltype(A))
     a = zeros(T, n)
-    if prioritize == :quality
-        loga = zeros(T, n)
-        nza  = zeros(Int, n)
-        if !exclude_diagonal
-            for i in 1:n
-                Aii = abs(A[i, i])
-                iszero(Aii) && continue
-                loga[i] += log(Aii)
-                nza[i]  += 1
-            end
-        end
-        for i in 1:n-1
-            Aij = abs(A[i, i+1])   # upper triangle; caller asserts A[i+1,i] matches
-            iszero(Aij) && continue
-            lAij = log(Aij)
-            loga[i]   += lAij;  nza[i]   += 1
-            loga[i+1] += lAij;  nza[i+1] += 1
-        end
-        nztotal = sum(nza)
-        halfmu = iszero(nztotal) ? zero(T) : sum(loga) / (2 * nztotal)
-        for i in 1:n
-            a[i] = iszero(nza[i]) ? zero(T) : exp(loga[i] / nza[i] - halfmu)
-        end
-        if !exclude_diagonal
-            for i in 1:n
-                Aii = T(abs(A[i, i]))
-                a[i]^2 < Aii && (a[i] = sqrt(Aii))
-            end
-        end
-    else  # :speed
-        if !exclude_diagonal
-            for i in 1:n
-                a[i] = sqrt(T(abs(A[i, i])))
-            end
-        end
+    # Quadratic (AbsLog{2}) initialization: log-norm over ±1 diagonals
+    loga = zeros(T, n)
+    nza  = zeros(Int, n)
+    for i in 1:n
+        Aii = abs(A[i, i])
+        iszero(Aii) && continue
+        loga[i] += log(Aii)
+        nza[i]  += 1
     end
-    # Boost from off-diagonal entries (upper triangle)
+    for i in 1:n-1
+        Aij = abs(A[i, i+1])   # upper triangle; caller asserts A[i+1,i] matches
+        iszero(Aij) && continue
+        lAij = log(Aij)
+        loga[i]   += lAij;  nza[i]   += 1
+        loga[i+1] += lAij;  nza[i+1] += 1
+    end
+    nztotal = sum(nza)
+    halfmu = iszero(nztotal) ? zero(T) : sum(loga) / (2 * nztotal)
+    for i in 1:n
+        a[i] = iszero(nza[i]) ? zero(T) : exp(loga[i] / nza[i] - halfmu)
+    end
+    # Clamp diagonal
+    for i in 1:n
+        Aii = T(abs(A[i, i]))
+        a[i]^2 < Aii && (a[i] = sqrt(Aii))
+    end
+    # Boost off-diagonal entries (upper triangle)
     for i in 1:n-1
         Aij = T(abs(A[i, i+1]))
         iszero(Aij) && continue
@@ -246,20 +169,14 @@ function symcover(A::PlusMinus1Banded; exclude_diagonal::Bool=false, prioritize:
             end
         end
     end
-    return tighten_cover!(a, A; iter=get(kwargs, :iter, 3), exclude_diagonal)
+    return tighten_cover!(a, A; iter)
 end
+# Explicit ϕ-dispatch to resolve ambiguity with covers.jl
+symcover(ϕ::AbsLog,    A::PlusMinus1Banded; iter::Int=3) = _symcover_pm1banded(A; iter)
+symcover(ϕ::AbsLinear, A::PlusMinus1Banded; iter::Int=3) = _symcover_pm1banded(A; iter)
+symcover(              A::PlusMinus1Banded; iter::Int=3) = _symcover_pm1banded(A; iter)
 
-function symdiagcover(A::PlusMinus1Banded; kwargs...)
-    a = symcover(A; exclude_diagonal=true, kwargs...)
-    T = float(eltype(A))
-    d = map(1:size(A, 1)) do i
-        Aii = T(abs(A[i, i]))
-        max(zero(T), Aii - a[i]^2)
-    end
-    return d, a
-end
-
-function cover(A::PlusMinus1Banded; kwargs...)
+function cover(ϕ, A::PlusMinus1Banded; kwargs...)
     T = float(eltype(A))
     n = size(A, 1)
     a = zeros(T, n)
@@ -328,3 +245,4 @@ function cover(A::PlusMinus1Banded; kwargs...)
     end
     return tighten_cover!(a, b, A; kwargs...)
 end
+cover(A::PlusMinus1Banded; kwargs...) = cover(AbsLinear{2}(), A; kwargs...)
