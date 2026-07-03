@@ -518,8 +518,8 @@ end
 # ============================================================
 
 """
-    a = soft_symcover(ϕ, A; iter=20)
-    a = soft_symcover(A; iter=20)
+    a = soft_symcover(ϕ, A; iter=20, starts=8, σ=2.0, rng=MersenneTwister(0))
+    a = soft_symcover(A; iter=20, starts=8, σ=2.0, rng=MersenneTwister(0))
 
 Given a square matrix `A` assumed to be symmetric, return a vector `a` approximately
 minimizing the soft-cover objective `∑_{i,j} ϕ(|A[i,j]| / (a[i]*a[j]))`.
@@ -533,13 +533,22 @@ Supported penalty functions:
   with a log-space weighted-median step. The AbsLog{1} objective has a flat basin of equally
   good minima; this returns the deterministic, scale-covariant representative reached by
   coordinate descent from the AbsLog{2} minimum.
-- `AbsLinear{2}()` (default): refines by coordinate descent from two starts — the AbsLog{2}
-  geometric-mean minimum and a leave-one-out geometric mean that drops the support entry
-  with the most negative log-residual — and keeps the better. The second start keeps the
-  result continuous as an entry `|A[i,j]|` approaches zero, where the geometric-mean start
-  alone would be skewed into a worse local basin.
+- `AbsLinear{2}()` (default): non-convex; refined by coordinate descent from `starts`
+  scale-covariant starting points, keeping the lowest-objective result (see below).
 - `AbsLinear{1}()`: initializes from the `AbsLinear{2}()` result, coordinate descent uses a
   weighted-median step.
+
+For the `AbsLinear` penalties the objective is non-convex, so `starts` starting points are
+tried and the best kept. The first four are deterministic — the geometric-mean minimum, the
+tightened hard cover, a curvature-eigenvector feasibility init, and a leave-one-out geometric
+mean that drops the support entry with the most negative log-residual (this last start keeps
+the result continuous as an entry `|A[i,j]|` approaches zero) — and the rest are
+multiplicative log-normal perturbations `a .* exp.(σ .* ξ)` of the geometric-mean point with
+spread `σ`, `ξ` drawn from `rng`. Every start co-varies with a diagonal rescaling of `A` and
+the objective is scale-invariant, so the selection is scale-covariant. The default `rng` is a
+fresh `MersenneTwister(0)` per call, making repeated calls (and the two frames of a covariance
+check) agree; pass your own `rng` for reproducibility you control, since default RNG streams
+are not stable across Julia versions.
 
 See also: [`symcover`](@ref), [`cover_objective`](@ref), [`soft_symcover_min`](@ref).
 
@@ -559,7 +568,9 @@ julia> a = soft_symcover([0 1; 1 0])
  1.0
 ```
 """
-soft_symcover(A::AbstractMatrix; iter::Int=20) = soft_symcover(AbsLinear{2}(), A; iter)
+soft_symcover(A::AbstractMatrix; iter::Int=20, starts::Int=8, σ::Real=2.0,
+              rng::AbstractRNG=MersenneTwister(_MULTISTART_SEED)) =
+    soft_symcover(AbsLinear{2}(), A; iter, starts, σ, rng)
 
 function soft_symcover(ϕ::AbsLog{2}, A::AbstractMatrix)
     ax = axes(A, 1)
@@ -580,35 +591,81 @@ function soft_symcover(ϕ::AbsLog{1}, A::AbstractMatrix; iter::Int=20)
     return a
 end
 
-function soft_symcover(ϕ::AbsLinear{2}, A::AbstractMatrix; iter::Int=20)
+function soft_symcover(ϕ::AbsLinear{2}, A::AbstractMatrix; iter::Int=20, starts::Int=8, σ::Real=2.0,
+                       rng::AbstractRNG=MersenneTwister(_MULTISTART_SEED))
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("soft_symcover requires a square matrix"))
-    T = float(eltype(A))
-    # Refine from two starts and keep the better; both starts are scale-covariant (up to the
-    # degenerate-tie exception documented at `_leaveout_logmean_init!`), so the selection by
-    # the scale-invariant objective is too. The leave-one-out start explores the basin that
-    # treats the most-outlying small entry as zero, giving continuity of the soft cover
-    # where the geometric-mean start would be skewed by log|A[i,j]| → -∞ into a worse basin.
-    a = similar(A, T, ax)
-    _symcover_abslinear_init!(a, A)
-    _abslinear2_iter!(a, A, iter)
-    b = similar(A, T, ax)
-    if _leaveout_logmean_init!(b, A)
-        _abslinear2_iter!(b, A, iter)
-        if cover_objective(ϕ, b, A) < cover_objective(ϕ, a, A)
-            return b
-        end
-    end
+    return _soft_symcover_abslinear2(A, iter, starts, σ, rng)
+end
+
+function soft_symcover(ϕ::AbsLinear{1}, A::AbstractMatrix; iter::Int=20, starts::Int=8, σ::Real=2.0,
+                       rng::AbstractRNG=MersenneTwister(_MULTISTART_SEED))
+    ax = axes(A, 1)
+    axes(A, 2) == ax || throw(ArgumentError("soft_symcover requires a square matrix"))
+    # Initialize from the AbsLinear{2} soft cover (a good starting point for AbsLinear{1});
+    # the multistart is spent there, then the AbsLinear{1} weighted-median descent refines.
+    a = soft_symcover(AbsLinear{2}(), A; iter=5, starts, σ, rng)
+    _abslinear1_iter!(a, A, iter)
     return a
 end
 
-function soft_symcover(ϕ::AbsLinear{1}, A::AbstractMatrix; iter::Int=20)
+# Default seed for the multistart perturbation RNG. Callers wanting reproducibility across
+# Julia versions (whose default RNG streams are not stable) should pass their own `rng`.
+const _MULTISTART_SEED = 0
+
+# Relative-objective margin a later start must beat the incumbent by to replace it. Set well
+# above the descent's objective tolerance (~1e-14) and well below any genuine basin gap, so
+# same-basin convergence noise never flips the selection (which would break covariance) while
+# real improvements always do.
+const _MULTISTART_SWITCHTOL = 1e-9
+
+# Scale-covariant multistart for the symmetric AbsLinear{2} soft cover. Runs the
+# single-start coordinate descent `_abslinear2_iter!` from a list of starting
+# points and returns the candidate with the lowest scale-invariant
+# `cover_objective`. Deterministic starts, in order: the AbsLog{2} geometric-mean
+# minimum (also the perturbation base), the tightened hard cover, the
+# curvature-eigenvector feasibility init, and the leave-one-out geometric mean
+# (when a support entry can be dropped). Remaining starts, up to `starts` total,
+# are multiplicative log-normal perturbations `a_g .* exp.(σ .* ξ)` of the
+# geometric-mean point, `ξ` drawn from `rng`. Every start co-varies with a
+# diagonal rescaling `D*A*D` (the perturbation factors `exp.(σ .* ξ)` do not
+# depend on the frame) and the objective is scale-invariant, so the argmin is
+# scale-covariant; passing the same `rng` state across the two frames (as the
+# default fresh-seeded RNG does) makes the selection reproducible. `starts` below
+# the number of deterministic starts simply truncates the list.
+function _soft_symcover_abslinear2(A::AbstractMatrix, iter::Int, starts::Int, σ::Real, rng)
     ax = axes(A, 1)
-    axes(A, 2) == ax || throw(ArgumentError("soft_symcover requires a square matrix"))
-    # Initialize from AbsLinear{2} solution (good starting point for AbsLinear{1})
-    a = soft_symcover(AbsLinear{2}(), A; iter=5)
-    _abslinear1_iter!(a, A, iter)
-    return a
+    T = float(eltype(A))
+    ag = similar(A, T, ax)
+    unconstrained_min!(AbsLog{2}(), ag, A)   # geometric mean; also the perturbation base
+    inits = [copy(ag)]
+    length(inits) < starts && push!(inits, symcover(AbsLinear{2}(), A))
+    if length(inits) < starts
+        ce = similar(ag); _symcover_abslinear_init!(ce, A); push!(inits, ce)
+    end
+    if length(inits) < starts
+        lo = similar(ag); _leaveout_logmean_init!(lo, A) && push!(inits, lo)
+    end
+    while length(inits) < starts
+        p = similar(ag)
+        for i in ax
+            ξ = randn(rng)                    # draw for every index so the stream is frame-independent
+            p[i] = ag[i] > 0 ? ag[i] * exp(T(σ) * T(ξ)) : zero(T)
+        end
+        push!(inits, p)
+    end
+    best = inits[1]; _abslinear2_iter!(best, A, iter)
+    Ebest = cover_objective(AbsLinear{2}(), best, A)
+    for k in 2:length(inits)
+        a = inits[k]; _abslinear2_iter!(a, A, iter)
+        E = cover_objective(AbsLinear{2}(), a, A)
+        # Switch only on a genuine relative improvement. Candidates landing in the same basin
+        # converge to the same objective only to the descent tolerance (~1e-14); switching on
+        # that noise would forfeit covariance, since the incumbent (ordered geometric-mean
+        # first) is the most covariant start. Real basin improvements are far larger.
+        E < Ebest * (1 - _MULTISTART_SWITCHTOL) && ((best, Ebest) = (a, E))
+    end
+    return best
 end
 
 # Coordinate-descent iteration for AbsLinear{2} soft cover.
@@ -806,8 +863,8 @@ end
 # ============================================================
 
 """
-    a, b = soft_cover(ϕ, A; iter=100)
-    a, b = soft_cover(A; iter=100)
+    a, b = soft_cover(ϕ, A; iter=100, starts=8, σ=2.0, rng=MersenneTwister(0))
+    a, b = soft_cover(A; iter=100, starts=8, σ=2.0, rng=MersenneTwister(0))
 
 Given a matrix `A`, return vectors `a` and `b` approximately minimizing the soft-cover
 objective `∑_{i,j} ϕ(|A[i,j]| / (a[i]*b[j]))`. This is the asymmetric analog of
@@ -823,10 +880,17 @@ half-sweeps
 
     u[i] = ∑_j |A[i,j]| v[j] / ∑_j (|A[i,j]| v[j])²   (dually for v[j])
 
-is monotone. The objective is non-convex; this returns a local minimizer from the
-geometric-mean initialization. Iteration stops when the relative objective decrease drops
-below `1e-14` or after `iter` sweeps. Rows or columns of `A` that are entirely zero receive
-scale `0`.
+is monotone. Each sweep stops when the relative objective decrease drops below `1e-14` or
+after `iter` sweeps. Rows or columns of `A` that are entirely zero receive scale `0`.
+
+The objective is non-convex, so `starts` starting points are tried and the lowest-objective
+result kept: the geometric-mean init, the tightened hard cover [`cover`](@ref), and — for the
+remaining starts — multiplicative log-normal perturbations `a .* exp.(σ .* ξ)`, with spread
+`σ`, of the geometric-mean point, `ξ` drawn from `rng`. Every start co-varies with an
+independent row/column rescaling of `A` and the objective is scale-invariant, so the selection
+is scale-covariant. The default `rng` is a fresh `MersenneTwister(0)` per call, making repeated
+calls (and the two frames of a covariance check) agree; pass your own `rng` for reproducibility
+you control, since default RNG streams are not stable across Julia versions.
 
 See also: [`cover`](@ref), [`soft_symcover`](@ref), [`cover_objective`](@ref).
 
@@ -843,12 +907,53 @@ julia> a * b'
  4.97144  5.07307  6.44741
 ```
 """
-soft_cover(A::AbstractMatrix; iter::Int=100) = soft_cover(AbsLinear{2}(), A; iter)
+soft_cover(A::AbstractMatrix; iter::Int=100, starts::Int=8, σ::Real=2.0,
+           rng::AbstractRNG=MersenneTwister(_MULTISTART_SEED)) =
+    soft_cover(AbsLinear{2}(), A; iter, starts, σ, rng)
 
-function soft_cover(ϕ::AbsLinear{2}, A::AbstractMatrix; iter::Int=100)
-    a, b = cover(A; iter=0)   # geometric-mean init (boosted, untightened)
-    _mscm_als!(a, b, A, iter)
-    return a, b
+function soft_cover(ϕ::AbsLinear{2}, A::AbstractMatrix; iter::Int=100, starts::Int=8, σ::Real=2.0,
+                    rng::AbstractRNG=MersenneTwister(_MULTISTART_SEED))
+    return _soft_cover_abslinear2(A, iter, starts, σ, rng)
+end
+
+# Scale-covariant multistart for the asymmetric AbsLinear{2} soft cover. Runs the
+# single-start alternating least squares `_mscm_als!` from a list of `(a, b)`
+# starting points and returns the pair with the lowest scale-invariant
+# `cover_objective`. Deterministic starts: the geometric-mean init `cover(A; iter=0)`
+# (also the perturbation base) and the tightened hard cover `cover(A)`. Remaining
+# starts, up to `starts` total, are multiplicative log-normal perturbations
+# `a_g .* exp.(σ .* ξ)`, `b_g .* exp.(σ .* η)` of the geometric-mean point, `ξ`/`η`
+# drawn from `rng`. Every start co-varies with an independent row/column rescaling
+# `D_r*A*D_c` (the perturbation factors do not depend on the frame) and the
+# objective is scale-invariant, so the argmin is scale-covariant; passing the same
+# `rng` state across the two frames (as the default fresh-seeded RNG does) makes the
+# selection reproducible.
+function _soft_cover_abslinear2(A::AbstractMatrix, iter::Int, starts::Int, σ::Real, rng)
+    T = float(eltype(A))
+    ag, bg = cover(A; iter=0)   # geometric-mean init (boosted, untightened); perturbation base
+    inits = [(copy(ag), copy(bg))]
+    length(inits) < starts && push!(inits, cover(A))
+    while length(inits) < starts
+        a = similar(ag); b = similar(bg)
+        for i in axes(A, 1)
+            ξ = randn(rng)                    # draw for every index so the stream is frame-independent
+            a[i] = ag[i] > 0 ? ag[i] * exp(T(σ) * T(ξ)) : zero(T)
+        end
+        for j in axes(A, 2)
+            η = randn(rng)
+            b[j] = bg[j] > 0 ? bg[j] * exp(T(σ) * T(η)) : zero(T)
+        end
+        push!(inits, (a, b))
+    end
+    abest, bbest = inits[1]; _mscm_als!(abest, bbest, A, iter)
+    Ebest = cover_objective(AbsLinear{2}(), abest, bbest, A)
+    for k in 2:length(inits)
+        a, b = inits[k]; _mscm_als!(a, b, A, iter)
+        E = cover_objective(AbsLinear{2}(), a, b, A)
+        # Switch only on a genuine relative improvement (see `_soft_symcover_abslinear2`).
+        E < Ebest * (1 - _MULTISTART_SWITCHTOL) && ((abest, bbest, Ebest) = (a, b, E))
+    end
+    return abest, bbest
 end
 
 # Alternating least squares for the AbsLinear{2} soft cover in the inverse-scale variables

@@ -2,6 +2,7 @@ module ScaleInvariantAnalysis
 
 using LinearAlgebra
 using PrecompileTools
+using Random
 
 export AbsLog, AbsLinear
 export cover_objective

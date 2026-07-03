@@ -194,13 +194,20 @@ using Test
     end
 
     @testset "soft_cover" begin
-        # Closed form on Aε = [1 ε; ε 1]: the AbsLinear{2} soft optimum has product
-        # a*b' ≡ ((1+ε²)/(1+ε)) on every entry.
+        # Closed form on Aε = [1 ε; ε 1]: the uniform-product critical point has
+        # a*b' ≡ (1+ε²)/(1+ε) on every entry. A single geometric-mean start converges to
+        # it. For small ε this is only a local minimizer — a strongly asymmetric solution
+        # that covers three entries and sacrifices one off-diagonal has lower objective —
+        # so the default multistart may (correctly) return a different, better product.
         for ε in (0.5, 0.1, 1e-3)
             Aε = [1.0 ε; ε 1.0]
-            a, b = soft_cover(Aε; iter=200)
             target = (1 + ε^2) / (1 + ε)
+            a, b = soft_cover(Aε; starts=1, iter=200)
             @test all(≈(target; atol=1e-10), a * b')
+            # The multistart never does worse than this uniform-basin local minimizer.
+            am, bm = soft_cover(Aε; iter=200)
+            @test cover_objective(AbsLinear{2}(), am, bm, Aε) <=
+                  cover_objective(AbsLinear{2}(), a, b, Aε) + 1e-12
         end
 
         # Default dispatch uses AbsLinear{2}
@@ -239,6 +246,70 @@ using Test
 
         # Only AbsLinear{2} is supported.
         @test_throws MethodError soft_cover(AbsLog{2}(), A)
+    end
+
+    @testset "AbsLinear soft-cover multistart" begin
+        if !isdefined(@__MODULE__, :general_matrices)
+            include("testmatrices.jl")
+        end
+
+        # Determinism: the default fresh-seeded RNG makes repeated calls bit-identical.
+        A = [1.0 2.0 3.0; 6.0 5.0 4.0]
+        @test soft_cover(A) == soft_cover(A)
+        As = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
+        @test soft_symcover(As) == soft_symcover(As)
+
+        # A caller-supplied `rng` is threaded through: identical RNG state ⇒ identical result.
+        @test soft_cover(A; rng=MersenneTwister(7)) == soft_cover(A; rng=MersenneTwister(7))
+        @test soft_symcover(As; rng=MersenneTwister(7)) == soft_symcover(As; rng=MersenneTwister(7))
+
+        # `starts` and `σ` are accepted; `starts=1` is a plain single start.
+        @test soft_cover(A; starts=1, σ=1.5) isa Tuple
+        @test soft_symcover(As; starts=1, σ=1.5) isa Vector
+
+        # best-of-8 never exceeds the single-start objective on the committed libraries
+        # (the multistart's incumbent is the single start, replaced only on improvement).
+        for (_, M) in general_matrices
+            Mf = float.(M)
+            a1, b1 = soft_cover(Mf; starts=1)
+            a8, b8 = soft_cover(Mf; starts=8)
+            @test cover_objective(AbsLinear{2}(), a8, b8, Mf) <=
+                  cover_objective(AbsLinear{2}(), a1, b1, Mf) + 1e-12
+        end
+        for (_, M) in symmetric_matrices
+            Mf = float.(M)
+            a1 = soft_symcover(Mf; starts=1)
+            a8 = soft_symcover(Mf; starts=8)
+            @test cover_objective(AbsLinear{2}(), a8, Mf) <=
+                  cover_objective(AbsLinear{2}(), a1, Mf) + 1e-12
+        end
+
+        # Scale-covariance of the returned product: every start co-varies with a rescaling
+        # of A and the objective is scale-invariant, so the selected product co-varies too.
+        Ac = [2.0 1.0 0.5; 0.1 4.0 3.0; 1.0 2.0 0.2; 5.0 0.3 1.0]
+        dr = [3.0, 0.5, 2.0, 0.25]; dc = [4.0, 0.1, 1.5]
+        a0, b0 = soft_cover(Ac); ac, bc = soft_cover(dr .* Ac .* dc')
+        @test ac * bc' ≈ dr .* (a0 * b0') .* dc' rtol=1e-7
+        d = [2.0, 0.5, 3.0]
+        a0s = soft_symcover(As); ass = soft_symcover(As .* d .* d')
+        @test ass * ass' ≈ (d .* d') .* (a0s * a0s') rtol=1e-7
+
+        # On a hard lognormal-σ=5 ensemble the multistart strictly lowers the objective on a
+        # substantial fraction of instances (fixed seed; loose statistical bound).
+        rng = MersenneTwister(2024)
+        imp_sym = 0; imp_gen = 0
+        for _ in 1:40
+            S = exp.(5 .* randn(rng, 6, 6)); S = (S + S') / 2
+            e1 = cover_objective(AbsLinear{2}(), soft_symcover(S; starts=1), S)
+            e8 = cover_objective(AbsLinear{2}(), soft_symcover(S; starts=8), S)
+            e8 < e1 - 1e-9 && (imp_sym += 1)
+            G = exp.(5 .* randn(rng, 5, 7))
+            g1a, g1b = soft_cover(G; starts=1); g8a, g8b = soft_cover(G; starts=8)
+            cover_objective(AbsLinear{2}(), g8a, g8b, G) <
+                cover_objective(AbsLinear{2}(), g1a, g1b, G) - 1e-9 && (imp_gen += 1)
+        end
+        @test imp_sym >= 20
+        @test imp_gen >= 15
     end
 
     @testset "dotabs" begin
