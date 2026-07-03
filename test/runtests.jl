@@ -401,6 +401,52 @@ using Test
         @test cover_min(AbsLog{2}(), [1.0 2.0; 3.0 4.0]; κs=(1e2, 1e4, 1e6, 1e8, 1e10)) isa Tuple
     end
 
+    @testset "MCM native AbsLog{2} matrix-free LSQR path" begin
+        if !isdefined(@__MODULE__, :symmetric_matrices)
+            include("testmatrices.jl")
+        end
+        # Invalid solver selection is rejected.
+        @test_throws ArgumentError symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; linsolve=:qr)
+        @test_throws ArgumentError cover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; linsolve=:qr)
+
+        # The matrix-free LSQR path reproduces the dense path and the HiGHS reference
+        # across the committed symmetric library, and returns a feasible cover.
+        for (_, A) in symmetric_matrices
+            Af = Float64.(A)
+            a  = symcover_min(AbsLog{2}(), Af; linsolve=:lsqr)
+            aj = ScaleInvariantAnalysis.symcover_min_jump(AbsLog{2}(), Af)
+            @test all(a[i] * a[j] >= abs(Af[i, j]) - 1e-8 for i in axes(Af, 1), j in axes(Af, 2))
+            @test cover_objective(AbsLog{2}(), a, Af) <=
+                  cover_objective(AbsLog{2}(), aj, Af) * (1 + 1e-6) + 1e-10
+        end
+
+        # Asymmetric LSQR path: feasible and matching HiGHS on a deterministic
+        # subsample of the committed general library.
+        idx_sub = Set(round.(Int, range(1, length(general_matrices), length=200)))
+        for (k, (_, A)) in enumerate(general_matrices)
+            k in idx_sub || continue
+            Af = Float64.(A)
+            a, b = cover_min(AbsLog{2}(), Af; linsolve=:lsqr)
+            @test all(a[i] * b[j] >= abs(Af[i, j]) - 1e-7 for i in axes(Af, 1), j in axes(Af, 2))
+            aj, bj = ScaleInvariantAnalysis.cover_min_jump(AbsLog{2}(), Af)
+            @test cover_objective(AbsLog{2}(), a, b, Af) <=
+                  cover_objective(AbsLog{2}(), aj, bj, Af) * (1 + 1e-6) + 1e-10
+        end
+
+        # Gauge/edge cases the dense path handles via a ridge or v0*v0ᵀ must also work
+        # matrix-free: bipartite support, a scalar, and scattered zeros.
+        a = symcover_min(AbsLog{2}(), [0.0 1.0; 1.0 0.0]; linsolve=:lsqr)
+        @test a[1] * a[2] ≈ 1.0
+        @test symcover_min(AbsLog{2}(), reshape([4.0], 1, 1); linsolve=:lsqr) ≈ [2.0]
+        Az = [1.0 0.0 2.0; 0.0 0.0 0.0; 2.0 0.0 3.0]
+        a = symcover_min(AbsLog{2}(), Az; linsolve=:lsqr)
+        @test a[2] == 0.0
+        @test all(a[i] * a[j] >= abs(Az[i, j]) - 1e-8 for i in 1:3, j in 1:3)
+        a, b = cover_min(AbsLog{2}(), [0.0 1.0; 1.0 0.0]; linsolve=:lsqr)
+        @test a[1] * b[2] ≈ 1.0
+        @test a[2] * b[1] ≈ 1.0
+    end
+
     @testset "symcover_min and soft_symcover_min (JuMP/Ipopt, AbsLinear)" begin
         # non-square rejected
         @test_throws ArgumentError symcover_min(AbsLinear{2}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
