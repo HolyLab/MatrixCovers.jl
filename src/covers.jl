@@ -802,6 +802,123 @@ function cover(ϕ, A::AbstractMatrix; iter::Int=3)
 end
 
 # ============================================================
+# soft_cover
+# ============================================================
+
+"""
+    a, b = soft_cover(ϕ, A; iter=100)
+    a, b = soft_cover(A; iter=100)
+
+Given a matrix `A`, return vectors `a` and `b` approximately minimizing the soft-cover
+objective `∑_{i,j} ϕ(|A[i,j]| / (a[i]*b[j]))`. This is the asymmetric analog of
+[`soft_symcover`](@ref).
+
+Unlike [`cover`](@ref), there is no hard coverage constraint: `a[i]*b[j]` may be less than
+`|A[i,j]|`, with violations penalized by `ϕ`.
+
+Only `ϕ = AbsLinear{2}()` (the default) is supported. In the inverse-scale variables
+`u = 1 ./ a`, `v = 1 ./ b`, the objective `∑_{i,j∈S} (1 - |A[i,j]| u[i] v[j])²` (sum over
+the nonzero support `S`) is biconvex, so alternating least squares with the closed-form
+half-sweeps
+
+    u[i] = ∑_j |A[i,j]| v[j] / ∑_j (|A[i,j]| v[j])²   (dually for v[j])
+
+is monotone. The objective is non-convex; this returns a local minimizer from the
+geometric-mean initialization. Iteration stops when the relative objective decrease drops
+below `1e-14` or after `iter` sweeps. Rows or columns of `A` that are entirely zero receive
+scale `0`.
+
+See also: [`cover`](@ref), [`soft_symcover`](@ref), [`cover_objective`](@ref).
+
+# Examples
+
+```jldoctest; filter = r"(\\d+\\.\\d{4})\\d+" => s"\\1"
+julia> A = [1 2 3; 6 5 4];
+
+julia> a, b = soft_cover(A);
+
+julia> a * b'
+2×3 Matrix{Float64}:
+ 1.93288  1.97239  2.50673
+ 4.97144  5.07307  6.44741
+```
+"""
+soft_cover(A::AbstractMatrix; iter::Int=100) = soft_cover(AbsLinear{2}(), A; iter)
+
+function soft_cover(ϕ::AbsLinear{2}, A::AbstractMatrix; iter::Int=100)
+    a, b = cover(A; iter=0)   # geometric-mean init (boosted, untightened)
+    _mscm_als!(a, b, A, iter)
+    return a, b
+end
+
+# Alternating least squares for the AbsLinear{2} soft cover in the inverse-scale variables
+# u = 1 ./ a, v = 1 ./ b. With M = |A| restricted to its nonzero support, the objective
+# E = ∑ (1 - M[i,j] u[i] v[j])² is biconvex; each half-sweep sets u[i] (resp. v[j]) to its
+# exact minimizer. Rows/columns with empty support keep scale 0 and are held fixed.
+# Refines `a`, `b` in place starting from their incoming values.
+function _mscm_als!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, iter::Int;
+                    tol=1e-14)
+    axr, axc = axes(A, 1), axes(A, 2)
+    eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axr) vs $(eachindex(a))"))
+    eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(axc) vs $(eachindex(b))"))
+    T = float(promote_type(eltype(a), eltype(b), eltype(A)))
+    # Invert to inverse-scale variables; empty-support rows/columns (scale 0) stay at 0.
+    u = map(x -> x > 0 ? inv(T(x)) : zero(T), a)
+    v = map(x -> x > 0 ? inv(T(x)) : zero(T), b)
+    E = _mscm_objective(A, u, v)
+    for _ in 1:iter
+        for i in axr
+            num = den = zero(T)
+            for j in axc
+                Aij = abs(T(A[i, j]))
+                iszero(Aij) && continue
+                Av = Aij * v[j]
+                num += Av
+                den += Av * Av
+            end
+            den > 0 && (u[i] = num / den)
+        end
+        for j in axc
+            num = den = zero(T)
+            for i in axr
+                Aij = abs(T(A[i, j]))
+                iszero(Aij) && continue
+                Au = Aij * u[i]
+                num += Au
+                den += Au * Au
+            end
+            den > 0 && (v[j] = num / den)
+        end
+        Enew = _mscm_objective(A, u, v)
+        E - Enew <= tol * max(E, one(T)) && (E = Enew; break)
+        E = Enew
+    end
+    for i in axr
+        a[i] = iszero(u[i]) ? zero(eltype(a)) : inv(u[i])
+    end
+    for j in axc
+        b[j] = iszero(v[j]) ? zero(eltype(b)) : inv(v[j])
+    end
+    return a, b
+end
+
+# Soft-cover objective in inverse-scale variables: ∑_{i,j: A[i,j]≠0} (1 - |A[i,j]| u[i] v[j])².
+function _mscm_objective(A::AbstractMatrix, u::AbstractVector, v::AbstractVector)
+    T = float(promote_type(eltype(A), eltype(u), eltype(v)))
+    E = zero(T)
+    for j in axes(A, 2)
+        vj = v[j]
+        for i in axes(A, 1)
+            Aij = abs(T(A[i, j]))
+            iszero(Aij) && continue
+            r = one(T) - Aij * u[i] * vj
+            E += r * r
+        end
+    end
+    return E
+end
+
+# ============================================================
 # tighten_cover!
 # ============================================================
 

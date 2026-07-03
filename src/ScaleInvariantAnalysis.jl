@@ -5,7 +5,7 @@ using PrecompileTools
 
 export AbsLog, AbsLinear
 export cover_objective
-export cover, symcover, soft_symcover
+export cover, symcover, soft_symcover, soft_cover
 export symcover_min, cover_min, soft_symcover_min
 export dotabs
 

@@ -193,6 +193,54 @@ using Test
         @test soft_symcover(A) ≈ soft_symcover(AbsLinear{2}(), A)
     end
 
+    @testset "soft_cover" begin
+        # Closed form on Aε = [1 ε; ε 1]: the AbsLinear{2} soft optimum has product
+        # a*b' ≡ ((1+ε²)/(1+ε)) on every entry.
+        for ε in (0.5, 0.1, 1e-3)
+            Aε = [1.0 ε; ε 1.0]
+            a, b = soft_cover(Aε; iter=200)
+            target = (1 + ε^2) / (1 + ε)
+            @test all(≈(target; atol=1e-10), a * b')
+        end
+
+        # Default dispatch uses AbsLinear{2}
+        A = [1.0 2.0 3.0; 6.0 5.0 4.0]
+        @test soft_cover(A) == soft_cover(AbsLinear{2}(), A)
+
+        # Monotone descent: the returned objective never exceeds the geometric-mean init's.
+        for A in ([1.0 2.0 3.0; 6.0 5.0 4.0],
+                  [2.0 1.0 0.5; 0.1 4.0 3.0; 1.0 2.0 0.2; 5.0 0.3 1.0])
+            a0, b0 = cover(A; iter=0)
+            Einit = cover_objective(AbsLinear{2}(), a0, b0, A)
+            a, b = soft_cover(A)
+            @test cover_objective(AbsLinear{2}(), a, b, A) <= Einit + 1e-12
+        end
+
+        # Scale-covariance of the product: independent row/column rescalings D_r*A*D_c leave
+        # the product a*b' scaled by D_r * D_c.
+        A = [2.0 1.0 0.5; 0.1 4.0 3.0; 1.0 2.0 0.2; 5.0 0.3 1.0]
+        dr = [3.0, 0.5, 2.0, 0.25]
+        dc = [4.0, 0.1, 1.5]
+        a0, b0 = soft_cover(A)
+        as, bs = soft_cover(dr .* A .* dc')
+        @test as * bs' ≈ (dr .* (a0 * b0') .* dc') rtol=1e-8
+
+        # Zeros: an entirely-zero row/column gets scale 0; scattered zeros are handled.
+        Az = [0.0 0.0 0.0; 1.0 2.0 3.0; 4.0 0.0 5.0]
+        az, bz = soft_cover(Az)
+        @test az[1] == 0
+        @test all(isfinite, az) && all(isfinite, bz)
+        @test isfinite(cover_objective(AbsLinear{2}(), az, bz, Az))
+
+        # An all-zero column forces its scale to 0.
+        Ac = [1.0 0.0 2.0; 3.0 0.0 4.0]
+        ac, bc = soft_cover(Ac)
+        @test bc[2] == 0
+
+        # Only AbsLinear{2} is supported.
+        @test_throws MethodError soft_cover(AbsLog{2}(), A)
+    end
+
     @testset "dotabs" begin
         @test dotabs([1.0, -2.0, 3.0], [4.0, 5.0, -6.0]) ≈ 4.0 + 10.0 + 18.0
         @test dotabs([0.0, 1.0], [1.0, 0.0]) == 0.0
