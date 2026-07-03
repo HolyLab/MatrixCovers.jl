@@ -947,6 +947,121 @@ function symcover_min(::AbsLog{2}, A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8), 
     return a
 end
 
+# Asymmetric AbsLog{2} hard cover via the same one-sided quadratic penalty as
+# `symcover_min`, on stacked log-scales x = (α; β) (α = log a over rows, β = log b
+# over columns) with residuals z_ij = α_i + β_j - log|A_ij|. The row and column
+# scales share a gauge freedom (α_i, β_j) → (α_i + s, β_j - s) that leaves every
+# residual unchanged; during the solve it is fixed by adding v0*v0ᵀ,
+# v0 = [ones(m); -ones(n)], to the normal equations, and afterwards the result is
+# shifted along that gauge to the balance convention ∑ nzaᵢ αᵢ = ∑ nzbⱼ βⱼ
+# (nzaᵢ, nzbⱼ = nonzero counts of row i, column j) so it is deterministic.
+function cover_min(::AbsLog{2}, A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8), maxouter::Int=40)
+    axr = axes(A, 1)
+    axc = axes(A, 2)
+    T = float(eltype(A))
+    m = length(axr)
+    n = length(axc)
+    N = m + n
+    # log|A| on the support S; internal positions 1:m index rows, m+1:m+n index
+    # columns, and results are scattered back through axr/axc so A's axes are honored.
+    C = zeros(T, m, n)
+    S = falses(m, n)
+    for (jp, j) in enumerate(axc), (ip, i) in enumerate(axr)
+        Aij = abs(T(A[i, j]))
+        iszero(Aij) && continue
+        C[ip, jp] = log(Aij)
+        S[ip, jp] = true
+    end
+    hasrow = [any(@view S[ip, :]) for ip in 1:m]
+    hascol = [any(@view S[:, jp]) for jp in 1:n]
+    # Gauge vector: ±1 on supported variables, 0 on support-free ones (which carry
+    # no constraint and are decoupled with an identity row in `solve_weighted`).
+    v0 = zeros(T, N)
+    for ip in 1:m
+        hasrow[ip] && (v0[ip] = one(T))
+    end
+    for jp in 1:n
+        hascol[jp] && (v0[m+jp] = -one(T))
+    end
+    fκ = function (x, κ)
+        v = zero(T)
+        for jp in 1:n, ip in 1:m
+            S[ip, jp] || continue
+            z = x[ip] + x[m+jp] - C[ip, jp]
+            v += (z < 0 ? T(κ) : oneunit(T)) * z^2
+        end
+        return v
+    end
+    # Reweighted normal equations with the gauge term v0*v0ᵀ. `κ === nothing` gives
+    # all-unit weights (the unconstrained minimum used for initialization).
+    solve_weighted = function (x, κ)
+        B = v0 * v0'
+        f = zeros(T, N)
+        for jp in 1:n, ip in 1:m
+            S[ip, jp] || continue
+            w = κ === nothing ? oneunit(T) : ((x[ip] + x[m+jp] - C[ip, jp]) < 0 ? T(κ) : oneunit(T))
+            B[ip, ip] += w
+            B[m+jp, m+jp] += w
+            B[ip, m+jp] += w
+            B[m+jp, ip] += w
+            f[ip] += w * C[ip, jp]
+            f[m+jp] += w * C[ip, jp]
+        end
+        for ip in 1:m
+            hasrow[ip] || (B[ip, ip] = one(T))
+        end
+        for jp in 1:n
+            hascol[jp] || (B[m+jp, m+jp] = one(T))
+        end
+        return Symmetric(B) \ f
+    end
+    x = solve_weighted(zeros(T, N), nothing)
+    for κ in κs
+        fcur = fκ(x, κ)
+        for _ in 1:maxouter
+            xnew = solve_weighted(x, κ)
+            t = one(T)
+            fnew = fκ(xnew, κ)
+            while fnew > fcur && t > 1e-10
+                t /= 2
+                fnew = fκ(x .+ t .* (xnew .- x), κ)
+            end
+            x = x .+ t .* (xnew .- x)
+            fcur - fnew <= 1e-12 * max(fcur, one(T)) && break
+            fcur = fnew
+        end
+    end
+    # Uniform boost to exact feasibility: α_i + β_j ≥ log|A_ij| on the support.
+    γ = zero(T)
+    for jp in 1:n, ip in 1:m
+        S[ip, jp] || continue
+        γ = max(γ, (C[ip, jp] - x[ip] - x[m+jp]) / 2)
+    end
+    for p in 1:N
+        x[p] += γ
+    end
+    # Shift along the (e; -e) gauge to the balance convention ∑ nzaᵢ αᵢ = ∑ nzbⱼ βⱼ.
+    nnz = count(S)
+    Lα = zero(T)
+    Lβ = zero(T)
+    for ip in 1:m
+        Lα += count(@view S[ip, :]) * x[ip]
+    end
+    for jp in 1:n
+        Lβ += count(@view S[:, jp]) * x[m+jp]
+    end
+    s = nnz > 0 ? (Lβ - Lα) / (2 * nnz) : zero(T)
+    a = similar(A, T, axr)
+    b = similar(A, T, axc)
+    for (ip, i) in enumerate(axr)
+        a[i] = hasrow[ip] ? exp(x[ip] + s) : zero(T)
+    end
+    for (jp, j) in enumerate(axc)
+        b[j] = hascol[jp] ? exp(x[m+jp] - s) : zero(T)
+    end
+    return a, b
+end
+
 
 # ============================================================
 # Extension function stubs
@@ -981,13 +1096,28 @@ function symcover_min_jump end
 """
     a, b = cover_min(ϕ, A)
 
-Return the ϕ-minimal asymmetric hard cover of `A`.
-Currently supported for `AbsLog{1}()` and `AbsLog{2}()` (requires JuMP and HiGHS).
+Return the ϕ-minimal asymmetric hard cover of `A`: the vectors `a`, `b` minimizing
+`∑_{i,j} ϕ(|A[i,j]|/(a[i]*b[j]))` subject to `a[i]*b[j] >= |A[i,j]|` for every nonzero
+entry of `A`. The row/column scales are pinned to the balance convention
+`∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` (`nzaᵢ`, `nzbⱼ` = nonzero counts of row `i`,
+column `j`) so the result is deterministic.
+
+Supported ϕ values:
+- `AbsLog{2}()`: solved natively (no external solver). Accepts keyword arguments
+  `κs` (the penalty-continuation schedule, default `(1e2, 1e4, 1e6, 1e8)`) and
+  `maxouter` (Newton steps per stage, default `40`).
+- `AbsLog{1}()`: requires JuMP and HiGHS.
 
 !!! note
-    This function is exact but slow. See [`cover`](@ref) for a fast heuristic.
+    Even the native solver is more expensive than the [`cover`](@ref) heuristic.
+
+See also: [`symcover_min`](@ref), [`cover`](@ref).
 """
 function cover_min end
+
+# Internal exact reference implemented by the SIAJuMP extension; used only to
+# cross-check the native `cover_min(::AbsLog{2})` in the test suite.
+function cover_min_jump end
 
 """
     a = soft_symcover_min(ϕ, A)

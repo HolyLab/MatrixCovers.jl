@@ -42,7 +42,7 @@ function ScaleInvariantAnalysis.symcover_min(::AbsLog{1}, A)
     return exp.(JuMP.value.(α))
 end
 
-function ScaleInvariantAnalysis.cover_min(::AbsLog{2}, A)
+function ScaleInvariantAnalysis.cover_min_jump(::AbsLog{2}, A)
     logA = log.(abs.(A))
     m, n = size(A)
     model = JuMP.Model(HiGHS.Optimizer)

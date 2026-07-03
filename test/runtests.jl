@@ -331,6 +331,76 @@ using Test
         @test symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; κs=(1e2, 1e4, 1e6, 1e8, 1e10)) isa Vector
     end
 
+    @testset "cover_min native AbsLog{2}" begin
+        if !isdefined(@__MODULE__, :general_matrices)
+            include("testmatrices.jl")
+        end
+        # Native solver returns a feasible cover across the whole committed general
+        # library, and matches the HiGHS reference in objective on a deterministic
+        # subsample (the full 4367-matrix JuMP cross-check is slow).
+        idx_sub = Set(round.(Int, range(1, length(general_matrices), length=500)))
+        for (k, (_, A)) in enumerate(general_matrices)
+            Af = Float64.(A)
+            a, b = cover_min(AbsLog{2}(), Af)
+            @test all(a[i] * b[j] >= abs(Af[i, j]) - 1e-7 for i in axes(Af, 1), j in axes(Af, 2))
+            if k in idx_sub
+                aj, bj = ScaleInvariantAnalysis.cover_min_jump(AbsLog{2}(), Af)
+                oj = cover_objective(AbsLog{2}(), aj, bj, Af)
+                o  = cover_objective(AbsLog{2}(), a, b, Af)
+                @test o <= oj * (1 + 1e-6) + 1e-10
+                # The balance convention is shared, so a, b agree entrywise with JuMP.
+                @test a ≈ aj rtol=1e-5
+                @test b ≈ bj rtol=1e-5
+            end
+        end
+
+        # Scale-covariance under independent row/column scalings: covering D_r*A*D_c
+        # scales the product a[i]*b[j] by d_r[i]*d_c[j].
+        rng = MersenneTwister(1234)
+        for (_, A) in general_matrices[1:30]
+            Af = Float64.(A); m, n = size(Af)
+            dr = exp.(2 .* randn(rng, m)); dc = exp.(2 .* randn(rng, n))
+            AD = (dr .* Af) .* dc'
+            a, b   = cover_min(AbsLog{2}(), Af)
+            aD, bD = cover_min(AbsLog{2}(), AD)
+            for i in 1:m, j in 1:n
+                (a[i] == 0 || b[j] == 0) && continue
+                @test aD[i] * bD[j] ≈ dr[i] * dc[j] * a[i] * b[j] rtol=1e-6
+            end
+        end
+
+        # Non-square matrices, both orientations (transpose swaps the roles of a, b).
+        A = [1.0 2.0 3.0; 4.0 5.0 6.0]
+        a, b = cover_min(AbsLog{2}(), A)
+        @test all(a[i] * b[j] >= abs(A[i, j]) - 1e-8 for i in 1:2, j in 1:3)
+        aT, bT = cover_min(AbsLog{2}(), permutedims(A))
+        @test aT ≈ b rtol=1e-6
+        @test bT ≈ a rtol=1e-6
+
+        # Edge cases.
+        a, b = cover_min(AbsLog{2}(), reshape([4.0], 1, 1))   # 1×1
+        @test a[1] * b[1] ≈ 4.0
+        # [0 1; 1 0]: bipartite support (singular signless Laplacian), covered by
+        # the gauge term v0*v0ᵀ; a₁b₂ = a₂b₁ = 1 is optimal, objective 0.
+        a, b = cover_min(AbsLog{2}(), [0.0 1.0; 1.0 0.0])
+        @test a[1] * b[2] ≈ 1.0
+        @test a[2] * b[1] ≈ 1.0
+        @test cover_objective(AbsLog{2}(), a, b, [0.0 1.0; 1.0 0.0]) < 1e-12
+        # An all-zero row and column leave their scales at 0 while the rest is covered.
+        Az = [1.0 0.0 2.0; 0.0 0.0 0.0; 3.0 0.0 4.0]
+        a, b = cover_min(AbsLog{2}(), Az)
+        @test a[2] == 0.0
+        @test b[2] == 0.0
+        @test all(iszero(Az[i, j]) || a[i] * b[j] >= abs(Az[i, j]) - 1e-8 for i in 1:3, j in 1:3)
+        # A matrix with a zero column, exact objective known from the AbsLog{2} optimum.
+        A = [0 0 0 1; 1 1 0 2; 1 0 2 1]
+        a, b = cover_min(AbsLog{2}(), A)
+        @test all(a[i] * b[j] >= abs(A[i, j]) - 1e-8 for i in axes(A, 1), j in axes(A, 2))
+        @test cover_objective(AbsLog{2}(), a, b, A) ≈ 2 * log(sqrt(2))^2
+        # κs keyword is accepted.
+        @test cover_min(AbsLog{2}(), [1.0 2.0; 3.0 4.0]; κs=(1e2, 1e4, 1e6, 1e8, 1e10)) isa Tuple
+    end
+
     @testset "symcover_min and soft_symcover_min (JuMP/Ipopt, AbsLinear)" begin
         # non-square rejected
         @test_throws ArgumentError symcover_min(AbsLinear{2}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
