@@ -66,6 +66,27 @@ using Test
         @test_throws ArgumentError symcover([1.0 2.0; 3.0 4.0; 5.0 6.0])
     end
 
+    @testset "symcover log cache" begin
+        # Passing a scratch `cache` reuses the geometric-mean logarithms in the
+        # AbsLinear feasibility step; the result must be identical to the no-cache
+        # path (bitwise, not merely approximately). One buffer is reused across
+        # several differently-sized-support matrices to mimic the batch use case.
+        rng = MersenneTwister(1)
+        for n in (2, 5, 40)
+            cache = Matrix{Float64}(undef, n, n)
+            for _ in 1:5
+                B = randn(rng, n, n); A = (B + B') / 2
+                @test symcover(A) == symcover(A; cache)
+                @test symcover(AbsLinear{2}(), A) == symcover(AbsLinear{2}(), A; cache)
+            end
+            # Matrices with zero rows/entries: cache cells for zero entries are never read.
+            A = [1.0 0.0 2.0; 0.0 0.0 0.0; 2.0 0.0 3.0]
+            @test symcover(A) == symcover(A; cache=Matrix{Float64}(undef, 3, 3))
+        end
+        # A cache whose axes do not match `A` is rejected.
+        @test_throws DimensionMismatch symcover([2.0 1.0; 1.0 3.0]; cache=zeros(3, 3))
+    end
+
     @testset "cover" begin
         # Cover property: a[i]*b[j] >= abs(A[i,j]) for all i, j
         for A in ([2.0 1.0; 1.0 3.0], [0.0 1.0; -2.0 0.0], [1.0 0.0; 0.0 0.0],

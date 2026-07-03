@@ -84,16 +84,21 @@ cover_objective(ϕ, a, A) = cover_objective(ϕ, a, a, A)
 # Fills `a` in-place and returns nza[i] = number of nonzero entries in row i.
 # For efficiency, uses a Sherman-Morrison approximation for the pattern of nonzeros. (It's exact when there are no zeros.)
 # This is the "rank-1 solution" described in manuscript section 5.2.
-function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, A::AbstractMatrix) where T
+function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, A::AbstractMatrix; logcache=nothing) where T
     ax = eachindex(a)
     axes(A) == (ax, ax) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(axes(A)), axes(a)=$(axes(a))"))
+    logcache === nothing || axes(logcache) == (ax, ax) ||
+        throw(DimensionMismatch("`logcache` must have the same axes as `A` (got $(axes(logcache)) vs $((ax, ax)))"))
     loga = fill!(similar(a), zero(T))
     nza  = zeros(Int, ax)
+    # When `logcache` is provided, store log|A[i,j]| for every nonzero upper-triangle
+    # entry so a caller can reuse it (zero entries are skipped and never read back).
     for j in ax
         for i in first(ax):j
             Aij = abs(A[i, j])
             iszero(Aij) && continue
             lAij = log(Aij)
+            logcache === nothing || (logcache[i, j] = lAij)
             loga[i] += lAij
             nza[i]  += 1
             if i != j
@@ -246,18 +251,27 @@ end
 # solved by Newton's method.  The eigenvector components are v_i ∝ n_i / (λ - n_i).
 # Accepts any positive-valued weight vector (not just integer counts).
 function _abslog2_greatest_curvature_eigvec(nza::AbstractVector{<:Real})
-    N = sum(nza)
+    N = float(sum(nza))
     iszero(N) && return zeros(Float64, length(nza))
-    maxn = maximum(nza)
-    λ = 2.0 * maxn          # initial guess: above all n_i so all (λ - n_i) > 0
+    λ = 2.0 * maximum(nza)  # initial guess: above all n_i so all (λ - n_i) > 0
     for _ in 1:20           # generous bound; quadratic convergence exits early
-        s1 = sum(nza[i]^2 / (λ - nza[i]) for i in eachindex(nza) if !iszero(nza[i]))
+        s1 = 0.0
+        s2 = 0.0
+        for i in eachindex(nza)
+            ni = nza[i]
+            iszero(ni) && continue
+            d = λ - ni
+            s1 += ni^2 / d
+            s2 += ni^2 / d^2
+        end
         abs(s1 - N) < 1e-12 * N && break
-        s2 = sum(nza[i]^2 / (λ - nza[i])^2 for i in eachindex(nza) if !iszero(nza[i]))
         iszero(s2) && break
         λ += (s1 - N) / s2
     end
-    v = [iszero(nza[i]) ? 0.0 : nza[i] / (λ - nza[i]) for i in eachindex(nza)]
+    # `λ` is reassigned in the loop, so a comprehension capturing it would box it
+    # (Core.Box), losing type stability; copy to a binding that is never reassigned.
+    λ★ = λ
+    v = [iszero(nza[i]) ? 0.0 : nza[i] / (λ★ - nza[i]) for i in eachindex(nza)]
     nv = sqrt(sum(abs2, v))
     return iszero(nv) ? v : v ./ nv
 end
@@ -317,24 +331,32 @@ end
 # (a[i]*a[j] >= |A[i,j]| for every entry). Moving along this direction keeps the
 # step scale-covariant and reaches feasibility with the least perturbation of
 # the unconstrained minimum. Fills `a` in place and returns it.
-function _symcover_abslinear_init!(a::AbstractVector{T}, A::AbstractMatrix) where T
+function _symcover_abslinear_init!(a::AbstractVector{T}, A::AbstractMatrix; cache=nothing) where T
     ax = eachindex(a)
     axes(A) == (ax, ax) || throw(DimensionMismatch("`_symcover_abslinear_init!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(axes(A)), axes(a)=$(axes(a)))"))
-    nza = unconstrained_min!(AbsLog{2}(), a, A)
+    nza = unconstrained_min!(AbsLog{2}(), a, A; logcache=cache)
     v   = _abslog2_greatest_curvature_eigvec(nza)
-    # log|A[i,j]| <= α₀[i] + α₀[j] + t*(v[i]+v[j]) is required for feasibility;
-    # zero rows have a[i]=0 and v[i]=0 but participate in no constraint.
-    α₀ = [iszero(a[i]) ? zero(T) : log(a[i]) for i in ax]
+    # Feasibility requires a[i]*a[j] >= |A[i,j]|; move along v by the least t
+    # achieving it, using deficit = log|A[i,j]| - log a[i] - log a[j]. Whenever
+    # |A[i,j]|>0 both a[i],a[j]>0 (a zero entry of `a` means an all-zero row), so
+    # log a[i] is well defined. Pairs already feasible (Aij <= a[i]*a[j]) are
+    # skipped before the logarithm, the loop's dominant per-entry cost; for the
+    # rest, `cache` supplies log|A[i,j]| when present so it need not be recomputed.
+    lα = similar(a)
+    for i in ax
+        lα[i] = iszero(a[i]) ? zero(T) : log(a[i])
+    end
     t_feas = zero(T)
     for j in ax
+        aj, lαj = a[j], lα[j]
         for i in first(ax):j
             Aij = abs(A[i, j])
             iszero(Aij) && continue
-            s = v[i] + v[j]
+            s = T(v[i]) + T(v[j])
             iszero(s) && continue
-            deficit = log(T(Aij)) - α₀[i] - α₀[j]
-            deficit > 0 || continue
-            t_feas = max(t_feas, deficit / s)
+            Aij <= a[i] * aj && continue
+            lAij = cache === nothing ? log(Aij) : cache[i, j]
+            t_feas = max(t_feas, (lAij - lα[i] - lαj) / s)
         end
     end
     for i in ax
@@ -452,25 +474,31 @@ The penalty function `ϕ` controls what objective is approximately minimized:
 The default `ϕ = AbsLinear{2}()`. After initialization, `iter` iterations of the tightening
 algorithm (Algorithm 1 of the manuscript) are applied.
 
+For the `AbsLinear` initialization, the feasibility step recomputes `log|A[i, j]|` for
+under-covered entries. Passing a scratch matrix as `cache` (with the same axes as `A`) lets
+that logarithm be taken once, in the geometric-mean pass, and reused. This is worthwhile when
+covering many matrices of the same size: allocate `cache = similar(A, float(eltype(A)))` once
+and reuse it across calls. The result is unchanged; only the redundant logarithms are saved.
+
 See also: [`symcover_min`](@ref), [`soft_symcover`](@ref), [`cover`](@ref).
 
 # Examples
 
-```jldoctest; filter = r"(\\d+\\.\\d{6})\\d+" => s"\\1"
-julia> A = [4 -1; -1 0];
+```jldoctest
+julia> A = [4 1; 1 4];
 
 julia> a = symcover(A)
 2-element Vector{Float64}:
  2.0
- 0.5
+ 2.0
 
-julia> a * a'
+julia> a * a'   # covers |A|: a[i]*a[j] >= abs(A[i, j])
 2×2 Matrix{Float64}:
- 4.0  1.0
- 1.0  0.25
+ 4.0  4.0
+ 4.0  4.0
 ```
 """
-symcover(A::AbstractMatrix; iter::Int=3) = symcover(AbsLinear{2}(), A; iter)
+symcover(A::AbstractMatrix; iter::Int=3, cache=nothing) = symcover(AbsLinear{2}(), A; iter, cache)
 
 function symcover(ϕ::AbsLog, A::AbstractMatrix; iter::Int=3)
     ax = axes(A, 1)
@@ -504,12 +532,12 @@ function symcover(ϕ::AbsLog, A::AbstractMatrix; iter::Int=3)
     return tighten_cover!(a, A; iter)
 end
 
-function symcover(ϕ::AbsLinear, A::AbstractMatrix; iter::Int=3)
+function symcover(ϕ::AbsLinear, A::AbstractMatrix; iter::Int=3, cache=nothing)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("symcover requires a square matrix"))
     T = float(eltype(A))
     a = similar(A, T, ax)
-    _symcover_abslinear_init!(a, A)
+    _symcover_abslinear_init!(a, A; cache)
     return tighten_cover!(a, A; iter)
 end
 
