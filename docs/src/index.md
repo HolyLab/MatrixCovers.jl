@@ -96,7 +96,7 @@ Both objectives are zero if and only if every constraint is exactly tight.
 | [`symcover_min`](@ref) | yes | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
 | [`cover_min`](@ref) | no | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`) | native for `AbsLog{2}`; else JuMP |
 | [`soft_symcover`](@ref) | yes | soft (penalized) | `AbsLinear{2}` (or `AbsLog`, `AbsLinear{1}`) | — |
-| [`soft_cover`](@ref) | no | soft (penalized) | `AbsLinear{2}` | — |
+| [`soft_cover`](@ref) | no | soft (penalized) | `AbsLinear{2}` (or `AbsLinear{1}`) | — |
 | [`soft_symcover_min`](@ref) | yes | soft (penalized) | `AbsLog{2}`, `AbsLinear` | JuMP |
 
 **[`symcover`](@ref), [`cover`](@ref), [`soft_symcover`](@ref), and
@@ -149,6 +149,18 @@ a, b = cover_min(AbsLog{1}(), A)      # L1-minimal general hard cover
 
 The [`soft_symcover_min`](@ref) soft solver is likewise JuMP-backed (HiGHS for
 `AbsLog{2}`, Ipopt for the `AbsLinear` penalties).
+
+`AbsLog{1}` minimization is deliberately left to JuMP rather than given a native
+solver.  With the hard constraint `r ≥ 1` the penalty `|log r|` equals the
+log-excess `α_i + α_j - log|A_{ij}|` (writing `α = log a`), so the problem is an
+exact **linear program** — minimize `∑ (α_i + α_j)` subject to
+`α_i + α_j ≥ log|A_{ij}|`.  The penalty-continuation Newton scheme that makes the
+`AbsLog{2}` quadratic near-exact does not transfer to a linear objective; a native
+path would mean reimplementing a robust LP solver, which HiGHS already provides
+cheaply.  The L1 optimum is also non-unique (a whole face of the feasible
+polytope rather than an isolated point), so a native solver would additionally
+need a canonical selection rule to be deterministic and scale-covariant.  For
+these reasons the `AbsLog{1}` hard covers require `JuMP` + `HiGHS`.
 
 ## Index of available tools
 

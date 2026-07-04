@@ -797,6 +797,25 @@ function _abslinear2_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; t
     return a
 end
 
+# Weighted median of the values in `c` using the values themselves as weights: the
+# point `m` with ∑_{cᵢ<m} cᵢ = ∑_{cᵢ>m} cᵢ. This minimizes ∑ᵢ |1 - cᵢ/x| over x > 0 —
+# the gradient is (1/x²)(∑_{cᵢ<x} cᵢ − ∑_{cᵢ>x} cᵢ), whose positive 1/x² factor leaves
+# the root at that balance point. Sorts `c` in place and returns the lower weighted
+# median, a deterministic, scale-covariant tie-break on the flat basin the AbsLinear{1}
+# objective admits.
+function _weighted_self_median!(c::AbstractVector{T}) where T
+    sort!(c)
+    half = sum(c) / 2
+    cum  = zero(T)
+    wm   = first(c)
+    for ci in c
+        cum += ci
+        wm   = ci
+        cum >= half && break
+    end
+    return wm
+end
+
 # Coordinate-descent iteration for AbsLinear{1} soft cover.
 # Each coordinate a[k] is updated to minimize ∑_j |1 - |A[k,j]|/(a[k]*a[j])|.
 # For the off-diagonal sum, the minimizer is the weighted median of c_j with weights c_j,
@@ -827,18 +846,8 @@ function _abslinear1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; t
             if nc == 0
                 x = iszero(d) ? zero(T) : sqrt(d)
             else
-                # Weighted median of buf[1:nc] with weights buf[1:nc]
                 c = view(buf, 1:nc)
-                sort!(c)
-                total = sum(c)
-                half  = total / 2
-                wm    = c[1]
-                cum   = zero(T)
-                for ci in c
-                    cum += ci
-                    wm   = ci
-                    cum >= half && break
-                end
+                wm = _weighted_self_median!(c)   # sorts `c` in place
                 if iszero(d)
                     x = wm
                 else
@@ -974,15 +983,21 @@ objective `∑_{i,j} ϕ(|A[i,j]| / (a[i]*b[j]))`. This is the asymmetric analog 
 Unlike [`cover`](@ref), there is no hard coverage constraint: `a[i]*b[j]` may be less than
 `|A[i,j]|`, with violations penalized by `ϕ`.
 
-Only `ϕ = AbsLinear{2}()` (the default) is supported. In the inverse-scale variables
-`u = 1 ./ a`, `v = 1 ./ b`, the objective `∑_{i,j∈S} (1 - |A[i,j]| u[i] v[j])²` (sum over
-the nonzero support `S`) is biconvex, so alternating least squares with the closed-form
-half-sweeps
+Supported penalty functions:
+- `AbsLinear{2}()` (default): in the inverse-scale variables `u = 1 ./ a`, `v = 1 ./ b`, the
+  objective `∑_{i,j∈S} (1 - |A[i,j]| u[i] v[j])²` (sum over the nonzero support `S`) is
+  biconvex, so alternating least squares with the closed-form half-sweeps
 
-    u[i] = ∑_j |A[i,j]| v[j] / ∑_j (|A[i,j]| v[j])²   (dually for v[j])
+      u[i] = ∑_j |A[i,j]| v[j] / ∑_j (|A[i,j]| v[j])²   (dually for v[j])
 
-is monotone. Each sweep stops when the relative objective decrease drops below `1e-14` or
-after `iter` sweeps. Rows or columns of `A` that are entirely zero receive scale `0`.
+  is monotone, stopping when the relative objective decrease drops below `1e-14` or after
+  `iter` sweeps.
+- `AbsLinear{1}()`: initializes from the `AbsLinear{2}()` result, then refines by alternating
+  weighted-median updates — each row/column block is minimized exactly, so the descent is
+  monotone. Its flat basins are broken by a deterministic lower-median tie-break, giving a
+  scale-covariant representative.
+
+Rows or columns of `A` that are entirely zero receive scale `0`.
 
 The objective is non-convex, so `starts` starting points are tried and the lowest-objective
 result kept: the geometric-mean init, the tightened hard cover [`cover`](@ref), and — for the
@@ -1015,6 +1030,15 @@ soft_cover(A::AbstractMatrix; iter::Int=100, starts::Int=8, σ::Real=2.0,
 function soft_cover(ϕ::AbsLinear{2}, A::AbstractMatrix; iter::Int=100, starts::Int=8, σ::Real=2.0,
                     rng::AbstractRNG=MersenneTwister(_MULTISTART_SEED))
     return _soft_cover_abslinear2(A, iter, starts, σ, rng)
+end
+
+function soft_cover(ϕ::AbsLinear{1}, A::AbstractMatrix; iter::Int=100, starts::Int=8, σ::Real=2.0,
+                    rng::AbstractRNG=MersenneTwister(_MULTISTART_SEED))
+    # Spend the multistart on the AbsLinear{2} cover (a good basin selector), then refine with
+    # the AbsLinear{1} weighted-median descent.
+    a, b = soft_cover(AbsLinear{2}(), A; iter=5, starts, σ, rng)
+    _abslinear1_iter_asym!(a, b, A, iter)
+    return a, b
 end
 
 # Scale-covariant multistart for the asymmetric AbsLinear{2} soft cover. Runs the
@@ -1126,6 +1150,61 @@ function _mscm_objective(A::AbstractMatrix, u::AbstractVector, v::AbstractVector
         end
     end
     return E
+end
+
+# Alternating weighted-median descent for the asymmetric AbsLinear{1} soft cover.
+# Updating a[i] with b fixed minimizes ∑_j |1 - |A[i,j]|/(a[i] b[j])| over a[i] > 0, whose
+# minimizer is the weighted median of c_j = |A[i,j]|/b[j] weighted by the same c_j (see
+# `_weighted_self_median!`); the b-update is dual. There is no self-coupled diagonal term (the
+# (i,i) entry enters the row update through b[i] like any other column), so each full sweep is
+# an exact block minimization and the objective decreases monotonically. Refines `a`, `b` in
+# place from their incoming values; exits early once the largest relative coordinate movement
+# in a sweep drops to `tol` (scale-invariant, so covariant restarts of a rescaled problem exit
+# on the same sweep). Rows/columns with empty support keep scale 0.
+function _abslinear1_iter_asym!(a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix,
+                                iter::Int; tol::Real=1e-12) where T
+    axr, axc = axes(A, 1), axes(A, 2)
+    eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axr) vs $(eachindex(a))"))
+    eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(axc) vs $(eachindex(b))"))
+    bufc = Vector{T}(undef, length(axc))   # c_j buffer for an a-row update
+    bufr = Vector{T}(undef, length(axr))   # c_i buffer for a b-column update
+    for _ in 1:iter
+        maxrel = zero(T)
+        for i in axr
+            nc = 0
+            for j in axc
+                Aij = T(abs(A[i, j]))
+                iszero(Aij) && continue
+                bj = b[j]
+                iszero(bj) && continue
+                nc += 1
+                bufc[nc] = Aij / bj
+            end
+            x = nc == 0 ? zero(T) : _weighted_self_median!(view(bufc, 1:nc))
+            ai  = a[i]
+            den = max(abs(x), abs(ai))
+            iszero(den) || (maxrel = max(maxrel, abs(x - ai) / den))
+            a[i] = x
+        end
+        for j in axc
+            nc = 0
+            for i in axr
+                Aij = T(abs(A[i, j]))
+                iszero(Aij) && continue
+                ai = a[i]
+                iszero(ai) && continue
+                nc += 1
+                bufr[nc] = Aij / ai
+            end
+            x = nc == 0 ? zero(T) : _weighted_self_median!(view(bufr, 1:nc))
+            bj  = b[j]
+            den = max(abs(x), abs(bj))
+            iszero(den) || (maxrel = max(maxrel, abs(x - bj) / den))
+            b[j] = x
+        end
+        maxrel <= T(tol) && break
+    end
+    return a, b
 end
 
 # ============================================================

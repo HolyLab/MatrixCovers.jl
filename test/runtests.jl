@@ -265,7 +265,43 @@ using Test
         ac, bc = soft_cover(Ac)
         @test bc[2] == 0
 
-        # Only AbsLinear{2} is supported.
+        # AbsLinear{1}: alternating weighted-median descent, warm-started from AbsLinear{2}.
+        @testset "AbsLinear{1}" begin
+            # A rank-1 matrix A = a*b' is exactly coverable, so the L1 objective is 0.
+            A1 = [2.0, 0.5, 3.0] * [1.0, 4.0, 0.25, 2.0]'
+            a, b = soft_cover(AbsLinear{1}(), A1)
+            @test cover_objective(AbsLinear{1}(), a, b, A1) ≈ 0 atol=1e-12
+            @test a isa Vector{Float64} && b isa Vector{Float64}
+
+            # Determinism (the default rng is evaluated fresh per call).
+            @test soft_cover(AbsLinear{1}(), A1) == soft_cover(AbsLinear{1}(), A1)
+
+            # The weighted-median refinement never worsens the L1 objective of its
+            # AbsLinear{2} warm start (each block update is an exact minimization).
+            for M in ([1.0 2.0 3.0; 6.0 5.0 4.0],
+                      [2.0 1.0 0.5; 0.1 4.0 3.0; 1.0 2.0 0.2; 5.0 0.3 1.0])
+                a0, b0 = soft_cover(AbsLinear{2}(), M; iter=5, starts=8, rng=MersenneTwister(0))
+                Einit = cover_objective(AbsLinear{1}(), a0, b0, M)
+                ar, br = soft_cover(AbsLinear{1}(), M; rng=MersenneTwister(0))
+                @test cover_objective(AbsLinear{1}(), ar, br, M) <= Einit + 1e-12
+            end
+
+            # Scale-covariance of the product under independent row/column rescalings.
+            Ac1 = [2.0 1.0 0.5; 0.1 4.0 3.0; 1.0 2.0 0.2; 5.0 0.3 1.0]
+            dr = [3.0, 0.5, 2.0, 0.25]; dc = [4.0, 0.1, 1.5]
+            a0, b0 = soft_cover(AbsLinear{1}(), Ac1; rng=MersenneTwister(7))
+            as, bs = soft_cover(AbsLinear{1}(), dr .* Ac1 .* dc'; rng=MersenneTwister(7))
+            @test as * bs' ≈ (dr .* (a0 * b0') .* dc') rtol=1e-8
+
+            # Zeros: an entirely-zero row gets scale 0; results stay finite.
+            Az1 = [0.0 0.0 0.0; 1.0 2.0 3.0; 4.0 0.0 5.0]
+            az, bz = soft_cover(AbsLinear{1}(), Az1)
+            @test az[1] == 0
+            @test all(isfinite, az) && all(isfinite, bz)
+            @test isfinite(cover_objective(AbsLinear{1}(), az, bz, Az1))
+        end
+
+        # AbsLog penalties are unsupported for soft_cover.
         @test_throws MethodError soft_cover(AbsLog{2}(), A)
     end
 
