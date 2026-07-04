@@ -369,6 +369,37 @@ using Test
         @test imp_gen >= 15
     end
 
+    @testset "feasible start and provenance" begin
+        # The multistart fills caller-supplied `labels`/`objs` in place; the winner is
+        # `labels[_multistart_select(objs)]`, using the same selection rule as the solver.
+        function provenance(A; rng=MersenneTwister(0))
+            labels = String[]; objs = Float64[]
+            a = ScaleInvariantAnalysis._soft_symcover_abslinear2(A, 20, 8, 2.0, rng; labels, objs)
+            return a, labels[ScaleInvariantAnalysis._multistart_select(objs)], labels, objs
+        end
+
+        # The greedy feasible cover (`init_feasible!`) is offered as a start only when `A` has a
+        # zero entry. On this matrix every geometric-mean-derived start lands in one basin while
+        # `feasible` reaches a distinctly better one, so it is the selected winner.
+        Afe = Float64[0 11 18 0 12; 11 0 1 0 20; 18 1 0 3 18; 0 0 3 18 0; 12 20 18 0 17]
+        a, winner, labels, objs = provenance(Afe)
+        @test winner == "feasible"
+        # The instrumented call returns exactly what the public entry point selects.
+        @test a == soft_symcover(Afe)
+        # `feasible` wins by a genuine basin gap, not descent-tolerance noise.
+        fi = findfirst(==("feasible"), labels)
+        @test objs[fi] < minimum(objs[k] for k in eachindex(objs) if k != fi) * (1 - 1e-3)
+
+        # Selecting the `feasible` start preserves scale-covariance of the returned cover.
+        d = [1.5, 0.3, 4.0, 0.7, 2.2]
+        a_scaled = soft_symcover(Afe .* d .* d')
+        @test a_scaled * a_scaled' ≈ (d .* d') .* (a * a') rtol=1e-7
+
+        # Gate off: a fully dense matrix (no zeros) never offers the `feasible` start.
+        _, _, dense_labels, _ = provenance(Float64[4 1 2; 1 5 3; 2 3 6])
+        @test "feasible" ∉ dense_labels
+    end
+
     @testset "dotabs" begin
         @test dotabs([1.0, -2.0, 3.0], [4.0, 5.0, -6.0]) ≈ 4.0 + 10.0 + 18.0
         @test dotabs([0.0, 1.0], [1.0, 0.0]) == 0.0

@@ -629,54 +629,82 @@ const _MULTISTART_SEED = 0
 # real improvements always do.
 const _MULTISTART_SWITCHTOL = 1e-9
 
-# Scale-covariant multistart for the symmetric AbsLinear{2} soft cover. Runs the
-# single-start coordinate descent `_abslinear2_iter!` from a list of starting
-# points and returns the candidate with the lowest scale-invariant
-# `cover_objective`. Deterministic starts, in order: the AbsLog{2} geometric-mean
-# minimum (also the perturbation base), the tightened hard cover, the
-# curvature-eigenvector feasibility init, and the leave-one-out geometric mean
-# (when a support entry can be dropped). Remaining starts, up to `starts` total,
-# are multiplicative log-normal perturbations `a_g .* exp.(σ .* ξ)` of the
-# geometric-mean point, `ξ` drawn from `rng`. Every start co-varies with a
-# diagonal rescaling `D*A*D` (the perturbation factors `exp.(σ .* ξ)` do not
-# depend on the frame) and the objective is scale-invariant, so the argmin is
-# scale-covariant; passing the same `rng` state across the two frames (as the
-# default fresh-seeded RNG does) makes the selection reproducible. `starts` below
-# the number of deterministic starts simply truncates the list.
-function _soft_symcover_abslinear2(A::AbstractMatrix, iter::Int, starts::Int, σ::Real, rng)
+# Labeled candidate starts for the symmetric AbsLinear{2} multistart, in selection order.
+# Deterministic starts: the AbsLog{2} geometric-mean minimum (also the perturbation base),
+# the tightened hard cover, the curvature-eigenvector feasibility init, the leave-one-out
+# geometric mean (when a support entry can be dropped), and — only when `A` has a zero entry
+# — the greedy feasible cover `init_feasible!`. The feasible start is gated because on a
+# fully dense `A` it never uniquely wins, and "which entries are zero" is invariant under a
+# diagonal rescaling `D*A*D`, so the gate keeps the selection scale-covariant. Remaining
+# slots, up to `starts` total, are multiplicative log-normal perturbations `a_g .* exp.(σ .* ξ)`
+# of the geometric-mean point, `ξ` drawn from `rng` (drawn for every index so the stream is
+# frame-independent). `starts` below the number of deterministic starts truncates the list.
+function _soft_symcover_abslinear2_inits(A::AbstractMatrix, starts::Int, σ::Real, rng)
     ax = axes(A, 1)
     T = float(eltype(A))
     # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     ag = similar(Array{T}, ax)
     unconstrained_min!(AbsLog{2}(), ag, A)   # geometric mean; also the perturbation base
+    labels = ["geomean"]
     inits = [copy(ag)]
-    length(inits) < starts && push!(inits, symcover(AbsLinear{2}(), A))
+    length(inits) < starts && (push!(labels, "hardcover"); push!(inits, symcover(AbsLinear{2}(), A)))
     if length(inits) < starts
-        ce = similar(ag); _symcover_abslinear_init!(ce, A); push!(inits, ce)
+        ce = similar(ag); _symcover_abslinear_init!(ce, A); push!(labels, "eigvec"); push!(inits, ce)
     end
     if length(inits) < starts
-        lo = similar(ag); _leaveout_logmean_init!(lo, A) && push!(inits, lo)
+        lo = similar(ag); _leaveout_logmean_init!(lo, A) && (push!(labels, "leaveout"); push!(inits, lo))
     end
+    if length(inits) < starts && any(iszero, A)
+        fe = similar(ag); init_feasible!(fe, A); push!(labels, "feasible"); push!(inits, fe)
+    end
+    k = 0
     while length(inits) < starts
         p = similar(ag)
         for i in ax
-            ξ = randn(rng)                    # draw for every index so the stream is frame-independent
+            ξ = randn(rng)
             p[i] = ag[i] > 0 ? ag[i] * exp(T(σ) * T(ξ)) : zero(T)
         end
-        push!(inits, p)
+        k += 1; push!(labels, "rand$k"); push!(inits, p)
     end
-    best = inits[1]; _abslinear2_iter!(best, A, iter)
-    Ebest = cover_objective(AbsLinear{2}(), best, A)
-    for k in 2:length(inits)
-        a = inits[k]; _abslinear2_iter!(a, A, iter)
-        E = cover_objective(AbsLinear{2}(), a, A)
-        # Switch only on a genuine relative improvement. Candidates landing in the same basin
-        # converge to the same objective only to the descent tolerance (~1e-14); switching on
-        # that noise would forfeit covariance, since the incumbent (ordered geometric-mean
-        # first) is the most covariant start. Real basin improvements are far larger.
-        E < Ebest * (1 - _MULTISTART_SWITCHTOL) && ((best, Ebest) = (a, E))
+    return labels, inits
+end
+
+# Index of the multistart winner among candidate objectives `objs`: the earliest candidate not
+# beaten by a strict relative improvement. Switching only on a genuine improvement is what keeps
+# the selection scale-covariant — candidates landing in the same basin converge to the same
+# objective only to the descent tolerance (~1e-14), and switching on that noise would forfeit
+# covariance, since the incumbent (ordered geometric-mean first) is the most covariant start.
+# Real basin improvements are far larger. This is the single source of the selection rule, so a
+# caller that captures `objs` (below) recovers the winner exactly, without re-deriving it.
+function _multistart_select(objs)
+    besti = firstindex(objs)
+    Ebest = objs[besti]
+    for k in eachindex(objs)
+        objs[k] < Ebest * (1 - _MULTISTART_SWITCHTOL) && ((besti, Ebest) = (k, objs[k]))
     end
-    return best
+    return besti
+end
+
+# Scale-covariant multistart for the symmetric AbsLinear{2} soft cover. Runs the single-start
+# coordinate descent `_abslinear2_iter!` from the candidate list built by
+# `_soft_symcover_abslinear2_inits` and returns the candidate `_multistart_select` picks. Every
+# start co-varies with a diagonal rescaling `D*A*D` and the objective is scale-invariant, so the
+# selection is scale-covariant; passing the same `rng` state across the two frames (as the
+# default fresh-seeded RNG does) makes it reproducible.
+#
+# For cheap provenance auditing (which initialization earned the selection), pass `labels` and/or
+# `objs` as empty vectors: they are filled in place with every candidate's label and final
+# objective, in candidate order, so the winner is `labels[_multistart_select(objs)]`.
+function _soft_symcover_abslinear2(A::AbstractMatrix, iter::Int, starts::Int, σ::Real, rng;
+                                   labels=nothing, objs=nothing)
+    labs, inits = _soft_symcover_abslinear2_inits(A, starts, σ, rng)
+    E = map(inits) do a
+        _abslinear2_iter!(a, A, iter)
+        cover_objective(AbsLinear{2}(), a, A)
+    end
+    labels === nothing || append!(labels, labs)
+    objs === nothing || append!(objs, E)
+    return inits[_multistart_select(E)]
 end
 
 # Coordinate-descent iteration for AbsLinear{2} soft cover.
