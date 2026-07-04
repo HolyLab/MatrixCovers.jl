@@ -727,9 +727,19 @@ end
 #   (1 - d/x²)² + ∑_{j≠k} (1 - c_j/x)²
 # where d = |A[k,k]| and c_j = |A[k,j]|/a[j].
 # Closed form when d=0 (x = s2/s1); Newton on a cubic otherwise.
-function _abslinear2_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int) where T
+#
+# `iter` bounds the sweeps; the descent exits early once every coordinate's
+# stationarity residual r_k = ∑_j (1 - ρ)ρ (ρ = |A[k,j]|/(a[k]a[j])), the
+# gradient of the objective in log a[k], has magnitude below `tol` at the start
+# of a sweep. The residual is available for free from the sums already formed
+# for the update (r_k = s1/a[k] - s2/a[k]² + d/a[k]² - d²/a[k]⁴), it is the exact
+# quantity optimality demands be zero, and it is scale-invariant (each ρ is), so
+# covariant restarts of a rescaled problem exit on the same sweep and the
+# multistart selection stays covariant.
+function _abslinear2_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol::Real=1e-8) where T
     ax = eachindex(a)
     for _ in 1:iter
+        maxres = zero(T)
         for k in ax
             d  = T(abs(A[k, k]))   # diagonal entry
             s1 = zero(T)            # ∑_{j≠k: A[k,j]≠0} |A[k,j]| / a[j]
@@ -742,10 +752,16 @@ function _abslinear2_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int) w
                 s1 += Akj * inv_aj
                 s2 += Akj^2 * inv_aj^2
             end
+            ak = a[k]
+            if !iszero(ak)
+                inv_ak = one(T) / ak
+                res = (s1 - (s2 - d) * inv_ak) * inv_ak - d^2 * inv_ak^4
+                maxres = max(maxres, abs(res))
+            end
             if iszero(s1)
-                a[k] = iszero(d) ? zero(T) : sqrt(d)
+                x = iszero(d) ? zero(T) : sqrt(d)
             elseif iszero(d)
-                a[k] = s2 / s1
+                x = s2 / s1
             else
                 # The cubic g(x) = s1*x³ + (d - s2)*x² - d² has exactly one positive root
                 # (one Descartes sign change), and it is bracketed by √d and s2/s1:
@@ -767,9 +783,10 @@ function _abslinear2_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int) w
                     xn = x - gx/gxp
                     x = lo < xn < hi ? xn : sqrt(lo * hi)
                 end
-                a[k] = x
             end
+            a[k] = x
         end
+        maxres <= T(tol) && break
     end
     return a
 end
@@ -778,10 +795,17 @@ end
 # Each coordinate a[k] is updated to minimize ∑_j |1 - |A[k,j]|/(a[k]*a[j])|.
 # For the off-diagonal sum, the minimizer is the weighted median of c_j with weights c_j,
 # where c_j = |A[k,j]|/a[j].  When A[k,k] ≠ 0 we also compare against sqrt(|A[k,k]|).
-function _abslinear1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int) where T
+#
+# `iter` bounds the sweeps; the descent exits early once the largest relative
+# coordinate movement in a sweep drops to `tol`. The median update reaches an
+# exact fixed point (identical ordering selects the same value), so movement
+# falls to zero there. Relative movement is scale-invariant, so covariant
+# restarts of a rescaled problem exit on the same sweep.
+function _abslinear1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol::Real=1e-12) where T
     ax  = eachindex(a)
     buf = Vector{T}(undef, length(ax))   # reusable buffer for c_j values
     for _ in 1:iter
+        maxrel = zero(T)
         for k in ax
             d  = T(abs(A[k, k]))
             nc = 0
@@ -795,30 +819,35 @@ function _abslinear1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int) w
                 buf[nc] = Akj / aj
             end
             if nc == 0
-                a[k] = iszero(d) ? zero(T) : sqrt(d)
-                continue
-            end
-            # Weighted median of buf[1:nc] with weights buf[1:nc]
-            c = view(buf, 1:nc)
-            sort!(c)
-            total = sum(c)
-            half  = total / 2
-            wm    = c[1]
-            cum   = zero(T)
-            for ci in c
-                cum += ci
-                wm   = ci
-                cum >= half && break
-            end
-            if iszero(d)
-                a[k] = wm
+                x = iszero(d) ? zero(T) : sqrt(d)
             else
-                # Compare objective at weighted median vs sqrt(d)
-                sq_d = sqrt(d)
-                obj_at(x) = abs(1 - d/x^2) + sum(abs(1 - ci/x) for ci in c)
-                a[k] = obj_at(wm) <= obj_at(sq_d) ? wm : sq_d
+                # Weighted median of buf[1:nc] with weights buf[1:nc]
+                c = view(buf, 1:nc)
+                sort!(c)
+                total = sum(c)
+                half  = total / 2
+                wm    = c[1]
+                cum   = zero(T)
+                for ci in c
+                    cum += ci
+                    wm   = ci
+                    cum >= half && break
+                end
+                if iszero(d)
+                    x = wm
+                else
+                    # Compare objective at weighted median vs sqrt(d)
+                    sq_d = sqrt(d)
+                    obj_at(x) = abs(1 - d/x^2) + sum(abs(1 - ci/x) for ci in c)
+                    x = obj_at(wm) <= obj_at(sq_d) ? wm : sq_d
+                end
             end
+            ak  = a[k]
+            den = max(abs(x), abs(ak))
+            iszero(den) || (maxrel = max(maxrel, abs(x - ak) / den))
+            a[k] = x
         end
+        maxrel <= T(tol) && break
     end
     return a
 end
@@ -830,10 +859,17 @@ end
 # |2α[k] - log|A[k,k]|| = 2|α[k] - log|A[k,k]|/2|, i.e. the point log|A[k,k]|/2 with weight two,
 # represented here by inserting it twice so a plain median carries the weighting. The AbsLog{1}
 # minimum is a flat basin; the lower median is chosen for a deterministic, scale-covariant result.
-function _abslog1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int) where T
+#
+# `iter` bounds the sweeps; the descent exits early once the largest relative
+# coordinate movement in a sweep drops to `tol`. The median update reaches an
+# exact fixed point, so movement falls to zero there. Relative movement is
+# scale-invariant, so covariant restarts of a rescaled problem exit on the same
+# sweep.
+function _abslog1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol::Real=1e-12) where T
     ax  = eachindex(a)
     buf = Vector{T}(undef, 2 * length(ax) + 1)   # off-diagonals (×1) + diagonal (×2)
     for _ in 1:iter
+        maxrel = zero(T)
         for k in ax
             iszero(a[k]) && continue    # zero rows/columns stay uncovered
             n = 0
@@ -854,8 +890,13 @@ function _abslog1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int) wher
             n == 0 && continue
             c = view(buf, 1:n)
             sort!(c)
-            a[k] = exp(c[(n + 1) ÷ 2])   # lower median
+            x   = exp(c[(n + 1) ÷ 2])   # lower median
+            ak  = a[k]
+            den = max(abs(x), abs(ak))
+            iszero(den) || (maxrel = max(maxrel, abs(x - ak) / den))
+            a[k] = x
         end
+        maxrel <= T(tol) && break
     end
     return a
 end
