@@ -10,7 +10,10 @@ export cover, symcover, soft_symcover, soft_cover
 export symcover_min, cover_min, soft_symcover_min
 export dotabs
 
-include("covers.jl")
+include("penalties.jl")
+include("heuristic_covers.jl")
+include("soft_covers.jl")
+include("minimal_covers.jl")
 include("structured.jl")
 
 
