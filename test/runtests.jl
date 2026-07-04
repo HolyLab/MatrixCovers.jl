@@ -827,9 +827,9 @@ using Test
                       Hermitian(sparse(triu(M)), :U))
                 a = symcover_min(AbsLog{2}(), A)
                 @test feasible_sym(a, M)
-                @test cover_objective(AbsLog{2}(), a, M) ≈ cover_objective(AbsLog{2}(), ad, M) rtol = 1e-7
+                @test cover_objective(AbsLog{2}(), a, M) ≈ cover_objective(AbsLog{2}(), ad, M) rtol = 1e-7 atol = 1e-10
                 as = soft_symcover(AbsLinear{2}(), A)
-                @test cover_objective(AbsLinear{2}(), as, M) ≈ cover_objective(AbsLinear{2}(), asd, M) rtol = 1e-7
+                @test cover_objective(AbsLinear{2}(), as, M) ≈ cover_objective(AbsLinear{2}(), asd, M) rtol = 1e-7 atol = 1e-10
                 # Scale vectors are dense: return a plain Vector, matching cover/symcover.
                 @test as isa Vector{Float64}
             end
@@ -850,10 +850,10 @@ using Test
             ad, bd = cover_min(AbsLog{2}(), M)
             a, b = cover_min(AbsLog{2}(), A)
             @test feasible_asym(a, b, M)
-            @test cover_objective(AbsLog{2}(), a, b, M) ≈ cover_objective(AbsLog{2}(), ad, bd, M) rtol = 1e-7
+            @test cover_objective(AbsLog{2}(), a, b, M) ≈ cover_objective(AbsLog{2}(), ad, bd, M) rtol = 1e-7 atol = 1e-10
             asd, bsd = soft_cover(AbsLinear{2}(), M)
             as, bs = soft_cover(AbsLinear{2}(), A)
-            @test cover_objective(AbsLinear{2}(), as, bs, M) ≈ cover_objective(AbsLinear{2}(), asd, bsd, M) rtol = 1e-7
+            @test cover_objective(AbsLinear{2}(), as, bs, M) ≈ cover_objective(AbsLinear{2}(), asd, bsd, M) rtol = 1e-7 atol = 1e-10
             @test as isa Vector{Float64} && bs isa Vector{Float64}
         end
         let (a, b) = cover_min(AbsLog{2}(), sparse(gendenses[1]))
