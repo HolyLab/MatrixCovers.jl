@@ -608,15 +608,18 @@ See also: [`symcover`](@ref), [`cover_objective`](@ref), [`soft_symcover_min`](@
 
 # Examples
 
-```jldoctest; filter = r"(\\d+\\.\\d{6})\\d+" => s"\\1"
+The multistart converges to the covariant minimizer to within its objective
+tolerance; round to compare against exact values.
+
+```jldoctest
 julia> A = [4 -1; -1 0];
 
-julia> a = soft_symcover(A)
+julia> round.(soft_symcover(A); digits=4)
 2-element Vector{Float64}:
  2.0
  0.5
 
-julia> a = soft_symcover([0 1; 1 0])
+julia> round.(soft_symcover([0 1; 1 0]); digits=4)
 2-element Vector{Float64}:
  1.0
  1.0

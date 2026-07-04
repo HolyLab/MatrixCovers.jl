@@ -53,7 +53,7 @@ ratio_nz(n, d) = iszero(d) ? zero(n) / oneunit(d) : n / d
 function __init__()
     Base.Experimental.register_error_hint(MethodError) do io, exc, argtypes, kwargs
         if exc.f === symcover_min || exc.f === cover_min
-            printstyled(io, "\nThis method requires loading JuMP plus HiGHS (for AbsLog) or Ipopt (for AbsLinear)."; color=:yellow)
+            printstyled(io, "\nAbsLog{2} is solved natively; other penalties require loading JuMP plus HiGHS (for AbsLog{1}) or Ipopt (for AbsLinear)."; color=:yellow)
             return true
         end
         if exc.f === soft_symcover_min

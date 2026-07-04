@@ -15,10 +15,6 @@ C_{ij} \;\geq\; |A_{ij}| \quad \text{for all } i, j.
 For a symmetric matrix the cover is symmetric (`b = a`), so a single vector
 suffices: `a[i] * a[j] >= abs(A[i, j])`.
 
-For symmetric matrices, this package also supports **diagonalized covers**,
-where `C = Diagonal(d) + a * a'` is a cover for `A`. Here, both `a` and `d` are
-nonnegative vectors.
-
 ## Why covers?
 
 Covers are the natural **scale-covariant** representation of a matrix.  If you
@@ -32,12 +28,12 @@ A concrete example: a 3×3 matrix whose rows and columns correspond to physical
 variables with different units (position in meters, velocity in m/s, force
 in N):
 
-```jldoctest coverones; filter = r"(\d+\.\d{2})\d+" => s"\1"
+```jldoctest coverones
 julia> using ScaleInvariantAnalysis
 
 julia> A = [1e6 1e3 1.0; 1e3 1.0 1e-3; 1.0 1e-3 1e-6];
 
-julia> a = symcover(A)
+julia> round.(symcover(A); digits=6)
 3-element Vector{Float64}:
  1000.0
     1.0
@@ -47,17 +43,30 @@ julia> a = symcover(A)
 The cover `a` captures the natural per-variable scale.  The normalized matrix
 `A ./ (a .* a')` is all-ones and scale-invariant.
 
-## Measuring cover quality
+## Penalty functions
 
 A cover is valid as long as every constraint is satisfied, but tighter covers
-better capture the scaling of `A`.  The *log-excess* of an entry is
-`log(a[i] * b[j] / abs(A[i, j])) >= 0`; it is zero when the constraint is
-exactly tight.  Two summary statistics aggregate these excesses:
+better capture the scaling of `A`.  Cover quality is measured through the ratios
+`r_{ij} = |A[i,j]| / (a[i] * b[j])`: a hard cover has every `r ≤ 1`, and `r = 1`
+means the constraint is exactly tight.  A **penalty function** `ϕ` turns those
+ratios into a scalar objective
 
-- [`cover_lobjective`](@ref) — sum of log-excesses (L1 in log space).
-- [`cover_qobjective`](@ref) — sum of squared log-excesses (L2 in log space).
+```math
+\sum_{i,j} \phi\!\left(\frac{|A_{ij}|}{a_i\, b_j}\right),
+```
 
-Both equal zero if and only if every constraint is tight.
+which the solvers minimize.  Two penalty families are provided:
+
+- [`AbsLog`](@ref)`{p}` — `ϕ(r) = |log r|^p` (and `ϕ(0) = 0`).  Convex in log
+  space; the natural penalty for *hard* covers, where `r ≤ 1` and `|log r|`
+  is the log-excess of a constraint.  `AbsLog{1}` sums the log-excesses (L1),
+  `AbsLog{2}` sums their squares (L2).
+- [`AbsLinear`](@ref)`{p}` — `ϕ(r) = |1 - r|^p`.  Continuous at `r = 0`
+  (`ϕ(0) = 1`), so zero entries of `A` contribute a bounded penalty.  This is the
+  penalty used by the *soft* covers, where `r > 1` (an uncovered entry) is
+  allowed but penalized.
+
+[`cover_objective`](@ref) evaluates either penalty for a given cover:
 
 ```jldoctest quality; filter = r"(\d+\.\d{6})\d+" => s"\1"
 julia> using ScaleInvariantAnalysis
@@ -69,25 +78,49 @@ julia> a = symcover(A)
  2.0
  3.0
 
-julia> cover_lobjective(a, A)
+julia> cover_objective(AbsLog{1}(), a, A)   # sum of log-excesses (L1)
 2.1972245773362196
 
-julia> cover_qobjective(a, A)
+julia> cover_objective(AbsLog{2}(), a, A)   # sum of squared log-excesses (L2)
 2.413897921625164
 ```
 
-Here's an example where the quadratically-optimal cover differs slightly from the one returned by `cover`:
+Both objectives are zero if and only if every constraint is exactly tight.
 
-```jldoctest quality2; filter = r"(\d+\.\d{6})\d+" => s"\1"
-julia> using ScaleInvariantAnalysis, JuMP, HiGHS
+## Choosing a cover algorithm
+
+| Function | Symmetric | Constraint | Objective minimized | Requires |
+|---|---|---|---|---|
+| [`symcover`](@ref) | yes | hard (`r ≤ 1`) | heuristic | — |
+| [`cover`](@ref) | no | hard (`r ≤ 1`) | heuristic | — |
+| [`symcover_min`](@ref) | yes | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
+| [`cover_min`](@ref) | no | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`) | native for `AbsLog{2}`; else JuMP |
+| [`soft_symcover`](@ref) | yes | soft (penalized) | `AbsLinear{2}` (or `AbsLog`, `AbsLinear{1}`) | — |
+| [`soft_cover`](@ref) | no | soft (penalized) | `AbsLinear{2}` | — |
+| [`soft_symcover_min`](@ref) | yes | soft (penalized) | `AbsLog{2}`, `AbsLinear` | JuMP |
+
+**[`symcover`](@ref), [`cover`](@ref), [`soft_symcover`](@ref), and
+[`soft_cover`](@ref) are recommended for production use.**  The hard-cover
+heuristics run in O(mn) time for an ``m\times n`` matrix and often land within a
+few percent of the objective-minimal cover (see the quality tests involving
+`test/testmatrices.jl`); the soft covers add a scale-covariant multistart to
+escape poor local minima of the non-convex `AbsLinear` objective.
+
+### Objective-minimal hard covers
+
+[`symcover_min`](@ref) and [`cover_min`](@ref) return a cover that minimizes the
+chosen penalty subject to the hard constraint.  For the default `AbsLog{2}`
+penalty they are solved natively (no external solver) by penalty-continuation
+with a damped semismooth Newton iteration:
+
+```jldoctest qmin; filter = r"(\d+\.\d{6})\d+" => s"\1"
+julia> using ScaleInvariantAnalysis
 
 julia> A = [1 2 3; 6 5 4];
 
-julia> a, b = cover(A)
-([1.2674308473260654, 3.4759059767492304], [1.7261686708831454, 1.61137045961268, 2.366993044495631])
+julia> a, b = cover(A);          # fast heuristic
 
-julia> aq, bq = cover_qmin(A)
-([1.1986299970143055, 3.25358233351279], [1.8441211516912772, 1.6685716234216104, 2.5028574351324164])
+julia> aq, bq = cover_min(AbsLog{2}(), A);   # AbsLog{2}-minimal, native
 
 julia> a * b'
 2×3 Matrix{Float64}:
@@ -100,35 +133,22 @@ julia> aq * bq'
  6.0      5.42884  8.14325
 ```
 
-## Choosing a cover algorithm
-
-| Function | Symmetric | Minimizes | Requires |
-|---|---|---|---|
-| [`symcover`](@ref) | yes | (fast heuristic) | — |
-| [`cover`](@ref) | no | (fast heuristic) | — |
-| [`symdiagcover`](@ref) | yes | (fast heuristic) | — |
-| [`symcover_lmin`](@ref) | yes | `cover_lobjective` | JuMP + HiGHS |
-| [`cover_lmin`](@ref) | no | `cover_lobjective` | JuMP + HiGHS |
-| [`symcover_qmin`](@ref) | yes | `cover_qobjective` | JuMP + HiGHS |
-| [`cover_qmin`](@ref) | no | `cover_qobjective` | JuMP + HiGHS |
-
-**`symcover`, `cover`, and `symdiagcover` are recommended for production use.**
-They run in O(mn) time for an ``m\times n`` matrix `A` and often land within a few
-percent of the `cover_lobjective`-optimal cover (see the quality tests involving
-`test/testmatrices.jl`).
-
-The `*_lmin` and `*_qmin` variants solve a convex program (via
-[JuMP](https://jump.dev/) and [HiGHS](https://highs.dev/)) and return a
-global optimum of the respective objective.  They are loaded on demand as a
-package extension — simply load both libraries before calling them:
+The native solver is near-exact (relative objective excess typically a few
+``\times 10^{-7}``, growing slowly with problem size) and orders of magnitude
+faster than a general-purpose convex solver.  The other penalties — `AbsLog{1}`
+(a linear program) and the non-convex `AbsLinear` variants — are solved through
+[JuMP](https://jump.dev/) and are loaded on demand as a package extension:
 
 ```julia
-using JuMP, HiGHS
+using JuMP, HiGHS   # HiGHS for AbsLog penalties
 using ScaleInvariantAnalysis
 
-a      = symcover_lmin(A)     # globally linear-minimal symmetric cover
-a, b   = cover_qmin(A)        # globally quadratic-minimal general cover
+a    = symcover_min(AbsLog{1}(), A)   # L1-minimal symmetric hard cover
+a, b = cover_min(AbsLog{1}(), A)      # L1-minimal general hard cover
 ```
+
+The [`soft_symcover_min`](@ref) soft solver is likewise JuMP-backed (HiGHS for
+`AbsLog{2}`, Ipopt for the `AbsLinear` penalties).
 
 ## Index of available tools
 
