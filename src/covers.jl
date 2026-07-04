@@ -339,24 +339,50 @@ function _symcover_abslinear_init!(a::AbstractVector{T}, A::AbstractMatrix; cach
     # Feasibility requires a[i]*a[j] >= |A[i,j]|; move along v by the least t
     # achieving it, using deficit = log|A[i,j]| - log a[i] - log a[j]. Whenever
     # |A[i,j]|>0 both a[i],a[j]>0 (a zero entry of `a` means an all-zero row), so
-    # log a[i] is well defined. Pairs already feasible (Aij <= a[i]*a[j]) are
-    # skipped before the logarithm, the loop's dominant per-entry cost; for the
-    # rest, `cache` supplies log|A[i,j]| when present so it need not be recomputed.
+    # log a[i] is well defined.
+    #
+    # The logarithm and division are needed only for entries that raise the
+    # running maximum t_feas: an entry can beat it only if its deficit exceeds
+    # s*t_feas >= 2*vmin*t_feas (s = v[i]+v[j], vmin the least participating
+    # eigenvector entry), i.e. only if |A[i,j]| > exp(2*vmin*t_feas)*a[i]*a[j].
+    # Maintaining that threshold reduces the scan to one multiply-and-compare
+    # per entry, with log/divide costs only along the increasing-max chain.
+    # (Rounding of exp/log can misjudge the filter by ~1 ulp of t_feas; t_feas
+    # is only accurate to rounding anyway.) For chain entries, `cache` supplies
+    # log|A[i,j]| when present so it need not be recomputed.
     lα = similar(a)
+    vmin = T(Inf)
     for i in ax
-        lα[i] = iszero(a[i]) ? zero(T) : log(a[i])
+        if iszero(a[i])
+            lα[i] = zero(T)
+        else
+            lα[i] = log(a[i])
+            vmin = min(vmin, T(v[i]))
+        end
     end
     t_feas = zero(T)
+    thresh = one(T)
     for j in ax
         aj, lαj = a[j], lα[j]
         for i in first(ax):j
             Aij = abs(A[i, j])
             iszero(Aij) && continue
+            if thresh < T(Inf)
+                # a rounded-to-Inf product means the true product exceeds
+                # floatmax >= Aij, so skipping remains conservative
+                Aij <= thresh * (a[i] * aj) && continue
+            else
+                # exp overflowed: fall back to skipping only feasible entries
+                Aij <= a[i] * aj && continue
+            end
             s = T(v[i]) + T(v[j])
             iszero(s) && continue
-            Aij <= a[i] * aj && continue
             lAij = cache === nothing ? log(Aij) : cache[i, j]
-            t_feas = max(t_feas, (lAij - lα[i] - lαj) / s)
+            t = (lAij - lα[i] - lαj) / s
+            if t > t_feas
+                t_feas = t
+                thresh = exp(2 * vmin * t_feas)
+            end
         end
     end
     for i in ax
@@ -1062,9 +1088,12 @@ function tighten_cover!(a::AbstractVector{T}, A::AbstractMatrix; iter::Int=3) wh
     aratio = similar(a)
     for _ in 1:iter
         fill!(aratio, typemax(T))
+        # A is assumed symmetric and only the upper triangle is read; each pair's
+        # ratio updates both endpoints, so this sees the same multiset of ratios
+        # as a full-grid sweep at half the cost.
         for j in eachindex(a)
             aratioj, aj = aratio[j], a[j]
-            for i in eachindex(a)
+            for i in first(ax):j
                 Aij = T(abs(A[i, j]))
                 r = ifelse(iszero(Aij), typemax(T), a[i] * aj / Aij)
                 aratio[i] = min(aratio[i], r)
