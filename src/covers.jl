@@ -974,7 +974,8 @@ end
 # single-start alternating least squares `_mscm_als!` from a list of `(a, b)`
 # starting points and returns the pair with the lowest scale-invariant
 # `cover_objective`. Deterministic starts: the geometric-mean init `cover(A; iter=0)`
-# (also the perturbation base) and the tightened hard cover `cover(A)`. Remaining
+# (also the perturbation base) and the tightened hard cover `cover(A)`, obtained by
+# tightening a copy of the geometric-mean init so the shared passes run once. Remaining
 # starts, up to `starts` total, are multiplicative log-normal perturbations
 # `a_g .* exp.(σ .* ξ)`, `b_g .* exp.(σ .* η)` of the geometric-mean point, `ξ`/`η`
 # drawn from `rng`. Every start co-varies with an independent row/column rescaling
@@ -986,7 +987,10 @@ function _soft_cover_abslinear2(A::AbstractMatrix, iter::Int, starts::Int, σ::R
     T = float(eltype(A))
     ag, bg = cover(A; iter=0)   # geometric-mean init (boosted, untightened); perturbation base
     inits = [(copy(ag), copy(bg))]
-    length(inits) < starts && push!(inits, cover(A))
+    # The tightened hard cover `cover(A)` differs from `(ag, bg)` only by its
+    # tightening iterations, so tighten a copy rather than recomputing the shared
+    # geometric-mean and feasibility passes. `iter=3` matches `cover`'s default.
+    length(inits) < starts && push!(inits, tighten_cover!(copy(ag), copy(bg), A; iter=3))
     while length(inits) < starts
         a = similar(ag); b = similar(bg)
         for i in axes(A, 1)
