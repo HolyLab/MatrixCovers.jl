@@ -386,9 +386,14 @@ using Test
         @test winner == "feasible"
         # The instrumented call returns exactly what the public entry point selects.
         @test a == soft_symcover(Afe)
-        # `feasible` wins by a genuine basin gap, not descent-tolerance noise.
+        # `feasible` wins by a genuine basin gap, not descent-tolerance noise: it is
+        # co-optimal in the best basin (a perturbed start may also reach that basin and
+        # tie it to within the descent tolerance), and that basin beats every start in a
+        # different basin by a wide margin.
         fi = findfirst(==("feasible"), labels)
-        @test objs[fi] < minimum(objs[k] for k in eachindex(objs) if k != fi) * (1 - 1e-3)
+        @test objs[fi] <= minimum(objs) * (1 + 1e-6)
+        other_basin = minimum(o for o in objs if o > objs[fi] * (1 + 1e-6))
+        @test objs[fi] < other_basin * (1 - 1e-3)
 
         # Selecting the `feasible` start preserves scale-covariance of the returned cover.
         d = [1.5, 0.3, 4.0, 0.7, 2.2]
