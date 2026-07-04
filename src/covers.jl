@@ -633,7 +633,8 @@ function soft_symcover(ϕ::AbsLog{2}, A::AbstractMatrix)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("soft_symcover requires a square matrix"))
     T = float(eltype(A))
-    a = similar(A, T, ax)
+    # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
+    a = similar(Array{T}, ax)
     unconstrained_min!(ϕ, a, A)   # analytical minimum; no iterations needed
     return a
 end
@@ -642,7 +643,8 @@ function soft_symcover(ϕ::AbsLog{1}, A::AbstractMatrix; iter::Int=20)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("soft_symcover requires a square matrix"))
     T = float(eltype(A))
-    a = similar(A, T, ax)
+    # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
+    a = similar(Array{T}, ax)
     unconstrained_min!(AbsLog{2}(), a, A)   # convex AbsLog{2} minimum: a good start
     _abslog1_iter!(a, A, iter)
     return a
@@ -693,7 +695,8 @@ const _MULTISTART_SWITCHTOL = 1e-9
 function _soft_symcover_abslinear2(A::AbstractMatrix, iter::Int, starts::Int, σ::Real, rng)
     ax = axes(A, 1)
     T = float(eltype(A))
-    ag = similar(A, T, ax)
+    # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
+    ag = similar(Array{T}, ax)
     unconstrained_min!(AbsLog{2}(), ag, A)   # geometric mean; also the perturbation base
     inits = [copy(ag)]
     length(inits) < starts && push!(inits, symcover(AbsLinear{2}(), A))

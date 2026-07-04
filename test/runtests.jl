@@ -749,9 +749,18 @@ using Test
                 @test cover_objective(AbsLog{2}(), a, M) ≈ cover_objective(AbsLog{2}(), ad, M) rtol = 1e-7
                 as = soft_symcover(AbsLinear{2}(), A)
                 @test cover_objective(AbsLinear{2}(), as, M) ≈ cover_objective(AbsLinear{2}(), asd, M) rtol = 1e-7
+                # Scale vectors are dense: return a plain Vector, matching cover/symcover.
+                @test as isa Vector{Float64}
             end
         end
         @test symcover_min(AbsLog{2}(), sparse(symdenses[1])) isa Vector{Float64}
+        # Every soft_symcover penalty returns a dense Vector on sparse-backed input.
+        let Ssp = sparse(symdenses[1])
+            for ϕ in (AbsLog{2}(), AbsLog{1}(), AbsLinear{2}(), AbsLinear{1}())
+                @test soft_symcover(ϕ, Ssp) isa Vector{Float64}
+                @test soft_symcover(ϕ, Symmetric(Ssp)) isa Vector{Float64}
+            end
+        end
 
         gendenses = [[1.0 2.0 0.0; 0.0 5.0 4.0; 3.0 0.0 6.0],
                      [2.0 0.0; 0.0 3.0]]   # second is diagonal: disconnected support
@@ -764,6 +773,7 @@ using Test
             asd, bsd = soft_cover(AbsLinear{2}(), M)
             as, bs = soft_cover(AbsLinear{2}(), A)
             @test cover_objective(AbsLinear{2}(), as, bs, M) ≈ cover_objective(AbsLinear{2}(), asd, bsd, M) rtol = 1e-7
+            @test as isa Vector{Float64} && bs isa Vector{Float64}
         end
         let (a, b) = cover_min(AbsLog{2}(), sparse(gendenses[1]))
             @test a isa Vector{Float64} && b isa Vector{Float64}
