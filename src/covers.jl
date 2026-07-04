@@ -1020,48 +1020,58 @@ function soft_cover(ϕ::AbsLinear{1}, A::AbstractMatrix; iter::Int=100, starts::
     return a, b
 end
 
-# Scale-covariant multistart for the asymmetric AbsLinear{2} soft cover. Runs the
-# single-start alternating least squares `_mscm_als!` from a list of `(a, b)`
-# starting points and returns the pair with the lowest scale-invariant
-# `cover_objective`. Deterministic starts: the geometric-mean init `cover(A; iter=0)`
-# (also the perturbation base) and the tightened hard cover `cover(A)`, obtained by
-# tightening a copy of the geometric-mean init so the shared passes run once. Remaining
-# starts, up to `starts` total, are multiplicative log-normal perturbations
-# `a_g .* exp.(σ .* ξ)`, `b_g .* exp.(σ .* η)` of the geometric-mean point, `ξ`/`η`
-# drawn from `rng`. Every start co-varies with an independent row/column rescaling
-# `D_r*A*D_c` (the perturbation factors do not depend on the frame) and the
-# objective is scale-invariant, so the argmin is scale-covariant; passing the same
-# `rng` state across the two frames (as the default fresh-seeded RNG does) makes the
-# selection reproducible.
-function _soft_cover_abslinear2(A::AbstractMatrix, iter::Int, starts::Int, σ::Real, rng)
+# Labeled `(a, b)` candidate starts for the asymmetric AbsLinear{2} multistart, in selection
+# order. Deterministic starts: the geometric-mean init `cover(A; iter=0)` (also the perturbation
+# base) and the tightened hard cover `cover(A)`, obtained by tightening a copy of the
+# geometric-mean init so the shared passes run once. Remaining slots, up to `starts` total, are
+# multiplicative log-normal perturbations `a_g .* exp.(σ .* ξ)`, `b_g .* exp.(σ .* η)` of the
+# geometric-mean point, `ξ`/`η` drawn from `rng` (drawn for every index so the stream is
+# frame-independent).
+function _soft_cover_abslinear2_inits(A::AbstractMatrix, starts::Int, σ::Real, rng)
     T = float(eltype(A))
     ag, bg = cover(A; iter=0)   # geometric-mean init (boosted, untightened); perturbation base
+    labels = ["geomean"]
     inits = [(copy(ag), copy(bg))]
-    # The tightened hard cover `cover(A)` differs from `(ag, bg)` only by its
-    # tightening iterations, so tighten a copy rather than recomputing the shared
-    # geometric-mean and feasibility passes. `iter=3` matches `cover`'s default.
-    length(inits) < starts && push!(inits, tighten_cover!(copy(ag), copy(bg), A; iter=3))
+    # The tightened hard cover `cover(A)` differs from `(ag, bg)` only by its tightening
+    # iterations, so tighten a copy rather than recomputing the shared geometric-mean and
+    # feasibility passes. `iter=3` matches `cover`'s default.
+    length(inits) < starts && (push!(labels, "hardcover"); push!(inits, tighten_cover!(copy(ag), copy(bg), A; iter=3)))
+    k = 0
     while length(inits) < starts
         a = similar(ag); b = similar(bg)
         for i in axes(A, 1)
-            ξ = randn(rng)                    # draw for every index so the stream is frame-independent
+            ξ = randn(rng)
             a[i] = ag[i] > 0 ? ag[i] * exp(T(σ) * T(ξ)) : zero(T)
         end
         for j in axes(A, 2)
             η = randn(rng)
             b[j] = bg[j] > 0 ? bg[j] * exp(T(σ) * T(η)) : zero(T)
         end
-        push!(inits, (a, b))
+        k += 1; push!(labels, "rand$k"); push!(inits, (a, b))
     end
-    abest, bbest = inits[1]; _mscm_als!(abest, bbest, A, iter)
-    Ebest = cover_objective(AbsLinear{2}(), abest, bbest, A)
-    for k in 2:length(inits)
-        a, b = inits[k]; _mscm_als!(a, b, A, iter)
-        E = cover_objective(AbsLinear{2}(), a, b, A)
-        # Switch only on a genuine relative improvement (see `_soft_symcover_abslinear2`).
-        E < Ebest * (1 - _MULTISTART_SWITCHTOL) && ((abest, bbest, Ebest) = (a, b, E))
+    return labels, inits
+end
+
+# Scale-covariant multistart for the asymmetric AbsLinear{2} soft cover. Runs the single-start
+# alternating least squares `_mscm_als!` from the candidate list built by
+# `_soft_cover_abslinear2_inits` and returns the pair `_multistart_select` picks. Every start
+# co-varies with an independent row/column rescaling `D_r*A*D_c` and the objective is
+# scale-invariant, so the selection is scale-covariant; passing the same `rng` state across the
+# two frames (as the default fresh-seeded RNG does) makes it reproducible.
+#
+# As for `_soft_symcover_abslinear2`, passing `labels`/`objs` as empty vectors fills them in
+# place with every candidate's label and final objective, so the winner is
+# `labels[_multistart_select(objs)]`.
+function _soft_cover_abslinear2(A::AbstractMatrix, iter::Int, starts::Int, σ::Real, rng;
+                                labels=nothing, objs=nothing)
+    labs, inits = _soft_cover_abslinear2_inits(A, starts, σ, rng)
+    E = map(inits) do (a, b)
+        _mscm_als!(a, b, A, iter)
+        cover_objective(AbsLinear{2}(), a, b, A)
     end
-    return abest, bbest
+    labels === nothing || append!(labels, labs)
+    objs === nothing || append!(objs, E)
+    return inits[_multistart_select(E)]
 end
 
 # Alternating least squares for the AbsLinear{2} soft cover in the inverse-scale variables

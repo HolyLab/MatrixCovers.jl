@@ -398,6 +398,15 @@ using Test
         # Gate off: a fully dense matrix (no zeros) never offers the `feasible` start.
         _, _, dense_labels, _ = provenance(Float64[4 1 2; 1 5 3; 2 3 6])
         @test "feasible" ∉ dense_labels
+
+        # The asymmetric multistart exposes provenance the same way (no `feasible` start there).
+        Ag = [1.0 2.0 3.0; 6.0 5.0 4.0]
+        albs = String[]; aobjs = Float64[]
+        ab = ScaleInvariantAnalysis._soft_cover_abslinear2(Ag, 100, 8, 2.0, MersenneTwister(0);
+                                                           labels=albs, objs=aobjs)
+        @test ab == soft_cover(Ag)
+        @test albs[ScaleInvariantAnalysis._multistart_select(aobjs)] in albs
+        @test "feasible" ∉ albs
     end
 
     @testset "dotabs" begin
