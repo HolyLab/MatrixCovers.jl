@@ -3,7 +3,7 @@ module SIASparseArrays
 using LinearAlgebra
 using SparseArrays
 using ScaleInvariantAnalysis
-using ScaleInvariantAnalysis: AbsLog, AbsLinear, unconstrained_min!, _abslog2_greatest_curvature_eigvec, _abslinear2_linesearch, _abslinear2_iter!, _abslinear1_iter!, _symcover_min_abslog2, _cover_min_abslog2
+using ScaleInvariantAnalysis: AbsLog, AbsLinear, unconstrained_min!, _abslog2_greatest_curvature_eigvec, _abslinear2_iter!, _abslinear1_iter!, _symcover_min_abslog2, _cover_min_abslog2
 
 # ============================================================
 # Private helpers (operate on a plain SparseMatrixCSC parent)

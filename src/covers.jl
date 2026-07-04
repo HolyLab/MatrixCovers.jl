@@ -276,55 +276,6 @@ function _abslog2_greatest_curvature_eigvec(nza::AbstractVector{<:Real})
     return iszero(nv) ? v : v ./ nv
 end
 
-# 1D search minimizing the AbsLinear{2} objective along the ray α₀ + t*v in log space.
-# Uses a coarse grid scan followed by golden-section refinement.
-function _abslinear2_linesearch(α₀::AbstractVector, v::AbstractVector, A::AbstractMatrix)
-    ax = eachindex(α₀)
-    function f(t)
-        s = 0.0
-        for j in ax
-            for i in ax
-                Aij = abs(A[i, j])
-                # AbsLinear: zero entries contribute 1 regardless of t
-                if iszero(Aij)
-                    s += 1.0
-                    continue
-                end
-                q = Aij * exp(-α₀[i] - t*v[i] - α₀[j] - t*v[j])
-                s += (1 - q)^2
-            end
-        end
-        return s
-    end
-
-    # Coarse scan
-    best_t, best_f = 0.0, f(0.0)
-    for t in (-3.0, -2.0, -1.0, -0.5, 0.5, 1.0, 2.0, 3.0)
-        ft = f(t)
-        if ft < best_f
-            best_f = ft
-            best_t = t
-        end
-    end
-
-    # Golden-section refinement around best_t
-    ρ = 2.0 - (1.0 + sqrt(5.0)) / 2.0   # 2 - φ = 1/φ²
-    a, b = best_t - 0.6, best_t + 0.6
-    c, d = a + ρ*(b-a), b - ρ*(b-a)
-    fc, fd = f(c), f(d)
-    for _ in 1:30
-        if fc < fd
-            b = d; d = c; fd = fc
-            c = a + ρ*(b-a); fc = f(c)
-        else
-            a = c; c = d; fc = fd
-            d = b - ρ*(b-a); fd = f(d)
-        end
-        abs(b - a) < 1e-8 && break
-    end
-    return (a + b) / 2
-end
-
 # AbsLinear symmetric initialization. Start at the AbsLog{2} unconstrained
 # minimum, then move along the eigenvector of greatest Hessian curvature by the
 # smallest nonnegative distance that makes the cover feasible

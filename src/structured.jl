@@ -13,14 +13,6 @@ const PlusMinus1Banded = Union{SymTridiagonal, Bidiagonal, Tridiagonal}
 # Diagonal
 # ============================================================
 
-function tighten_cover!(a::AbstractVector{T}, D::Diagonal; iter::Int=3) where T
-    for i in eachindex(a, D.diag)
-        Dii = T(abs(D.diag[i]))
-        iszero(Dii) || (a[i] = sqrt(Dii))
-    end
-    return a
-end
-
 function tighten_cover!(a::AbstractVector{T}, b::AbstractVector{T}, D::Diagonal; iter::Int=3) where T
     for i in eachindex(a, b, D.diag)
         Dii = T(abs(D.diag[i]))
