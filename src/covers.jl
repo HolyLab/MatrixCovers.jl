@@ -50,7 +50,7 @@ penalty function `ϕ`. The two-argument form is for symmetric matrices where the
 is `a*a'`.
 
 Zero entries of `A` are handled according to `ϕ`:
-- `AbsLog{p}`: zero entries contribute 0 (φ(0) = 0 by convention; see manuscript section 2).
+- `AbsLog{p}`: zero entries contribute 0 (φ(0) = 0 by convention).
 - `AbsLinear{p}`: zero entries contribute 1 (φ(0) = |1-0|^p = 1).
 
 See also:
