@@ -11,10 +11,12 @@ natural scale-covariant representation of a matrix — under row/column diagonal
 scaling they transform exactly as the matrix entries do — making them a useful
 building block for scale-invariant numerical analysis.
 
-Fast O(n²) heuristics (`symcover`, `cover`) are provided for everyday use.
-Globally optimal covers minimizing a log-domain linear or quadratic objective
-(`symcover_lmin`, `cover_lmin`, `symcover_qmin`, `cover_qmin`) are available
-as an extension when JuMP and HiGHS are loaded.
+Fast O(mn) heuristics (`symcover`, `cover`) are provided for everyday use, along
+with *soft* covers (`soft_symcover`, `soft_cover`) that penalize under-coverage
+rather than forbid it.  Objective-minimal hard covers (`symcover_min`,
+`cover_min`) minimize a penalty subject to the coverage constraint: the default
+squared-log-excess penalty is solved natively, with no external solver, while
+the other penalties are available when JuMP and HiGHS (or Ipopt) are loaded.
 
 See the [documentation](https://HolyLab.github.io/ScaleInvariantAnalysis.jl/dev/)
 for motivation, examples, and a full API reference.

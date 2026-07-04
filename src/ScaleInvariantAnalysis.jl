@@ -2,11 +2,18 @@ module ScaleInvariantAnalysis
 
 using LinearAlgebra
 using PrecompileTools
+using Random
 
-export cover_lobjective, cover_qobjective, cover, symcover, symdiagcover, cover_lmin, symcover_lmin, cover_qmin, symcover_qmin
+export AbsLog, AbsLinear
+export cover_objective
+export cover, symcover, soft_symcover, soft_cover
+export symcover_min, cover_min, soft_symcover_min
 export dotabs
 
-include("covers.jl")
+include("penalties.jl")
+include("heuristic_covers.jl")
+include("soft_covers.jl")
+include("minimal_covers.jl")
 include("structured.jl")
 
 
@@ -47,10 +54,13 @@ ratio_nz(n, d) = iszero(d) ? zero(n) / oneunit(d) : n / d
 
 
 function __init__()
-    # Register an error-hint to explain why `symcover_qmin` etc may not be available
     Base.Experimental.register_error_hint(MethodError) do io, exc, argtypes, kwargs
-        if exc.f ∈ (symcover_qmin, symcover_lmin, cover_qmin, cover_lmin)
-            printstyled(io, "\nThis method requires loading the JuMP and HiGHS packages."; color=:yellow)
+        if exc.f === symcover_min || exc.f === cover_min
+            printstyled(io, "\nAbsLog{2} is solved natively; other penalties require loading JuMP plus HiGHS (for AbsLog{1}) or Ipopt (for AbsLinear)."; color=:yellow)
+            return true
+        end
+        if exc.f === soft_symcover_min
+            printstyled(io, "\nThis method requires loading JuMP plus HiGHS (for AbsLog{2}) or Ipopt (for AbsLinear)."; color=:yellow)
             return true
         end
     end
@@ -58,6 +68,7 @@ end
 
 @compile_workload begin
     symcover([1.0 0.1; 0.1 4.0])
+    soft_symcover([1.0 0.1; 0.1 4.0])
     cover([1.0 0.5; 0.1 4.0])
 end
 
