@@ -344,26 +344,39 @@ function _multistart_select(objs)
     return besti
 end
 
+# Shared driver for the AbsLinear{2} soft-cover multistarts: build the candidate list with
+# `inits_builder`, refine each candidate in place with `iterate!`, score it with `objective`,
+# and return the `_multistart_select` winner. `iterate!`/`objective` take the candidate itself
+# (a bare vector for the symmetric cover, an `(a, b)` tuple for the asymmetric one) so the same
+# driver serves both shapes.
+#
+# For cheap provenance auditing (which initialization earned the selection), pass `labels`
+# and/or `objs` as empty vectors: they are filled in place with every candidate's label and
+# final objective, in candidate order, so the winner is `labels[_multistart_select(objs)]`.
+function _multistart_run(inits_builder::F, iterate!::G, objective::H, A::AbstractMatrix,
+                          iter::Int, starts::Int, σ::Real, rng; labels=nothing, objs=nothing) where {F,G,H}
+    labs, inits = inits_builder(A, starts, σ, rng)
+    E = map(inits) do x
+        iterate!(x, A, iter)
+        objective(x, A)
+    end
+    labels === nothing || append!(labels, labs)
+    objs === nothing || append!(objs, E)
+    return inits[_multistart_select(E)]
+end
+
 # Scale-covariant multistart for the symmetric AbsLinear{2} soft cover. Runs the single-start
 # coordinate descent `_abslinear2_iter!` from the candidate list built by
 # `_soft_symcover_abslinear2_inits` and returns the candidate `_multistart_select` picks. Every
 # start co-varies with a diagonal rescaling `D*A*D` and the objective is scale-invariant, so the
 # selection is scale-covariant; passing the same `rng` state across the two frames (as the
 # default fresh-seeded RNG does) makes it reproducible.
-#
-# For cheap provenance auditing (which initialization earned the selection), pass `labels` and/or
-# `objs` as empty vectors: they are filled in place with every candidate's label and final
-# objective, in candidate order, so the winner is `labels[_multistart_select(objs)]`.
 function _soft_symcover_abslinear2(A::AbstractMatrix, iter::Int, starts::Int, σ::Real, rng;
                                    labels=nothing, objs=nothing)
-    labs, inits = _soft_symcover_abslinear2_inits(A, starts, σ, rng)
-    E = map(inits) do a
-        _abslinear2_iter!(a, A, iter)
-        cover_objective(AbsLinear{2}(), a, A)
-    end
-    labels === nothing || append!(labels, labs)
-    objs === nothing || append!(objs, E)
-    return inits[_multistart_select(E)]
+    return _multistart_run(_soft_symcover_abslinear2_inits,
+                            (a, A, iter) -> _abslinear2_iter!(a, A, iter),
+                            (a, A) -> cover_objective(AbsLinear{2}(), a, A),
+                            A, iter, starts, σ, rng; labels, objs)
 end
 
 # Coordinate-descent iteration for AbsLinear{2} soft cover.
@@ -592,20 +605,12 @@ end
 # co-varies with an independent row/column rescaling `D_r*A*D_c` and the objective is
 # scale-invariant, so the selection is scale-covariant; passing the same `rng` state across the
 # two frames (as the default fresh-seeded RNG does) makes it reproducible.
-#
-# As for `_soft_symcover_abslinear2`, passing `labels`/`objs` as empty vectors fills them in
-# place with every candidate's label and final objective, so the winner is
-# `labels[_multistart_select(objs)]`.
 function _soft_cover_abslinear2(A::AbstractMatrix, iter::Int, starts::Int, σ::Real, rng;
                                 labels=nothing, objs=nothing)
-    labs, inits = _soft_cover_abslinear2_inits(A, starts, σ, rng)
-    E = map(inits) do (a, b)
-        _mscm_als!(a, b, A, iter)
-        cover_objective(AbsLinear{2}(), a, b, A)
-    end
-    labels === nothing || append!(labels, labs)
-    objs === nothing || append!(objs, E)
-    return inits[_multistart_select(E)]
+    return _multistart_run(_soft_cover_abslinear2_inits,
+                            ((a, b), A, iter) -> _mscm_als!(a, b, A, iter),
+                            ((a, b), A) -> cover_objective(AbsLinear{2}(), a, b, A),
+                            A, iter, starts, σ, rng; labels, objs)
 end
 
 # Alternating least squares for the AbsLinear{2} soft cover in the inverse-scale variables

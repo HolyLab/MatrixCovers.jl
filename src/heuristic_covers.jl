@@ -13,7 +13,9 @@ Given a square matrix `A` assumed to be symmetric, return a vector `a` represent
 a symmetric hard cover of `A`: `a[i] * a[j] >= abs(A[i, j])` for all `i`, `j`.
 
 The penalty function `ϕ` controls what objective is approximately minimized:
-- `AbsLog{p}()` (p=1 or 2): initializes from the unconstrained AbsLog{2} minimum and tightens.
+- `AbsLog{p}()` (p=1 or 2): initializes from the unconstrained AbsLog{2} minimum, boosts to
+  feasibility by a greedy max-deficit rule (the most-violated entries are covered first), then
+  tightens.
 - `AbsLinear{p}()`: initializes from the AbsLog{2} minimum, moves along the eigenvector of
   greatest curvature to reach feasibility, then tightens.
 
@@ -50,31 +52,9 @@ function symcover(ϕ::AbsLog, A::AbstractMatrix; iter::Int=3)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("symcover requires a square matrix"))
     T = float(eltype(A))
-    a = similar(A, T, ax)
+    a = similar(Array{T}, ax)
     unconstrained_min!(AbsLog{2}(), a, A)
-    # Clamp diagonal: must have a[i]² >= |A[i,i]|
-    for i in ax
-        Aii = T(abs(A[i, i]))
-        if a[i]^2 < Aii
-            a[i] = sqrt(Aii)
-        end
-    end
-    # Boost off-diagonal: ensure a[i]*a[j] >= |A[i,j]| for all i<j
-    for j in ax
-        aj = a[j]
-        for i in first(ax):j-1
-            Aij = T(abs(A[i, j]))
-            iszero(Aij) && continue
-            ai = a[i]
-            aprod = ai * aj
-            if aprod < Aij
-                s = sqrt(Aij / aprod)
-                a[i] = s * ai
-                aj = s * aj
-            end
-        end
-        a[j] = aj
-    end
+    boost_feasible!(a, A)
     return tighten_cover!(a, A; iter)
 end
 
@@ -82,7 +62,7 @@ function symcover(ϕ::AbsLinear, A::AbstractMatrix; iter::Int=3, cache=nothing)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("symcover requires a square matrix"))
     T = float(eltype(A))
-    a = similar(A, T, ax)
+    a = similar(Array{T}, ax)
     _symcover_abslinear_init!(a, A; cache)
     return tighten_cover!(a, A; iter)
 end
@@ -93,8 +73,9 @@ end
 
 Given a matrix `A`, return vectors `a` and `b` such that `a[i] * b[j] >= abs(A[i, j])`
 for all `i`, `j`. The initialization is the AbsLog{2} unconstrained minimum (geometric
-mean of nonzero entries per row/column), independent of `ϕ`. After boosting to feasibility,
-`iter` tightening iterations are applied.
+mean of nonzero entries per row/column), independent of `ϕ`. It is then boosted to
+feasibility by a greedy max-deficit rule (the most-violated entries are covered first),
+and `iter` tightening iterations are applied.
 
 The default `ϕ = AbsLinear{2}()`.
 
@@ -106,12 +87,12 @@ See also: [`cover_min`](@ref), [`symcover`](@ref).
 julia> A = [1 2 3; 6 5 4];
 
 julia> a, b = cover(A)
-([1.2674308473260654, 3.4759059767492304], [1.7261686708831454, 1.61137045961268, 2.366993044495631])
+([1.2544610775677627, 3.4759059767492304], [1.7261686708831454, 1.6217627613074477, 2.3914651906272066])
 
 julia> a * b'
 2×3 Matrix{Float64}:
- 2.1878  2.0423   3.0
- 6.0     5.60097  8.22745
+ 2.16541  2.03444  3.0
+ 6.0      5.63709  8.31251
 ```
 """
 cover(A::AbstractMatrix; iter::Int=3) = cover(AbsLinear{2}(), A; iter)
@@ -121,17 +102,7 @@ function cover(ϕ, A::AbstractMatrix; iter::Int=3)
     a = zeros(T, axes(A, 1))
     b = zeros(T, axes(A, 2))
     unconstrained_min!(AbsLog{2}(), a, b, A)
-    # Boost to feasibility
-    for j in axes(A, 2)
-        for i in axes(A, 1)
-            Aij, ai, bj = abs(A[i, j]), a[i], b[j]
-            aprod = ai * bj
-            aprod >= Aij && continue
-            s = sqrt(Aij / aprod)
-            a[i] = s * ai
-            b[j] = s * bj
-        end
-    end
+    boost_feasible!(a, b, A)
     return tighten_cover!(a, b, A; iter)
 end
 
@@ -149,27 +120,48 @@ end
 # Internal helpers
 # ============================================================
 
+# Shrink x by exp(lr/2) (lr = log of the cover-to-entry ratio for the tightest
+# entry touching x). The direct quotient degenerates to exact zero when
+# exp(lr/2) overflows or the division underflows; recomputing in log space
+# recovers any representable result, and the floatmin clamp handles genuine
+# underflow: x is supported (nonzero going in), and an exact zero would make
+# every entry through it permanently uncoverable, whereas floatmin keeps it
+# representable and, being the smallest normal positive magnitude, changes the
+# resulting cover products negligibly.
+function _tighten_shrink(x::T, lr::T) where T
+    y = x / exp(lr / 2)
+    if iszero(y) && !iszero(x)
+        y = max(exp(log(x) - lr / 2), floatmin(T))
+    end
+    return y
+end
+
 function tighten_cover!(a::AbstractVector{T}, A::AbstractMatrix; iter::Int=3) where T
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("`tighten_cover!(a, A)` requires a square matrix `A`"))
     eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`"))
-    aratio = similar(a)
+    lratio = similar(a)
+    la = similar(a)
     for _ in 1:iter
-        fill!(aratio, typemax(T))
-        # A is assumed symmetric and only the upper triangle is read; each pair's
-        # ratio updates both endpoints, so this sees the same multiset of ratios
-        # as a full-grid sweep at half the cost.
-        for j in eachindex(a)
-            aratioj, aj = aratio[j], a[j]
-            for i in first(ax):j
-                Aij = T(abs(A[i, j]))
-                r = ifelse(iszero(Aij), typemax(T), a[i] * aj / Aij)
-                aratio[i] = min(aratio[i], r)
-                aratioj   = min(aratioj, r)
-            end
-            aratio[j] = aratioj
+        map!(log, la, a)   # log(0) = -Inf marks zero scales; see below
+        fill!(lratio, T(Inf))
+        # A is assumed symmetric-valued; entries not visited by `foreach_support_sym`
+        # (zero, or the redundant triangle) leave lratio at +Inf, a no-op below. Working
+        # in log-ratio (rather than a[i]*a[j]/v) keeps the comparison finite even when
+        # the linear-space product would overflow for extreme dynamic range; a zero
+        # scale gives lr = -Inf, marking the row uncoverable by any finite rescale.
+        foreach_support_sym(A) do i, j, v
+            lr = la[i] + la[j] - log(T(v))
+            lratio[i] = min(lratio[i], lr)
+            i == j || (lratio[j] = min(lratio[j], lr))
         end
-        a ./= sqrt.(aratio)
+        for i in eachindex(a)
+            lr = lratio[i]
+            # lr == -Inf marks a row whose cover product vanishes on some entry; no
+            # finite rescale covers it, so leave the scale unchanged. lr == +Inf marks
+            # a row untouched this pass (a[i] is already 0 there), likewise a no-op.
+            isinf(lr) || (a[i] = _tighten_shrink(a[i], lr))
+        end
     end
     return a
 end
@@ -177,23 +169,35 @@ end
 function tighten_cover!(a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix; iter::Int=3) where T
     eachindex(a) == axes(A, 1) || throw(DimensionMismatch("indices of a must match row-indexing of A"))
     eachindex(b) == axes(A, 2) || throw(DimensionMismatch("indices of b must match column-indexing of A"))
-    aratio = fill(typemax(T), eachindex(a))
-    bratio = fill(typemax(T), eachindex(b))
+    lratioa = fill(T(Inf), eachindex(a))
+    lratiob = fill(T(Inf), eachindex(b))
+    la, lb = similar(a), similar(b)
     for _ in 1:iter
-        fill!(aratio, typemax(T))
-        fill!(bratio, typemax(T))
-        for j in eachindex(b)
-            bratioj, bj = bratio[j], b[j]
-            for i in eachindex(a)
-                Aij = T(abs(A[i, j]))
-                r   = ifelse(iszero(Aij), typemax(T), a[i] * bj / Aij)
-                aratio[i] = min(aratio[i], r)
-                bratioj   = min(bratioj, r)
-            end
-            bratio[j] = bratioj
+        map!(log, la, a)   # log(0) = -Inf marks zero scales; see below
+        map!(log, lb, b)
+        fill!(lratioa, T(Inf))
+        fill!(lratiob, T(Inf))
+        # Working in log-ratio (rather than a[i]*b[j]/v) keeps the comparison
+        # finite even when the linear-space product would overflow for extreme
+        # dynamic range; a zero scale gives lr = -Inf, marking the row or column
+        # uncoverable by any finite rescale.
+        foreach_support(A) do i, j, v
+            lr = la[i] + lb[j] - log(T(v))
+            lratioa[i] = min(lratioa[i], lr)
+            lratiob[j] = min(lratiob[j], lr)
         end
-        a ./= sqrt.(aratio)
-        b ./= sqrt.(bratio)
+        for i in eachindex(a)
+            lr = lratioa[i]
+            # lr == -Inf marks a row whose cover product vanishes on some entry;
+            # no finite rescale covers it, so leave the scale unchanged.
+            isinf(lr) || (a[i] = _tighten_shrink(a[i], lr))
+        end
+        for j in eachindex(b)
+            lr = lratiob[j]
+            # lr == -Inf marks a column whose cover product vanishes on some
+            # entry; no finite rescale covers it, so leave the scale unchanged.
+            isinf(lr) || (b[j] = _tighten_shrink(b[j], lr))
+        end
     end
     return a, b
 end
@@ -205,6 +209,158 @@ function tighten_cover!(a::AbstractVector{T}, b::AbstractVector{T}, A::Adjoint; 
 end
 function tighten_cover!(a::AbstractVector{T}, b::AbstractVector{T}, A::Transpose; kwargs...) where T
     tighten_cover!(b, a, parent(A); kwargs...)
+    return a, b
+end
+
+# Feasibility boost by approximate greedy max-deficit. `entries` holds the
+# support entries; `deficit(e)` returns the log-deficit z = log|A[i,j]| minus
+# the log of the current cover product, > 0 iff violated; `apply!(e, z)` grows
+# the scales so the entry becomes exactly covered. Deficits only shrink as
+# scales grow, so entries only move to lower buckets: total work is
+# O(#entries + moves), moves per entry bounded by the bucket count. Bucket
+# edges are anchored at 0 in log-deficit (a scale-invariant quantity), so
+# processing order — hence the result — is covariant under diagonal rescaling
+# of A, up to within-bucket ties. Working in log-deficit keeps every quantity
+# finite for finite nonzero entries and positive scales, however extreme the
+# dynamic range.
+const BOOST_BUCKET_WIDTH = log(2) / 4   # quality indistinguishable from exact greedy; only bucket count grows as w shrinks
+
+# Buckets are a flat singly-linked bucket queue (as in bucket-queue Dijkstra),
+# not one growable Vector{Int} per bucket: `head[b]` is the top-of-stack index
+# into `entries`, `nxt[k]` the next index below it in whatever bucket k
+# currently occupies. Push/pop are O(1) pointer updates with no reallocation,
+# and `deficit(entries[k])` is cheap enough (a couple of array reads and a
+# subtraction) that recomputing it on each of the two passes below costs less
+# than caching it in a separate array would.
+function bucket_boost!(deficit::F, apply!::G, entries, ::Type{T}) where {F,G,T}
+    n = length(entries)
+    zmax = zero(T)
+    for k in eachindex(entries)
+        z = deficit(entries[k])
+        z > zero(T) || continue
+        zmax = max(zmax, z)
+    end
+    zmax > zero(T) || return
+    w = T(BOOST_BUCKET_WIDTH)
+    B = max(1, ceil(Int, zmax / w))
+    bucketof(z) = clamp(ceil(Int, z / w), 1, B)
+    head = zeros(Int, B)
+    nxt = zeros(Int, n)
+    for k in eachindex(entries)
+        z = deficit(entries[k])
+        z > zero(T) || continue
+        b = bucketof(z)
+        nxt[k] = head[b]
+        head[b] = k
+    end
+    for b in B:-1:1
+        k = head[b]
+        while k != 0
+            knext = nxt[k]   # save before a possible demotion overwrites nxt[k]
+            e = entries[k]
+            z = deficit(e)
+            if z > zero(T)
+                b2 = bucketof(z)
+                if b2 < b
+                    nxt[k] = head[b2]
+                    head[b2] = k          # deficit shrank: demote, revisit later
+                else
+                    apply!(e, z)
+                end
+            end
+            k = knext
+        end
+    end
+    return
+end
+
+# Symmetric-contract feasibility boost: scale `a` in place so that
+# `a[i]*a[j] >= |A[i,j]|`, up to the round-off of the log-domain updates,
+# for every entry visited by `foreach_support_sym`
+# (the diagonal included, so no separate clamp step is needed). Requires a
+# start with strictly positive scale on every supported row (the geometric-mean
+# init from `unconstrained_min!` guarantees this).
+function boost_feasible!(a::AbstractVector{T}, A::AbstractMatrix) where T
+    IdxT = eltype(eachindex(a))
+    # `la` caches log.(a) and is updated alongside `a`, so deficits cost no log
+    # calls; log(0) = -Inf on unsupported rows is never read (every entry's
+    # endpoints pass the positive-scale check below). Growing log-scales
+    # directly (rather than multiplying by exp(z/2)) stays finite even when
+    # exp(z/2) alone would overflow.
+    la = map(log, a)
+    # `entries` holds only entries already violated at this starting point:
+    # bucket_boost! never revisits an entry once satisfied, so a still-slack
+    # entry need not be stored at all. A zero scale on either endpoint makes
+    # its deficit +Inf, so such entries are always violated and the fail-fast
+    # check below always runs on them. Two passes (count then fill) allocate
+    # `entries` once at its exact size, instead of the repeated grow-and-copy
+    # of building it with `push!`.
+    nviol = Ref(0)
+    foreach_support_sym(A) do i, j, v
+        z = log(T(v)) - la[i] - la[j]
+        z > zero(T) && (nviol[] += 1)
+    end
+    entries = Vector{Tuple{IdxT,IdxT,T}}(undef, nviol[])
+    k = Ref(0)
+    foreach_support_sym(A) do i, j, v
+        lv = log(T(v))
+        z = lv - la[i] - la[j]
+        if z > zero(T)
+            (iszero(a[i]) || iszero(a[j])) &&
+                throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row"))
+            k[] += 1
+            entries[k[]] = (i, j, lv)
+        end
+    end
+    deficit((i, j, lv)) = lv - la[i] - la[j]
+    function apply!((i, j, lv), z)
+        h = z / 2
+        la[i] += h; a[i] = exp(la[i])
+        i == j || (la[j] += h; a[j] = exp(la[j]))
+    end
+    bucket_boost!(deficit, apply!, entries, T)
+    return a
+end
+
+# Asymmetric feasibility boost: scale `a`, `b` in place so that
+# `a[i]*b[j] >= |A[i,j]|`, up to the round-off of the log-domain updates,
+# for every entry visited by `foreach_support`. The
+# diagonal is treated as an ordinary entry. Requires a start with strictly
+# positive scale on every supported row of `a` and column of `b`.
+function boost_feasible!(a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix) where T
+    IdxA, IdxB = eltype(eachindex(a)), eltype(eachindex(b))
+    # `la`/`lb` cache log.(a)/log.(b) and are updated alongside `a`/`b`; see
+    # the symmetric method.
+    la, lb = map(log, a), map(log, b)
+    # `entries` holds only entries already violated at this starting point;
+    # see the symmetric method for why this is safe and why the fail-fast
+    # check always fires on a zero-scale endpoint. Two passes (count then
+    # fill) allocate `entries` once at its exact size, instead of the
+    # repeated grow-and-copy of building it with `push!`.
+    nviol = Ref(0)
+    foreach_support(A) do i, j, v
+        z = log(T(v)) - la[i] - lb[j]
+        z > zero(T) && (nviol[] += 1)
+    end
+    entries = Vector{Tuple{IdxA,IdxB,T}}(undef, nviol[])
+    k = Ref(0)
+    foreach_support(A) do i, j, v
+        lv = log(T(v))
+        z = lv - la[i] - lb[j]
+        if z > zero(T)
+            (iszero(a[i]) || iszero(b[j])) &&
+                throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row/column"))
+            k[] += 1
+            entries[k[]] = (i, j, lv)
+        end
+    end
+    deficit((i, j, lv)) = lv - la[i] - lb[j]
+    function apply!((i, j, lv), z)
+        h = z / 2
+        la[i] += h; a[i] = exp(la[i])
+        lb[j] += h; b[j] = exp(lb[j])
+    end
+    bucket_boost!(deficit, apply!, entries, T)
     return a, b
 end
 
@@ -220,26 +376,25 @@ function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, A::AbstractMatrix
         throw(DimensionMismatch("`logcache` must have the same axes as `A` (got $(axes(logcache)) vs $((ax, ax)))"))
     loga = fill!(similar(a), zero(T))
     nza  = zeros(Int, ax)
-    # When `logcache` is provided, store log|A[i,j]| for every nonzero upper-triangle
-    # entry so a caller can reuse it (zero entries are skipped and never read back).
-    for j in ax
-        for i in first(ax):j
-            Aij = abs(A[i, j])
-            iszero(Aij) && continue
-            lAij = log(Aij)
-            logcache === nothing || (logcache[i, j] = lAij)
-            loga[i] += lAij
-            nza[i]  += 1
-            if i != j
-                loga[j] += lAij
-                nza[j]  += 1
-            end
+    # When `logcache` is provided, store log|A[i,j]| for every visited entry
+    # so a caller can reuse it (zero entries are skipped and never read back).
+    foreach_support_sym(A) do i, j, v
+        lAij = log(T(v))
+        logcache === nothing || (logcache[i, j] = lAij)
+        loga[i] += lAij
+        nza[i]  += 1
+        if i != j
+            loga[j] += lAij
+            nza[j]  += 1
         end
     end
     nztotal = sum(nza)
     halfmu = iszero(nztotal) ? zero(T) : sum(loga) / (2 * nztotal)
     for i in ax
-        a[i] = iszero(nza[i]) ? zero(T) : exp(loga[i] / nza[i] - halfmu)
+        # exp can underflow for extreme dynamic range; a zero scale on a
+        # supported row would make the boost's log-deficits infinite, so
+        # clamp to the smallest normal positive value.
+        a[i] = iszero(nza[i]) ? zero(T) : max(exp(loga[i] / nza[i] - halfmu), floatmin(T))
     end
     return nza
 end
@@ -251,58 +406,61 @@ function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, b::AbstractVector
     logb = fill!(similar(b), zero(T))
     nza  = zeros(Int, axes(A, 1))
     nzb  = zeros(Int, axes(A, 2))
-    logmu   = zero(T)
-    nztotal = 0
-    for j in axes(A, 2)
-        for i in axes(A, 1)
-            Aij = abs(A[i, j])
-            iszero(Aij) && continue
-            lAij = log(Aij)
-            loga[i] += lAij
-            logb[j] += lAij
-            nza[i]  += 1
-            nzb[j]  += 1
-            logmu   += lAij
-            nztotal += 1
-        end
+    foreach_support(A) do i, j, v
+        lAij = log(T(v))
+        loga[i] += lAij
+        logb[j] += lAij
+        nza[i]  += 1
+        nzb[j]  += 1
     end
-    halfmu = iszero(nztotal) ? zero(T) : T(logmu / (2 * nztotal))
+    # Each stored entry contributes lAij to loga exactly once and increments
+    # nza exactly once, so these sums equal the per-entry running totals.
+    nztotal = sum(nza)
+    halfmu = iszero(nztotal) ? zero(T) : sum(loga) / (2 * nztotal)
     for i in axes(A, 1)
-        a[i] = iszero(nza[i]) ? zero(T) : exp(loga[i] / nza[i] - halfmu)
+        # exp can underflow for extreme dynamic range; a zero scale on a
+        # supported row would make the boost's log-deficits infinite, so
+        # clamp to the smallest normal positive value.
+        a[i] = iszero(nza[i]) ? zero(T) : max(exp(loga[i] / nza[i] - halfmu), floatmin(T))
     end
     for j in axes(A, 2)
-        b[j] = iszero(nzb[j]) ? zero(T) : exp(logb[j] / nzb[j] - halfmu)
+        b[j] = iszero(nzb[j]) ? zero(T) : max(exp(logb[j] / nzb[j] - halfmu), floatmin(T))
     end
     return nza, nzb
 end
 
-# Build a feasible hard cover by processing diagonals in order of increasing
-# offset. When both a[k] and a[l] are already nonzero but a[k]*a[l] < |A[k,l]|,
-# both a[k] and a[l] are scaled by the square root of the ratio,
-#               √(|A[k,l]| / (a[k]*a[l]))
-# Equal scaling is of course ad-hoc; while it might be better to do something
-# tuned to a particular penalty function, that would risk making the algorithm
-# O(n^3) (we'd likely need to revisit the previous diagonals), and earlier
-# decisions might be reversed by later ones anyway. For something intended as
-# an initialization, using a heuristic that is guaranteed to be O(n^2) seems
-# like a reasonable choice.
-
-# When both a[k] and a[l] are zero at a nonzero A[k,l], deferral is used: the
-# constraint is held pending until a later diagonal provides scale for one of
-# the two indices. If both remain zero after all diagonals are processed, the
-# constraint is resolved by a[k]=a[l]=√|A[k,l]|.
+# Feasible cover starting from the diagonal alone, resolved by
+# `boost_feasible_seq!`. Unlike `boost_feasible!`, a zero entry of `a` going
+# into that call means "not yet resolved", not "permanently unsupported" —
+# every diagonal-zero row is deferred until an off-diagonal neighbor supplies
+# a scale for it (see `boost_feasible_seq!`).
 function init_feasible!(a::AbstractVector{T}, A::AbstractMatrix) where T
+    for k in eachindex(a)
+        a[k] = sqrt(T(abs(A[k, k])))
+    end
+    return boost_feasible_seq!(a, A)
+end
+
+# Feasibility by sequential nearest-neighbor propagation with deferral,
+# processing off-diagonal pairs in order of increasing offset
+# j = 1, …, n-1 (each nonzero A[k, k+j] requires a[k]*a[k+j] ≥ |A[k, k+j]|).
+# `a[k] == 0` means "not yet resolved" rather than "unsupported": entries with
+# both endpoints still zero are deferred until a later offset (or another
+# deferred entry) supplies a scale for one of them, and any left unresolved
+# after every offset is processed are equal-split as a[k]=a[l]=√|A[k,l]|.
+#
+# When both a[k] and a[l] are already nonzero but a[k]*a[l] < |A[k,l]|, both
+# are scaled by the square root of the ratio √(|A[k,l]|/(a[k]*a[l])). Equal
+# scaling is of course ad-hoc; while it might be better to do something tuned
+# to a particular penalty function, that would risk making the algorithm
+# O(n^3) (we'd likely need to revisit earlier offsets), and earlier decisions
+# might be reversed by later ones anyway. For something intended as an
+# initialization, a heuristic guaranteed to be O(n^2) seems reasonable.
+function boost_feasible_seq!(a::AbstractVector{T}, A::AbstractMatrix) where T
     ax = eachindex(a)
     n  = length(ax)
     f  = first(ax)
 
-    # Diagonal: a[k] = √|A[k,k]|
-    for k in ax
-        a[k] = sqrt(T(abs(A[k, k])))
-    end
-
-    # Off-diagonals in order of increasing offset j = 1, …, n-1.
-    # Each nonzero A[k, k+j] requires a[k]*a[k+j] ≥ |A[k, k+j]|.
     deferred = Tuple{Int,Int,T}[]
     for j in 1:n-1
         for ik in 0:n-j-1
@@ -442,27 +600,23 @@ function _symcover_abslinear_init!(a::AbstractVector{T}, A::AbstractMatrix; cach
     end
     t_feas = zero(T)
     thresh = one(T)
-    for j in ax
-        aj, lαj = a[j], lα[j]
-        for i in first(ax):j
-            Aij = abs(A[i, j])
-            iszero(Aij) && continue
-            if thresh < T(Inf)
-                # a rounded-to-Inf product means the true product exceeds
-                # floatmax >= Aij, so skipping remains conservative
-                Aij <= thresh * (a[i] * aj) && continue
-            else
-                # exp overflowed: fall back to skipping only feasible entries
-                Aij <= a[i] * aj && continue
-            end
-            s = T(v[i]) + T(v[j])
-            iszero(s) && continue
-            lAij = cache === nothing ? log(Aij) : cache[i, j]
-            t = (lAij - lα[i] - lαj) / s
-            if t > t_feas
-                t_feas = t
-                thresh = exp(2 * vmin * t_feas)
-            end
+    foreach_support_sym(A) do i, j, v_ij
+        Aij = T(v_ij)
+        if thresh < T(Inf)
+            # a rounded-to-Inf product means the true product exceeds
+            # floatmax >= Aij, so skipping remains conservative
+            Aij <= thresh * (a[i] * a[j]) && return
+        else
+            # exp overflowed: fall back to skipping only feasible entries
+            Aij <= a[i] * a[j] && return
+        end
+        s = T(v[i]) + T(v[j])
+        iszero(s) && return
+        lAij = cache === nothing ? log(Aij) : cache[i, j]
+        t = (lAij - lα[i] - lα[j]) / s
+        if t > t_feas
+            t_feas = t
+            thresh = exp(2 * vmin * t_feas)
         end
     end
     for i in ax

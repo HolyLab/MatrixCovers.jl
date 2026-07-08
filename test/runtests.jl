@@ -1,13 +1,16 @@
 using ScaleInvariantAnalysis
-using ScaleInvariantAnalysis: divmag, dotabs
+using ScaleInvariantAnalysis: divmag, dotabs, foreach_support, foreach_support_sym, unconstrained_min!, tighten_cover!
 using JuMP, HiGHS, Ipopt   # triggers SIAJuMP and SIAIpopt extensions
 using SparseArrays  # triggers SIASparseArrays extension
 using LinearAlgebra
+using OffsetArrays
 using Statistics: median
 using Random: MersenneTwister
 using Test
 
 @testset "ScaleInvariantAnalysis.jl" begin
+
+    include("support.jl")
 
     @testset "cover_objective" begin
         A = [4.0 1.5; 1.5 1.0]
@@ -809,6 +812,99 @@ using Test
         end
     end
 
+    @testset "traversal-based kernels match dense reference" begin
+        # unconstrained_min! and tighten_cover! are order-insensitive folds over
+        # foreach_support(_sym) (sum/min accumulations), so structured/sparse
+        # storage must agree with the dense form up to floating-point summation
+        # order (rtol=1e-12). The full symcover pipeline includes the bucketed
+        # feasibility boost, whose within-bucket processing order follows the
+        # storage type's traversal order: storages that traverse the canonical
+        # triangle in the dense fallback's column-major order are compared
+        # elementwise, the rest on feasibility and objective value. cover's boost
+        # order is likewise storage-dependent and is not compared elementwise.
+        rng = MersenneTwister(11)
+        n = 8
+        Adense = randn(rng, n, n); Adense = Adense + Adense'
+        Asp = sparse(Adense)
+        Ssp_U = Symmetric(sparse(triu(Adense)), :U)
+        Ssp_L = Symmetric(sparse(tril(Adense)), :L)
+        Hsp_U = Hermitian(sparse(triu(Adense)), :U)
+        D = Diagonal(rand(rng, n) .+ 0.1)
+        dv, ev = rand(rng, n) .+ 0.1, rand(rng, n - 1) .+ 0.1
+        St = SymTridiagonal(dv, ev)
+        Tsym = Tridiagonal(ev, dv, ev)
+
+        # Traversal order matches the dense fallback's column-major canonical
+        # triangle: compare elementwise.
+        a_ref = symcover(AbsLog{2}(), Adense)
+        for A in (Asp, Ssp_U, Hsp_U)
+            @test symcover(AbsLog{2}(), A) ≈ a_ref rtol=1e-12
+        end
+        @test symcover(AbsLog{2}(), D) ≈ symcover(AbsLog{2}(), Matrix(D)) rtol=1e-12
+        @test symcover(AbsLog{2}(), St) ≈ symcover(AbsLog{2}(), Tsym) rtol=1e-12   # same symmetric-valued matrix
+
+        # Traversal order differs from the dense fallback's (Ssp_L keys pairs by
+        # the smaller index; St/Tsym visit all diagonal entries before any
+        # off-diagonal, dense interleaves them), so the bucketed boost's
+        # within-bucket order can differ: compare on feasibility and objective
+        # value rather than elementwise.
+        feasible_sym(ac, M) = all(ac[i] * ac[j] >= abs(M[i, j]) * (1 - 8eps()) for i in axes(M, 1), j in axes(M, 2))
+        objclose(a1, M1, a2, M2) = isapprox(cover_objective(AbsLog{2}(), a1, M1),
+            cover_objective(AbsLog{2}(), a2, M2); rtol=1e-2, atol=1e-10)
+        for A in (Ssp_L,)
+            aA, aref = symcover(AbsLog{2}(), A), symcover(AbsLog{2}(), Adense)
+            @test feasible_sym(aA, Adense)
+            @test objclose(aA, Adense, aref, Adense)
+        end
+        for A in (St, Tsym)
+            aA, aM = symcover(AbsLog{2}(), A), symcover(AbsLog{2}(), Matrix(A))
+            @test feasible_sym(aA, Matrix(A))
+            @test objclose(aA, Matrix(A), aM, Matrix(A))
+        end
+
+        # Kernel 3 (tighten_cover!) directly, starting from a Kernel-1-derived vector.
+        for A in (Asp, Ssp_U, D, St, Tsym)
+            a_start = zeros(size(A, 1))
+            unconstrained_min!(AbsLog{2}(), a_start, A)
+            @test tighten_cover!(copy(a_start), A) ≈ tighten_cover!(copy(a_start), Matrix(A)) rtol=1e-12
+        end
+        for A in (Asp, D, St, Tsym)
+            a_start, b_start = zeros(size(A, 1)), zeros(size(A, 2))
+            unconstrained_min!(AbsLog{2}(), a_start, b_start, A)
+            a1, b1 = tighten_cover!(copy(a_start), copy(b_start), A)
+            a2, b2 = tighten_cover!(copy(a_start), copy(b_start), Matrix(A))
+            @test a1 ≈ a2 rtol=1e-12
+            @test b1 ≈ b2 rtol=1e-12
+        end
+    end
+
+    @testset "AbsLinear cross-type equivalence" begin
+        # symcover(::AbsLinear) reaches sparse/structured inputs solely through
+        # the generic AbstractMatrix method and foreach_support(_sym) dispatch (no
+        # per-type specialization remains), so it must agree with the dense result
+        # up to the traversal-order ties noted above.
+        rng = MersenneTwister(13)
+        n = 7
+        Adense = randn(rng, n, n); Adense = Adense + Adense'
+        Asp = sparse(Adense)
+        Ssp_U = Symmetric(sparse(triu(Adense)), :U)
+        dv, ev = rand(rng, n) .+ 0.1, rand(rng, n - 1) .+ 0.1
+        St = SymTridiagonal(dv, ev)
+        Tsym = Tridiagonal(ev, dv, ev)
+
+        a_ref = symcover(AbsLinear{2}(), Adense)
+        for A in (Asp, Ssp_U)
+            @test symcover(AbsLinear{2}(), A) ≈ a_ref rtol=1e-12
+        end
+        @test symcover(AbsLinear{2}(), St) ≈ symcover(AbsLinear{2}(), Tsym) rtol=1e-12
+    end
+
+    @testset "method ambiguities" begin
+        @test isempty(detect_ambiguities(ScaleInvariantAnalysis; recursive=true))
+        ext = Base.get_extension(ScaleInvariantAnalysis, :SIASparseArrays)
+        @test isempty(detect_ambiguities(ScaleInvariantAnalysis, ext; recursive=true))
+    end
+
     @testset "native solvers on sparse and structured inputs" begin
         # The native AbsLog{2} MCM solvers (`symcover_min`/`cover_min`) and the AbsLinear
         # soft covers must agree with the dense reference on `Matrix(A)` when handed a
@@ -934,6 +1030,115 @@ using Test
             iszero(qopt) || push!(gen_ratios, qfast / qopt)
         end
         @test median(gen_ratios) < 1.02
+    end
+
+    @testset "bucket boost" begin
+        rng = MersenneTwister(42)
+
+        # Feasibility on randomized dense (with zero rows/diagonal), sparse, banded, and
+        # offset-axes inputs.
+        feasible_sym(a, M) = all(a[i] * a[j] >= abs(M[i, j]) - 4 * eps(max(a[i] * a[j], abs(M[i, j])))
+                                  for i in axes(M, 1), j in axes(M, 2))
+        for n in (5, 12)
+            for _ in 1:5
+                B = randn(rng, n, n); A = (B + B') / 2
+                A[1, :] .= 0; A[:, 1] .= 0   # zero row/column
+                A[2, 2] = 0                  # zero diagonal entry
+                a = symcover(AbsLog{2}(), A)
+                @test feasible_sym(a, A)
+                a2, b2 = cover(AbsLog{2}(), A)
+                @test all(a2[i] * b2[j] >= abs(A[i, j]) - 4 * eps(max(a2[i] * b2[j], abs(A[i, j])))
+                          for i in axes(A, 1), j in axes(A, 2))
+            end
+        end
+        for _ in 1:5
+            S = sprandn(rng, 10, 10, 0.3); A = S + S'
+            a = symcover(AbsLog{2}(), A)
+            @test feasible_sym(a, Matrix(A))
+        end
+        for _ in 1:5
+            dv, ev = randn(rng, 8), randn(rng, 7)
+            A = SymTridiagonal(dv, ev)
+            a = symcover(AbsLog{2}(), A)
+            @test feasible_sym(a, Matrix(A))
+        end
+        let B = randn(rng, 6, 6), Asym = (B + B') / 2
+            Ao = OffsetArray(Asym, -3:2, -3:2)
+            a = symcover(AbsLog{2}(), Ao)
+            @test axes(a, 1) == axes(Ao, 1)
+            @test feasible_sym(a, Ao)
+        end
+
+        # Scale-covariance of the boosted (untightened) cover under diagonal/row-col rescaling.
+        n = 8
+        B = randn(rng, n, n); A = (B + B') / 2
+        d = exp.(randn(rng, n))
+        @test symcover(AbsLog{2}(), A .* d .* d'; iter=0) ≈ d .* symcover(AbsLog{2}(), A; iter=0) rtol=1e-10
+
+        m = 6
+        Ag = randn(rng, n, m)
+        dr, dc = exp.(randn(rng, n)), exp.(randn(rng, m))
+        a1, b1 = cover(AbsLog{2}(), Ag; iter=0)
+        a2, b2 = cover(AbsLog{2}(), dr .* Ag .* dc'; iter=0)
+        # cover has a free global gauge a→c*a, b→b/c; only the product co-varies.
+        c = a2 \ (dr .* a1)
+        @test c * a2 ≈ dr .* a1 rtol=1e-10
+        @test b2 / c ≈ dc .* b1 rtol=1e-10
+
+        # Quality gate: on a seeded lognormal + sparse corpus, the median log-optimality-gap
+        # after 3 tighten iterations stays close to the measured value for this boost
+        # (0.0181 on 2026-07-08); the bound is a generous 1.5x margin, not a tight pin.
+        qrng = MersenneTwister(20260708)
+        gaps = Float64[]
+        for _ in 1:15
+            n = rand(qrng, 5:15)
+            B = randn(qrng, n, n) .* exp.(rand(qrng) * 3 * randn(qrng, n, n))
+            A = (B + B') / 2
+            Emin = cover_objective(AbsLog{2}(), symcover_min(AbsLog{2}(), A), A)
+            E3   = cover_objective(AbsLog{2}(), symcover(AbsLog{2}(), A; iter=3), A)
+            iszero(Emin) || push!(gaps, log(E3 / Emin))
+        end
+        for _ in 1:10
+            n = rand(qrng, 5:15)
+            S = sprand(qrng, n, n, 0.3); A = Matrix(S + S')
+            Emin = cover_objective(AbsLog{2}(), symcover_min(AbsLog{2}(), A), A)
+            E3   = cover_objective(AbsLog{2}(), symcover(AbsLog{2}(), A; iter=3), A)
+            iszero(Emin) || push!(gaps, log(E3 / Emin))
+        end
+        @test median(gaps) < 0.0181 * 1.5
+    end
+
+    @testset "boost feasibility: lower-dominant bands and extreme dynamic range" begin
+        # Lower-dominant bands: the symmetric-contract value is the max over both
+        # triangles, so the subdiagonal must be covered even when it dominates.
+        a = symcover(AbsLog{2}(), Bidiagonal([0.01, 0.01, 0.01], [100.0, 100.0], 'L'); iter=0)
+        @test a[1] * a[2] >= 100 * (1 - 8eps())
+        @test a[2] * a[3] >= 100 * (1 - 8eps())
+        T40 = Tridiagonal(fill(50.0, 39), fill(0.01, 40), fill(0.02, 39))
+        a = symcover(AbsLog{2}(), T40; iter=0)
+        M = Matrix(T40)
+        @test all(a[i] * a[j] >= max(abs(M[i, j]), abs(M[j, i])) * (1 - 8eps()) for i in axes(M, 1), j in axes(M, 2))
+
+        # Float32 dynamic range wide enough that linear-domain deficit ratios overflow.
+        # The boost's apply! step shifts log(a[i]) by h = z/2, where z ~ 120 for this
+        # matrix; exp(log(a[i]) + h) then carries forward the rounding error already
+        # present in h at that magnitude, so the achievable relative precision is set
+        # by eps(Float32) scaled by |h|, not by a fixed few-ulp bound.
+        A32 = fill(1f-35, 6, 6); A32[1, 2] = A32[2, 1] = 3f37
+        a32 = symcover(AbsLog{2}(), A32)
+        @test all(isfinite, a32)
+        @test all(a32[i] * a32[j] >= abs(A32[i, j]) * (1 - 64 * eps(Float32)) for i in axes(A32, 1), j in axes(A32, 2))
+
+        # Float64 range where the geometric-mean init underflows without clamping.
+        A = fill(1e308, 6, 6); A[1, :] .= 0; A[:, 1] .= 0; A[1, 2] = A[2, 1] = 1e-308
+        a = symcover(AbsLog{2}(), A)
+        @test all(isfinite, a)
+        @test all(a[i] * a[j] >= abs(A[i, j]) * (1 - 8eps()) for i in axes(A, 1), j in axes(A, 2))
+    end
+
+    @testset "tighten_cover! leaves zero-product scales unchanged" begin
+        a, b = tighten_cover!(zeros(3), zeros(3), Diagonal([1.0, 2.0, 3.0]))
+        @test all(iszero, a) && all(iszero, b)
     end
 
 end

@@ -124,8 +124,8 @@ julia> aq, bq = cover_min(AbsLog{2}(), A);   # AbsLog{2}-minimal, native
 
 julia> a * b'
 2×3 Matrix{Float64}:
- 2.1878  2.0423   3.0
- 6.0     5.60097  8.22745
+ 2.16541  2.03444  3.0
+ 6.0      5.63709  8.31251
 
 julia> aq * bq'
 2×3 Matrix{Float64}:
