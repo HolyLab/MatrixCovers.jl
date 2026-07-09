@@ -8,18 +8,23 @@
 
 """
     a = symcover_min(ϕ, A; kwargs...)
+    a = symcover_min(A; kwargs...)
 
 Return the ϕ-minimal symmetric hard cover of `A`: the vector `a` minimizing
 `∑_{i,j} ϕ(|A[i,j]|/(a[i]*a[j]))` subject to `a[i]*a[j] >= |A[i,j]|` for every nonzero
-entry of `A`.
+entry of `A`. The no-ϕ form defaults to `AbsLog{2}()`, matching [`symcover`](@ref).
 
 Supported ϕ values:
 - `AbsLog{2}()`: solved natively (no external solver). Accepts keyword arguments
   `κs` (the penalty-continuation schedule, default `(1e2, 1e4, 1e6, 1e8)`),
-  `maxouter` (Newton steps per stage, default `40`), and `linsolve` (the inner
+  `maxiter` (Newton steps per stage, default `40`), and `linsolve` (the inner
   linear solve: `:auto`/`:dense` use a dense factorization of the reweighted
   normal equations; `:lsqr` uses matrix-free LSQR (per-iteration cost O(nnz),
-  intended for large sparse supports)).
+  intended for large sparse supports)). `linsolve` defaults to `:auto` for
+  dense `A`; the `SparseMatrixCSC`/`Symmetric`/`Hermitian` sparse methods
+  (from the SparseArrays extension) default to `:lsqr` instead, since a dense
+  factorization of the reweighted normal equations is the wrong solve when
+  `nnz ≪ n²`.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
 - `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt.
 
@@ -29,23 +34,29 @@ Supported ϕ values:
 See also: [`cover_min`](@ref), [`symcover`](@ref).
 """
 function symcover_min end
+symcover_min(A::AbstractMatrix; kwargs...) = symcover_min(AbsLog{2}(), A; kwargs...)
 
 """
     a, b = cover_min(ϕ, A)
+    a, b = cover_min(A)
 
 Return the ϕ-minimal asymmetric hard cover of `A`: the vectors `a`, `b` minimizing
 `∑_{i,j} ϕ(|A[i,j]|/(a[i]*b[j]))` subject to `a[i]*b[j] >= |A[i,j]|` for every nonzero
 entry of `A`. The row/column scales are pinned to the balance convention
 `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` (`nzaᵢ`, `nzbⱼ` = nonzero counts of row `i`,
-column `j`) so the result is deterministic.
+column `j`) so the result is deterministic. The no-ϕ form defaults to `AbsLog{2}()`,
+matching [`cover`](@ref).
 
 Supported ϕ values:
 - `AbsLog{2}()`: solved natively (no external solver). Accepts keyword arguments
   `κs` (the penalty-continuation schedule, default `(1e2, 1e4, 1e6, 1e8)`),
-  `maxouter` (Newton steps per stage, default `40`), and `linsolve` (the inner
+  `maxiter` (Newton steps per stage, default `40`), and `linsolve` (the inner
   linear solve: `:auto`/`:dense` use a dense factorization of the reweighted
   normal equations; `:lsqr` uses matrix-free LSQR (per-iteration cost O(nnz),
-  intended for large sparse supports)).
+  intended for large sparse supports)). `linsolve` defaults to `:auto` for
+  dense `A`; the `SparseMatrixCSC` sparse method (from the SparseArrays
+  extension) defaults to `:lsqr` instead, since a dense factorization of the
+  reweighted normal equations is the wrong solve when `nnz ≪ n²`.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
 
 !!! note
@@ -54,6 +65,7 @@ Supported ϕ values:
 See also: [`symcover_min`](@ref), [`cover`](@ref).
 """
 function cover_min end
+cover_min(A::AbstractMatrix; kwargs...) = cover_min(AbsLog{2}(), A; kwargs...)
 
 # Symmetric AbsLog{2} hard cover via a one-sided quadratic penalty on the
 # log-residuals z_ij = α_i + α_j - log|A_ij| (α = log a):
@@ -166,12 +178,15 @@ end
 # by the benchmarks. `linsolve` is `:auto`/`:dense` (dense factorization) or `:lsqr`
 # (matrix-free, for sparse supports).
 function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
-                               maxouter::Int=40, linsolve::Symbol=:auto)
+                               maxiter::Int=40, linsolve::Symbol=:auto)
     linsolve in (:auto, :dense, :lsqr) ||
         throw(ArgumentError("linsolve must be :auto, :dense, or :lsqr; got :$linsolve"))
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("symcover_min requires a square matrix"))
-    T = float(eltype(A))
+    # The problem only ever depends on abs.(A), a real quantity, so the working type
+    # stays real even for complex A (e.g. a complex Hermitian) — Complex has no total
+    # order, and the reweighted Newton solve below compares residuals with `<`/`min`.
+    T = float(real(eltype(A)))
     n = length(ax)
     use_lsqr = linsolve === :lsqr
     # log|A| on the support S; the Newton solve runs on 1-based positions 1:n and
@@ -179,7 +194,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     C = zeros(T, n, n)
     S = falses(n, n)
     for (jp, j) in enumerate(ax), (ip, i) in enumerate(ax)
-        Aij = abs(T(A[i, j]))
+        Aij = abs(A[i, j])
         iszero(Aij) && continue
         C[ip, jp] = log(Aij)
         S[ip, jp] = true
@@ -271,7 +286,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     α = solve_weighted(zeros(T, n), nothing)
     for κ in κs
         fcur = fκ(α, κ)
-        for _ in 1:maxouter
+        for _ in 1:maxiter
             αnew = solve_weighted(α, κ)
             t = one(T)
             fnew = fκ(αnew, κ)
@@ -300,12 +315,15 @@ end
 # Worker for `cover_min(::AbsLog{2})`. Returns `(a, b, stats)` with `stats` a
 # NamedTuple `(; nsolves, lsqriters, linsolve)` (see `_symcover_min_abslog2`).
 function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
-                            maxouter::Int=40, linsolve::Symbol=:auto)
+                            maxiter::Int=40, linsolve::Symbol=:auto)
     linsolve in (:auto, :dense, :lsqr) ||
         throw(ArgumentError("linsolve must be :auto, :dense, or :lsqr; got :$linsolve"))
     axr = axes(A, 1)
     axc = axes(A, 2)
-    T = float(eltype(A))
+    # The problem only ever depends on abs.(A), a real quantity, so the working type
+    # stays real even for complex A (e.g. a complex Hermitian) — Complex has no total
+    # order, and the reweighted Newton solve below compares residuals with `<`/`min`.
+    T = float(real(eltype(A)))
     m = length(axr)
     n = length(axc)
     N = m + n
@@ -315,7 +333,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     C = zeros(T, m, n)
     S = falses(m, n)
     for (jp, j) in enumerate(axc), (ip, i) in enumerate(axr)
-        Aij = abs(T(A[i, j]))
+        Aij = abs(A[i, j])
         iszero(Aij) && continue
         C[ip, jp] = log(Aij)
         S[ip, jp] = true
@@ -435,7 +453,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     x = solve_weighted(zeros(T, N), nothing)
     for κ in κs
         fcur = fκ(x, κ)
-        for _ in 1:maxouter
+        for _ in 1:maxiter
             xnew = solve_weighted(x, κ)
             t = one(T)
             fnew = fκ(xnew, κ)

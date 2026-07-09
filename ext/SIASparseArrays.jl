@@ -89,7 +89,7 @@ function ScaleInvariantAnalysis.symcover_min(ϕ::AbsLog{2}, S::Symmetric{<:Any, 
     return Vector(a)
 end
 
-function ScaleInvariantAnalysis.symcover_min(ϕ::AbsLog{2}, H::Hermitian{<:Real, <:SparseMatrixCSC}; linsolve::Symbol=:lsqr, kwargs...)
+function ScaleInvariantAnalysis.symcover_min(ϕ::AbsLog{2}, H::Hermitian{<:Any, <:SparseMatrixCSC}; linsolve::Symbol=:lsqr, kwargs...)
     a, _ = _symcover_min_abslog2(H; linsolve, kwargs...)
     return Vector(a)
 end

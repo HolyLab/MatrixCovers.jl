@@ -2,6 +2,8 @@
 # φ types
 # ============================================================
 
+abstract type AbstractCoverPenalty<:Function end
+
 """
     AbsLog{p}
 
@@ -20,7 +22,7 @@ unique minimum.
 
 See also: [`AbsLinear`](@ref).
 """
-struct AbsLog{p} end
+struct AbsLog{p} <: AbstractCoverPenalty end
 
 """
     AbsLinear{p}
@@ -32,10 +34,10 @@ constant penalty.
 The resulting optimization problems are non-convex and may have multiple local
 minima.
 """
-struct AbsLinear{p} end
+struct AbsLinear{p} <: AbstractCoverPenalty end
 
 (::AbsLog{p})(r::Real) where p = iszero(r) ? zero(float(r)) : abs(log(r))^p
-(::AbsLinear{p})(r::Real) where p = abs(one(r) - r)^p
+(::AbsLinear{p})(r::Real) where p = abs(oneunit(r) - r)^p
 
 # ============================================================
 # cover_objective

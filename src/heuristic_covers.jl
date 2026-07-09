@@ -6,29 +6,23 @@
 # ============================================================
 
 """
-    a = symcover(ϕ, A; iter=3)
-    a = symcover(A; iter=3)
+    a = symcover(ϕ, A; maxiter=3)
+    a = symcover(A; maxiter=3)
 
-Given a square matrix `A` assumed to be symmetric, return a vector `a` representing
-a symmetric hard cover of `A`: `a[i] * a[j] >= abs(A[i, j])` for all `i`, `j`.
+Given a square matrix `A` assumed to be symmetric, return a vector `a`
+representing a symmetric hard cover of `A`: `a[i] * a[j] >= abs(A[i, j])` for
+all `i`, `j`.
 
-The penalty function `ϕ` controls what objective is approximately minimized:
-- `AbsLog{p}()` (p=1 or 2): initializes from the unconstrained AbsLog{2} minimum, boosts to
-  feasibility by a greedy max-deficit rule (the most-violated entries are covered first), then
-  tightens.
-- `AbsLinear{p}()`: initializes from the AbsLog{2} minimum, moves along the eigenvector of
-  greatest curvature to reach feasibility, then tightens.
+The initialization is the AbsLog{2} unconstrained minimum (geometric mean of
+nonzero entries per row). It is then boosted to feasibility by a greedy
+max-deficit rule (the most-violated entries are covered first), and `maxiter`
+iterations of the tightening algorithm (Algorithm 1 of the manuscript) are
+applied.
 
-The default `ϕ = AbsLinear{2}()`. After initialization, `iter` iterations of the tightening
-algorithm (Algorithm 1 of the manuscript) are applied.
+The result is independent of `ϕ`; the `ϕ` form is provided for interface
+consistency with the other cover methods.
 
-For the `AbsLinear` initialization, the feasibility step recomputes `log|A[i, j]|` for
-under-covered entries. Passing a scratch matrix as `cache` (with the same axes as `A`) lets
-that logarithm be taken once, in the geometric-mean pass, and reused. This is worthwhile when
-covering many matrices of the same size: allocate `cache = similar(A, float(eltype(A)))` once
-and reuse it across calls. The result is unchanged; only the redundant logarithms are saved.
-
-See also: [`symcover_min`](@ref), [`soft_symcover`](@ref), [`cover`](@ref).
+See also: [`symcover!`](@ref), [`symcover_min`](@ref), [`soft_symcover`](@ref), [`cover`](@ref).
 
 # Examples
 
@@ -46,40 +40,46 @@ julia> a * a'   # covers |A|: a[i]*a[j] >= abs(A[i, j])
  4.0  4.0
 ```
 """
-symcover(A::AbstractMatrix; iter::Int=3, cache=nothing) = symcover(AbsLinear{2}(), A; iter, cache)
+symcover(ϕ, A::AbstractMatrix; kwargs...) = symcover(A; kwargs...)
 
-function symcover(ϕ::AbsLog, A::AbstractMatrix; iter::Int=3)
-    ax = axes(A, 1)
-    axes(A, 2) == ax || throw(ArgumentError("symcover requires a square matrix"))
+function symcover(A::AbstractMatrix; kwargs...)
     T = float(eltype(A))
-    a = similar(Array{T}, ax)
-    unconstrained_min!(AbsLog{2}(), a, A)
-    boost_feasible!(a, A)
-    return tighten_cover!(a, A; iter)
-end
-
-function symcover(ϕ::AbsLinear, A::AbstractMatrix; iter::Int=3, cache=nothing)
-    ax = axes(A, 1)
-    axes(A, 2) == ax || throw(ArgumentError("symcover requires a square matrix"))
-    T = float(eltype(A))
-    a = similar(Array{T}, ax)
-    _symcover_abslinear_init!(a, A; cache)
-    return tighten_cover!(a, A; iter)
+    a = similar(Array{T}, axes(A, 1))
+    return symcover!(a, A; kwargs...)
 end
 
 """
-    a, b = cover(ϕ, A; iter=3)
-    a, b = cover(A; iter=3)
+    a = symcover!(a, A; maxiter=3)
+
+Mutating counterpart of [`symcover`](@ref): writes the symmetric hard cover
+into `a` and returns it, rather than allocating a new vector. `eachindex(a)`
+must match `axes(A, 1)` (and `A` must be square).
+
+See also: [`symcover`](@ref).
+"""
+function symcover!(a::AbstractVector, A::AbstractMatrix; kwargs...)
+    ax = axes(A, 1)
+    axes(A, 2) == ax || throw(ArgumentError("symcover! requires a square matrix"))
+    eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$ax"))
+    unconstrained_min!(AbsLog{2}(), a, A)
+    boost_feasible!(a, A)
+    return tighten_cover!(a, A; kwargs...)
+end
+
+"""
+    a, b = cover(ϕ, A; maxiter=3)
+    a, b = cover(A; maxiter=3)
 
 Given a matrix `A`, return vectors `a` and `b` such that `a[i] * b[j] >= abs(A[i, j])`
-for all `i`, `j`. The initialization is the AbsLog{2} unconstrained minimum (geometric
-mean of nonzero entries per row/column), independent of `ϕ`. It is then boosted to
-feasibility by a greedy max-deficit rule (the most-violated entries are covered first),
-and `iter` tightening iterations are applied.
+for all `i`, `j`. The initialization is the AbsLog{2}
+unconstrained minimum (geometric mean of nonzero entries per row/column). It is
+then boosted to feasibility by a greedy max-deficit rule (the most-violated
+entries are covered first), and `maxiter` tightening iterations are applied.
 
-The default `ϕ = AbsLinear{2}()`.
+The result is independent of `ϕ`; the `ϕ` form is provided for interface
+consistency with the other cover methods.
 
-See also: [`cover_min`](@ref), [`symcover`](@ref).
+See also: [`cover!`](@ref), [`cover_min`](@ref), [`symcover`](@ref).
 
 # Examples
 
@@ -95,30 +95,127 @@ julia> a * b'
  6.0      5.63709  8.31251
 ```
 """
-cover(A::AbstractMatrix; iter::Int=3) = cover(AbsLinear{2}(), A; iter)
+cover(ϕ, A::AbstractMatrix; kwargs...) = cover(A; kwargs...)
 
-function cover(ϕ, A::AbstractMatrix; iter::Int=3)
+function cover(A::AbstractMatrix; kwargs...)
     T = float(eltype(A))
-    a = zeros(T, axes(A, 1))
-    b = zeros(T, axes(A, 2))
-    unconstrained_min!(AbsLog{2}(), a, b, A)
-    boost_feasible!(a, b, A)
-    return tighten_cover!(a, b, A; iter)
+    a = similar(Array{T}, axes(A, 1))
+    b = similar(Array{T}, axes(A, 2))
+    return cover!(a, b, A; kwargs...)
 end
 
 # Adjoint/Transpose wrappers for cover.
-function cover(ϕ, A::Adjoint; kwargs...)
-    a, b = cover(ϕ, parent(A); kwargs...)
+function cover(A::Adjoint; kwargs...)
+    a, b = cover(parent(A); kwargs...)
     return b, a
 end
-function cover(ϕ, A::Transpose; kwargs...)
-    a, b = cover(ϕ, parent(A); kwargs...)
+function cover(A::Transpose; kwargs...)
+    a, b = cover(parent(A); kwargs...)
     return b, a
+end
+
+"""
+    a, b = cover!(a, b, A; maxiter=3)
+
+Mutating counterpart of [`cover`](@ref): writes the hard cover into `a` and
+`b` and returns them, rather than allocating new vectors. `eachindex(a)` must
+match `axes(A, 1)` and `eachindex(b)` must match `axes(A, 2)`.
+
+See also: [`cover`](@ref).
+"""
+function cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
+    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$(axes(A, 1))"))
+    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
+    unconstrained_min!(AbsLog{2}(), a, b, A)
+    boost_feasible!(a, b, A)
+    return tighten_cover!(a, b, A; kwargs...)
+end
+
+# Adjoint/Transpose wrappers for cover!.
+function cover!(a::AbstractVector, b::AbstractVector, A::Adjoint; kwargs...)
+    cover!(b, a, parent(A); kwargs...)
+    return a, b
+end
+function cover!(a::AbstractVector, b::AbstractVector, A::Transpose; kwargs...)
+    cover!(b, a, parent(A); kwargs...)
+    return a, b
 end
 
 # ============================================================
 # Internal helpers
 # ============================================================
+
+# Compute the analytical minimizer of the unconstrained AbsLog{2} symmetric objective
+#   ∑_{i,j: A[i,j]≠0} (log(a[i]*a[j]) - log|A[i,j]|)²
+# Fills `a` in-place and returns nza[i] = number of nonzero entries in row i.
+# For efficiency, uses a Sherman-Morrison approximation for the pattern of nonzeros. (It's exact when there are no zeros.)
+# This is the "rank-1 solution" described in manuscript section 5.2.
+function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, A::AbstractMatrix) where T
+    ax = eachindex(a)
+    axes(A) == (ax, ax) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(axes(A)), axes(a)=$(axes(a))"))
+    loga = fill!(similar(a), zero(T))
+    nza  = zeros(Int, ax)
+    foreach_support_sym(A) do i, j, v
+        lAij = log(T(v))
+        loga[i] += lAij
+        nza[i]  += 1
+        if i != j
+            loga[j] += lAij
+            nza[j]  += 1
+        end
+    end
+    nztotal = sum(nza)
+    halfmu = iszero(nztotal) ? zero(T) : sum(loga) / (2 * nztotal)
+    for i in ax
+        # exp can underflow for extreme dynamic range; a zero scale on a
+        # supported row would make the boost's log-deficits infinite, so
+        # clamp to the smallest normal positive value.
+        a[i] = iszero(nza[i]) ? zero(T) : max(exp(loga[i] / nza[i] - halfmu), floatmin(T))
+    end
+    return nza
+end
+
+function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix) where T
+    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, b, A)` requires row indices of `A` to match `a`, got axes(A, 1)=$(axes(A, 1)), axes(a)=$(axes(a))"))
+    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, b, A)` requires column indices of `A` to match `b`, got axes(A, 2)=$(axes(A, 2)), axes(b)=$(axes(b))"))
+    loga = fill!(similar(a), zero(T))
+    logb = fill!(similar(b), zero(T))
+    nza  = zeros(Int, axes(A, 1))
+    nzb  = zeros(Int, axes(A, 2))
+    foreach_support(A) do i, j, v
+        lAij = log(T(v))
+        loga[i] += lAij
+        logb[j] += lAij
+        nza[i]  += 1
+        nzb[j]  += 1
+    end
+    # Each stored entry contributes lAij to loga exactly once and increments
+    # nza exactly once, so these sums equal the per-entry running totals.
+    nztotal = sum(nza)
+    halfmu = iszero(nztotal) ? zero(T) : sum(loga) / (2 * nztotal)
+    for i in axes(A, 1)
+        # exp can underflow for extreme dynamic range; a zero scale on a
+        # supported row would make the boost's log-deficits infinite, so
+        # clamp to the smallest normal positive value.
+        a[i] = iszero(nza[i]) ? zero(T) : max(exp(loga[i] / nza[i] - halfmu), floatmin(T))
+    end
+    for j in axes(A, 2)
+        b[j] = iszero(nzb[j]) ? zero(T) : max(exp(logb[j] / nzb[j] - halfmu), floatmin(T))
+    end
+    return nza, nzb
+end
+
+# Feasible cover starting from the diagonal alone, resolved by
+# `boost_feasible_seq!`. Unlike `boost_feasible!`, a zero entry of `a` going
+# into that call means "not yet resolved", not "permanently unsupported" —
+# every diagonal-zero row is deferred until an off-diagonal neighbor supplies
+# a scale for it (see `boost_feasible_seq!`).
+function init_feasible_diag!(a::AbstractVector{T}, A::AbstractMatrix) where T
+    for k in eachindex(a)
+        a[k] = sqrt(T(abs(A[k, k])))
+    end
+    return boost_feasible_seq!(a, A)
+end
 
 # Shrink x by exp(lr/2) (lr = log of the cover-to-entry ratio for the tightest
 # entry touching x). The direct quotient degenerates to exact zero when
@@ -136,13 +233,13 @@ function _tighten_shrink(x::T, lr::T) where T
     return y
 end
 
-function tighten_cover!(a::AbstractVector{T}, A::AbstractMatrix; iter::Int=3) where T
+function tighten_cover!(a::AbstractVector{T}, A::AbstractMatrix; maxiter::Int=3) where T
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("`tighten_cover!(a, A)` requires a square matrix `A`"))
     eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`"))
     lratio = similar(a)
     la = similar(a)
-    for _ in 1:iter
+    for _ in 1:maxiter
         map!(log, la, a)   # log(0) = -Inf marks zero scales; see below
         fill!(lratio, T(Inf))
         # A is assumed symmetric-valued; entries not visited by `foreach_support_sym`
@@ -166,13 +263,13 @@ function tighten_cover!(a::AbstractVector{T}, A::AbstractMatrix; iter::Int=3) wh
     return a
 end
 
-function tighten_cover!(a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix; iter::Int=3) where T
+function tighten_cover!(a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix; maxiter::Int=3) where T
     eachindex(a) == axes(A, 1) || throw(DimensionMismatch("indices of a must match row-indexing of A"))
     eachindex(b) == axes(A, 2) || throw(DimensionMismatch("indices of b must match column-indexing of A"))
     lratioa = fill(T(Inf), eachindex(a))
     lratiob = fill(T(Inf), eachindex(b))
     la, lb = similar(a), similar(b)
-    for _ in 1:iter
+    for _ in 1:maxiter
         map!(log, la, a)   # log(0) = -Inf marks zero scales; see below
         map!(log, lb, b)
         fill!(lratioa, T(Inf))
@@ -235,8 +332,8 @@ const BOOST_BUCKET_WIDTH = log(2) / 4   # quality indistinguishable from exact g
 function bucket_boost!(deficit::F, apply!::G, entries, ::Type{T}) where {F,G,T}
     n = length(entries)
     zmax = zero(T)
-    for k in eachindex(entries)
-        z = deficit(entries[k])
+    for entry in entries
+        z = deficit(entry)
         z > zero(T) || continue
         zmax = max(zmax, z)
     end
@@ -364,83 +461,6 @@ function boost_feasible!(a::AbstractVector{T}, b::AbstractVector{T}, A::Abstract
     return a, b
 end
 
-# Compute the analytical minimizer of the unconstrained AbsLog{2} symmetric objective
-#   ∑_{i,j: A[i,j]≠0} (log(a[i]*a[j]) - log|A[i,j]|)²
-# Fills `a` in-place and returns nza[i] = number of nonzero entries in row i.
-# For efficiency, uses a Sherman-Morrison approximation for the pattern of nonzeros. (It's exact when there are no zeros.)
-# This is the "rank-1 solution" described in manuscript section 5.2.
-function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, A::AbstractMatrix; logcache=nothing) where T
-    ax = eachindex(a)
-    axes(A) == (ax, ax) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(axes(A)), axes(a)=$(axes(a))"))
-    logcache === nothing || axes(logcache) == (ax, ax) ||
-        throw(DimensionMismatch("`logcache` must have the same axes as `A` (got $(axes(logcache)) vs $((ax, ax)))"))
-    loga = fill!(similar(a), zero(T))
-    nza  = zeros(Int, ax)
-    # When `logcache` is provided, store log|A[i,j]| for every visited entry
-    # so a caller can reuse it (zero entries are skipped and never read back).
-    foreach_support_sym(A) do i, j, v
-        lAij = log(T(v))
-        logcache === nothing || (logcache[i, j] = lAij)
-        loga[i] += lAij
-        nza[i]  += 1
-        if i != j
-            loga[j] += lAij
-            nza[j]  += 1
-        end
-    end
-    nztotal = sum(nza)
-    halfmu = iszero(nztotal) ? zero(T) : sum(loga) / (2 * nztotal)
-    for i in ax
-        # exp can underflow for extreme dynamic range; a zero scale on a
-        # supported row would make the boost's log-deficits infinite, so
-        # clamp to the smallest normal positive value.
-        a[i] = iszero(nza[i]) ? zero(T) : max(exp(loga[i] / nza[i] - halfmu), floatmin(T))
-    end
-    return nza
-end
-
-function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix) where T
-    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, b, A)` requires row indices of `A` to match `a`, got axes(A, 1)=$(axes(A, 1)), axes(a)=$(axes(a))"))
-    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, b, A)` requires column indices of `A` to match `b`, got axes(A, 2)=$(axes(A, 2)), axes(b)=$(axes(b))"))
-    loga = fill!(similar(a), zero(T))
-    logb = fill!(similar(b), zero(T))
-    nza  = zeros(Int, axes(A, 1))
-    nzb  = zeros(Int, axes(A, 2))
-    foreach_support(A) do i, j, v
-        lAij = log(T(v))
-        loga[i] += lAij
-        logb[j] += lAij
-        nza[i]  += 1
-        nzb[j]  += 1
-    end
-    # Each stored entry contributes lAij to loga exactly once and increments
-    # nza exactly once, so these sums equal the per-entry running totals.
-    nztotal = sum(nza)
-    halfmu = iszero(nztotal) ? zero(T) : sum(loga) / (2 * nztotal)
-    for i in axes(A, 1)
-        # exp can underflow for extreme dynamic range; a zero scale on a
-        # supported row would make the boost's log-deficits infinite, so
-        # clamp to the smallest normal positive value.
-        a[i] = iszero(nza[i]) ? zero(T) : max(exp(loga[i] / nza[i] - halfmu), floatmin(T))
-    end
-    for j in axes(A, 2)
-        b[j] = iszero(nzb[j]) ? zero(T) : max(exp(logb[j] / nzb[j] - halfmu), floatmin(T))
-    end
-    return nza, nzb
-end
-
-# Feasible cover starting from the diagonal alone, resolved by
-# `boost_feasible_seq!`. Unlike `boost_feasible!`, a zero entry of `a` going
-# into that call means "not yet resolved", not "permanently unsupported" —
-# every diagonal-zero row is deferred until an off-diagonal neighbor supplies
-# a scale for it (see `boost_feasible_seq!`).
-function init_feasible!(a::AbstractVector{T}, A::AbstractMatrix) where T
-    for k in eachindex(a)
-        a[k] = sqrt(T(abs(A[k, k])))
-    end
-    return boost_feasible_seq!(a, A)
-end
-
 # Feasibility by sequential nearest-neighbor propagation with deferral,
 # processing off-diagonal pairs in order of increasing offset
 # j = 1, …, n-1 (each nonzero A[k, k+j] requires a[k]*a[k+j] ≥ |A[k, k+j]|).
@@ -531,96 +551,31 @@ function boost_feasible_seq!(a::AbstractVector{T}, A::AbstractMatrix) where T
     return a
 end
 
-# Compute the eigenvector of the AbsLog{2} symmetric Hessian with the greatest curvature.
-# The Hessian H ≈ Diagonal(nza) + nza*nza'/sum(nza) (Sherman-Morrison rank-1 form).
-# The characteristic equation (section 5.3.1 of the manuscript) is:
-#   ∑_i n_i² / (λ - n_i) = ∑_i n_i   (N = ∑ n_i)
-# solved by Newton's method.  The eigenvector components are v_i ∝ n_i / (λ - n_i).
-# Accepts any positive-valued weight vector (not just integer counts).
-function _abslog2_greatest_curvature_eigvec(nza::AbstractVector{<:Real})
-    N = float(sum(nza))
-    iszero(N) && return zeros(Float64, length(nza))
-    λ = 2.0 * maximum(nza)  # initial guess: above all n_i so all (λ - n_i) > 0
-    for _ in 1:20           # generous bound; quadratic convergence exits early
-        s1 = 0.0
-        s2 = 0.0
-        for i in eachindex(nza)
-            ni = nza[i]
-            iszero(ni) && continue
-            d = λ - ni
-            s1 += ni^2 / d
-            s2 += ni^2 / d^2
-        end
-        abs(s1 - N) < 1e-12 * N && break
-        iszero(s2) && break
-        λ += (s1 - N) / s2
+# Feasibility by the smallest uniform inflation: multiply every scale by the same
+# factor until `a[i]*a[j] >= |A[i,j]|` for every entry visited by
+# `foreach_support_sym`. Requires a start with strictly positive scale on every
+# supported row (the geometric-mean init from `unconstrained_min!` guarantees this).
+#
+# Unlike `boost_feasible!`, which raises only the rows touching violated entries,
+# this leaves the shape of the starting point untouched and moves it bodily to the
+# feasibility boundary. The two reach different basins of the non-convex AbsLinear
+# objective, which is why `soft_symcover` offers both as starts. The shift depends
+# on `A` only through the log-deficits at the starting point, which are invariant
+# under a diagonal rescaling `D*A*D`, so the result is scale-covariant. Growing the
+# log-scales directly (rather than multiplying by `exp(t)`) stays finite even when
+# `exp(t)` alone would overflow.
+function inflate_feasible!(a::AbstractVector{T}, A::AbstractMatrix) where T
+    la = map(log, a)
+    t = zero(T)
+    foreach_support_sym(A) do i, j, v
+        t = max(t, (log(T(v)) - la[i] - la[j]) / 2)
     end
-    # `λ` is reassigned in the loop, so a comprehension capturing it would box it
-    # (Core.Box), losing type stability; copy to a binding that is never reassigned.
-    λ★ = λ
-    v = [iszero(nza[i]) ? 0.0 : nza[i] / (λ★ - nza[i]) for i in eachindex(nza)]
-    nv = sqrt(sum(abs2, v))
-    return iszero(nv) ? v : v ./ nv
-end
-
-# AbsLinear symmetric initialization. Start at the AbsLog{2} unconstrained
-# minimum, then move along the eigenvector of greatest Hessian curvature by the
-# smallest nonnegative distance that makes the cover feasible
-# (a[i]*a[j] >= |A[i,j]| for every entry). Moving along this direction keeps the
-# step scale-covariant and reaches feasibility with the least perturbation of
-# the unconstrained minimum. Fills `a` in place and returns it.
-function _symcover_abslinear_init!(a::AbstractVector{T}, A::AbstractMatrix; cache=nothing) where T
-    ax = eachindex(a)
-    axes(A) == (ax, ax) || throw(DimensionMismatch("`_symcover_abslinear_init!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(axes(A)), axes(a)=$(axes(a)))"))
-    nza = unconstrained_min!(AbsLog{2}(), a, A; logcache=cache)
-    v   = _abslog2_greatest_curvature_eigvec(nza)
-    # Feasibility requires a[i]*a[j] >= |A[i,j]|; move along v by the least t
-    # achieving it, using deficit = log|A[i,j]| - log a[i] - log a[j]. Whenever
-    # |A[i,j]|>0 both a[i],a[j]>0 (a zero entry of `a` means an all-zero row), so
-    # log a[i] is well defined.
-    #
-    # The logarithm and division are needed only for entries that raise the
-    # running maximum t_feas: an entry can beat it only if its deficit exceeds
-    # s*t_feas >= 2*vmin*t_feas (s = v[i]+v[j], vmin the least participating
-    # eigenvector entry), i.e. only if |A[i,j]| > exp(2*vmin*t_feas)*a[i]*a[j].
-    # Maintaining that threshold reduces the scan to one multiply-and-compare
-    # per entry, with log/divide costs only along the increasing-max chain.
-    # (Rounding of exp/log can misjudge the filter by ~1 ulp of t_feas; t_feas
-    # is only accurate to rounding anyway.) For chain entries, `cache` supplies
-    # log|A[i,j]| when present so it need not be recomputed.
-    lα = similar(a)
-    vmin = T(Inf)
-    for i in ax
-        if iszero(a[i])
-            lα[i] = zero(T)
-        else
-            lα[i] = log(a[i])
-            vmin = min(vmin, T(v[i]))
-        end
-    end
-    t_feas = zero(T)
-    thresh = one(T)
-    foreach_support_sym(A) do i, j, v_ij
-        Aij = T(v_ij)
-        if thresh < T(Inf)
-            # a rounded-to-Inf product means the true product exceeds
-            # floatmax >= Aij, so skipping remains conservative
-            Aij <= thresh * (a[i] * a[j]) && return
-        else
-            # exp overflowed: fall back to skipping only feasible entries
-            Aij <= a[i] * a[j] && return
-        end
-        s = T(v[i]) + T(v[j])
-        iszero(s) && return
-        lAij = cache === nothing ? log(Aij) : cache[i, j]
-        t = (lAij - lα[i] - lα[j]) / s
-        if t > t_feas
-            t_feas = t
-            thresh = exp(2 * vmin * t_feas)
-        end
-    end
-    for i in ax
-        a[i] *= exp(t_feas * T(v[i]))
+    # A supported row with zero scale gives la = -Inf, hence t = +Inf.
+    isfinite(t) ||
+        throw(ArgumentError("inflate_feasible! requires a start with positive scale on every supported row"))
+    iszero(t) && return a
+    for i in eachindex(a)
+        iszero(a[i]) || (a[i] = exp(la[i] + t))
     end
     return a
 end

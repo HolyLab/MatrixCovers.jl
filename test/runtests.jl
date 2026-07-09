@@ -69,25 +69,37 @@ using Test
         @test_throws ArgumentError symcover([1.0 2.0; 3.0 4.0; 5.0 6.0])
     end
 
-    @testset "symcover log cache" begin
-        # Passing a scratch `cache` reuses the geometric-mean logarithms in the
-        # AbsLinear feasibility step; the result must be identical to the no-cache
-        # path (bitwise, not merely approximately). One buffer is reused across
-        # several differently-sized-support matrices to mimic the batch use case.
+    @testset "symcover ignores ϕ" begin
+        # The initialization is the geometric mean plus the greedy max-deficit boost for
+        # every penalty, so `ϕ` (and `p`) cannot change the result.
         rng = MersenneTwister(1)
         for n in (2, 5, 40)
-            cache = Matrix{Float64}(undef, n, n)
-            for _ in 1:5
-                B = randn(rng, n, n); A = (B + B') / 2
-                @test symcover(A) == symcover(A; cache)
-                @test symcover(AbsLinear{2}(), A) == symcover(AbsLinear{2}(), A; cache)
+            B = randn(rng, n, n); A = (B + B') / 2
+            a = symcover(A)
+            for ϕ in (AbsLog{1}(), AbsLog{2}(), AbsLinear{1}(), AbsLinear{2}())
+                @test symcover(ϕ, A) == a
             end
-            # Matrices with zero rows/entries: cache cells for zero entries are never read.
-            A = [1.0 0.0 2.0; 0.0 0.0 0.0; 2.0 0.0 3.0]
-            @test symcover(A) == symcover(A; cache=Matrix{Float64}(undef, 3, 3))
         end
-        # A cache whose axes do not match `A` is rejected.
-        @test_throws DimensionMismatch symcover([2.0 1.0; 1.0 3.0]; cache=zeros(3, 3))
+    end
+
+    @testset "symcover with unequal row degrees" begin
+        # Rows with differing numbers of nonzeros must not destabilize the initialization.
+        # Sparse matrices of this size and density are the stressing case: the returned cover
+        # must be finite and feasible, never NaN/Inf.
+        for (n, seed) in ((20, 44), (60, 21))
+            rng = MersenneTwister(seed)
+            M = randn(rng, n, n) .* (rand(rng, n, n) .< 0.3)
+            A = Matrix(Symmetric(M))
+            a = symcover(A)
+            @test all(isfinite, a)
+            @test all(a[i] * a[j] >= abs(A[i, j]) - 1e-9 for i in 1:n, j in 1:n)
+        end
+        # Arrow matrix: one dense row/column, everything else diagonal (degrees 2,…,2,n).
+        n = 6
+        A = Matrix(Diagonal(fill(2.0, n))); A[1, :] .= 1.0; A[:, 1] .= 1.0; A[1, 1] = 2.0
+        a = symcover(A)
+        @test all(isfinite, a)
+        @test all(a[i] * a[j] >= abs(A[i, j]) - 1e-9 for i in 1:n, j in 1:n)
     end
 
     @testset "cover" begin
@@ -129,6 +141,37 @@ using Test
             @test c * a ≈ dr .* a0
             @test b / c ≈ dc .* b0
         end
+    end
+
+    @testset "symcover! and cover!" begin
+        A = [2.0 1.0; 1.0 3.0]
+        a = symcover(A)
+        abuf = similar(a)
+        @test symcover!(abuf, A) === abuf
+        @test abuf == a
+
+        B = [1.0 2.0 3.0; 4.0 5.0 6.0]
+        aB, bB = cover(B)
+        abuf2, bbuf2 = similar(aB), similar(bB)
+        r = cover!(abuf2, bbuf2, B)
+        @test r === (abuf2, bbuf2)
+        @test abuf2 == aB && bbuf2 == bB
+
+        # Adjoint/Transpose wrappers match the allocating forms.
+        aT, bT = cover(B')
+        abufT, bbufT = similar(aT), similar(bT)
+        cover!(abufT, bbufT, B')
+        @test abufT == aT && bbufT == bT
+
+        # Buffer axes must match A's axes, including non-1-based indexing.
+        Ao = OffsetArray(A, 0:1, 0:1)
+        abufo = OffsetArray(similar(a), 0:1)
+        symcover!(abufo, Ao)
+        @test collect(abufo) == a
+
+        @test_throws DimensionMismatch symcover!(zeros(3), A)
+        @test_throws DimensionMismatch cover!(zeros(2), zeros(2), B)
+        @test_throws DimensionMismatch cover!(zeros(2), zeros(4), B)
     end
 
     @testset "soft_symcover" begin
@@ -190,8 +233,8 @@ using Test
         A_zero  = [γ 1.0; 1.0 0.0]
         A_small = [γ 1.0; 1.0 1e-10]
         for ϕ in (AbsLinear{1}(), AbsLinear{2}())
-            a_zero  = soft_symcover(ϕ, A_zero;  iter=50)
-            a_small = soft_symcover(ϕ, A_small; iter=50)
+            a_zero  = soft_symcover(ϕ, A_zero;  maxiter=50)
+            a_small = soft_symcover(ϕ, A_small; maxiter=50)
             @test a_small ≈ a_zero atol=1e-5
         end
 
@@ -206,8 +249,8 @@ using Test
         for ϕ in (AbsLinear{1}(), AbsLinear{2}())
             for (B, d) in ((A_small, [50.0, 0.02]),
                            ([3.0 7.6e-10; 7.6e-10 80.0], [35.0, 3400.0]))
-                a0 = soft_symcover(ϕ, B; iter=100)
-                as = soft_symcover(ϕ, B .* d .* d'; iter=100)
+                a0 = soft_symcover(ϕ, B; maxiter=100)
+                as = soft_symcover(ϕ, B .* d .* d'; maxiter=100)
                 @test as .* as' ≈ (d .* d') .* (a0 .* a0') rtol=1e-6
             end
         end
@@ -226,10 +269,10 @@ using Test
         for ε in (0.5, 0.1, 1e-3)
             Aε = [1.0 ε; ε 1.0]
             target = (1 + ε^2) / (1 + ε)
-            a, b = soft_cover(Aε; starts=1, iter=200)
+            a, b = soft_cover(Aε; starts=1, maxiter=200)
             @test all(≈(target; atol=1e-10), a * b')
             # The multistart never does worse than this uniform-basin local minimizer.
-            am, bm = soft_cover(Aε; iter=200)
+            am, bm = soft_cover(Aε; maxiter=200)
             @test cover_objective(AbsLinear{2}(), am, bm, Aε) <=
                   cover_objective(AbsLinear{2}(), a, b, Aε) + 1e-12
         end
@@ -241,7 +284,7 @@ using Test
         # Monotone descent: the returned objective never exceeds the geometric-mean init's.
         for A in ([1.0 2.0 3.0; 6.0 5.0 4.0],
                   [2.0 1.0 0.5; 0.1 4.0 3.0; 1.0 2.0 0.2; 5.0 0.3 1.0])
-            a0, b0 = cover(A; iter=0)
+            a0, b0 = cover(A; maxiter=0)
             Einit = cover_objective(AbsLinear{2}(), a0, b0, A)
             a, b = soft_cover(A)
             @test cover_objective(AbsLinear{2}(), a, b, A) <= Einit + 1e-12
@@ -283,7 +326,7 @@ using Test
             # AbsLinear{2} warm start (each block update is an exact minimization).
             for M in ([1.0 2.0 3.0; 6.0 5.0 4.0],
                       [2.0 1.0 0.5; 0.1 4.0 3.0; 1.0 2.0 0.2; 5.0 0.3 1.0])
-                a0, b0 = soft_cover(AbsLinear{2}(), M; iter=5, starts=8, rng=MersenneTwister(0))
+                a0, b0 = soft_cover(AbsLinear{2}(), M; maxiter=5, starts=8, rng=MersenneTwister(0))
                 Einit = cover_objective(AbsLinear{1}(), a0, b0, M)
                 ar, br = soft_cover(AbsLinear{1}(), M; rng=MersenneTwister(0))
                 @test cover_objective(AbsLinear{1}(), ar, br, M) <= Einit + 1e-12
@@ -326,6 +369,14 @@ using Test
         # `starts` and `σ` are accepted; `starts=1` is a plain single start.
         @test soft_cover(A; starts=1, σ=1.5) isa Tuple
         @test soft_symcover(As; starts=1, σ=1.5) isa Vector
+
+        # `sigma` is an ASCII alias for `σ`; passing both is fine when they agree and an
+        # error when they don't.
+        @test soft_cover(A; starts=1, sigma=1.5) == soft_cover(A; starts=1, σ=1.5)
+        @test soft_symcover(As; starts=1, sigma=1.5) == soft_symcover(As; starts=1, σ=1.5)
+        @test soft_cover(A; starts=1, σ=1.5, sigma=1.5) == soft_cover(A; starts=1, σ=1.5)
+        @test_throws "specify only one" soft_cover(A; σ=1.5, sigma=2.0)
+        @test_throws "specify only one" soft_symcover(As; σ=1.5, sigma=2.0)
 
         # best-of-8 never exceeds the single-start objective on the committed libraries
         # (the multistart's incumbent is the single start, replaced only on improvement).
@@ -381,7 +432,7 @@ using Test
             return a, labels[ScaleInvariantAnalysis._multistart_select(objs)], labels, objs
         end
 
-        # The greedy feasible cover (`init_feasible!`) is offered as a start only when `A` has a
+        # The greedy feasible cover (`init_feasible_diag!`) is offered as a start only when `A` has a
         # zero entry. On this matrix every geometric-mean-derived start lands in one basin while
         # `feasible` reaches a distinctly better one, so it is the selected winner.
         Afe = Float64[0 11 18 0 12; 11 0 1 0 20; 18 1 0 3 18; 0 0 3 18 0; 12 20 18 0 17]
@@ -421,6 +472,7 @@ using Test
         @test dotabs([1.0, -2.0, 3.0], [4.0, 5.0, -6.0]) ≈ 4.0 + 10.0 + 18.0
         @test dotabs([0.0, 1.0], [1.0, 0.0]) == 0.0
         @test dotabs(big.([1.0, 2.0]), big.([3.0, 4.0])) ≈ 3.0 + 8.0
+        @test dotabs([1.0 + 2.0im, -1.0im], [3.0, 1.0 + 1.0im]) ≈ abs((1.0 + 2.0im) * 3.0) + abs(-1.0im * (1.0 + 1.0im))
     end
 
     @testset "divmag" begin
@@ -444,8 +496,8 @@ using Test
         A_ill = [1.0 -0.9999; -0.9999 1]
         a_ill, mag_ill = divmag(A_ill, b)
         @test abs(dotabs(A_ill \ b, a_ill) - dotabs(big.(A_ill) \ big.(b), a_ill)) > 10^6 * eps(mag_ill)
-        # With cond=true, accuracy is recovered
-        a_ill2, mag_ill2 = divmag(A_ill, b; cond=true)
+        # With use_cond=true, accuracy is recovered
+        a_ill2, mag_ill2 = divmag(A_ill, b; use_cond=true)
         @test abs(dotabs(A_ill \ b, a_ill2) - dotabs(big.(A_ill) \ big.(b), a_ill2)) <= 10^3 * eps(mag_ill2)
     end
 
@@ -498,6 +550,109 @@ using Test
         A_rank1 = [2.0 1.0 4.0; 1.0 0.5 2.0; 4.0 2.0 8.0]
         a_soft = soft_symcover_min(AbsLog{2}(), A_rank1)
         @test cover_objective(AbsLog{2}(), a_soft, A_rank1) < 1e-8
+    end
+
+    @testset "soft_cover_min native AbsLog{2}" begin
+        # Matches the analytic asymmetric minimizer directly.
+        A = [1.0 2.0 3.0; 6.0 5.0 4.0]
+        a, b = soft_cover_min(AbsLog{2}(), A)
+        a_ref, b_ref = similar(a), similar(b)
+        ScaleInvariantAnalysis.unconstrained_min!(AbsLog{2}(), a_ref, b_ref, A)
+        @test a == a_ref && b == b_ref
+
+        # It's the unconstrained minimum: any perturbation can only raise the objective.
+        obj0 = cover_objective(AbsLog{2}(), a, b, A)
+        rng = MersenneTwister(42)
+        for _ in 1:20
+            ap = a .* exp.(0.1 .* randn(rng, length(a)))
+            bp = b .* exp.(0.1 .* randn(rng, length(b)))
+            @test cover_objective(AbsLog{2}(), ap, bp, A) >= obj0 - 1e-10
+        end
+
+        # Non-1-based axes propagate from A, not from 1:n.
+        Ao = OffsetArray(A, 10, 20)
+        ao, bo = soft_cover_min(AbsLog{2}(), Ao)
+        @test axes(ao, 1) == axes(Ao, 1)
+        @test axes(bo, 1) == axes(Ao, 2)
+        @test collect(ao) == a && collect(bo) == b
+    end
+
+    @testset "no-ϕ convenience methods for the *_min family" begin
+        # symcover_min(A) and cover_min(A) default to AbsLog{2}, matching
+        # symcover(A)/cover(A). Solved natively, so no extension is needed.
+        A = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
+        @test symcover_min(A) == symcover_min(AbsLog{2}(), A)
+        Aasym = [1.0 2.0 3.0; 4.0 5.0 6.0]
+        @test cover_min(Aasym) == cover_min(AbsLog{2}(), Aasym)
+
+        # soft_symcover_min(A) defaults to AbsLinear{2}, matching soft_symcover(A);
+        # requires JuMP+Ipopt.
+        @test soft_symcover_min(A) == soft_symcover_min(AbsLinear{2}(), A)
+
+        # soft_cover_min(A) also defaults to AbsLinear{2}, matching soft_cover(A), but
+        # that penalty isn't implemented yet (only AbsLog{2} is) — the default forward
+        # raises the same MethodError as calling it directly.
+        @test_throws MethodError soft_cover_min(Aasym)
+        @test_throws MethodError soft_cover_min(AbsLinear{2}(), Aasym)
+    end
+
+    @testset "error hint gated on argument types" begin
+        # Wrong-argument-type MethodError: no extension load would fix this,
+        # so the hint must not fire.
+        A = [4.0 1.0; 1.0 4.0]
+        e = try
+            symcover_min(AbsLog{2}(), "not a matrix")
+            nothing
+        catch err
+            err
+        end
+        @test e isa MethodError
+        @test !occursin("loading JuMP", sprint(showerror, e))
+
+        # Genuine missing-extension MethodError: run in a fresh process with
+        # JuMP/HiGHS/Ipopt unloaded (this test file loads them itself, which
+        # would otherwise mask the failure), so the hint should fire.
+        script = """
+        using ScaleInvariantAnalysis
+        A = [4.0 1.0; 1.0 4.0]
+        try
+            symcover_min(AbsLog{1}(), A)
+        catch e
+            print(sprint(showerror, e))
+        end
+        """
+        out = read(`$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script`, String)
+        @test occursin("loading JuMP", out)
+
+        # The no-ϕ wrapper `soft_symcover_min(A)` exists in the base package, but the
+        # `AbsLinear{2}` method it forwards to lives in the SIAIpopt extension. The
+        # MethodError raised (and hinted on) is for the inner call, so the hint must
+        # still fire even though the outer, no-ϕ call is what the user wrote.
+        script_noϕ = """
+        using ScaleInvariantAnalysis
+        A = [4.0 1.0; 1.0 4.0]
+        try
+            soft_symcover_min(A)
+        catch e
+            print(sprint(showerror, e))
+        end
+        """
+        out_noϕ = read(`$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script_noϕ`, String)
+        @test occursin("loading JuMP", out_noϕ)
+
+        # soft_cover_min's AbsLinear penalties are simply unimplemented, not gated
+        # behind an extension, so the hint must say so rather than claim a package
+        # load would help.
+        e3 = try
+            soft_cover_min(AbsLinear{2}(), A)
+            nothing
+        catch err
+            err
+        end
+        @test e3 isa MethodError
+        msg3 = sprint(showerror, e3)
+        @test occursin("not yet supported", msg3)
+        @test !occursin("loading JuMP", msg3)
     end
 
     @testset "symcover_min native AbsLog{2}" begin
@@ -715,7 +870,7 @@ using Test
         # (agreement to within solver tolerance)
         for A in ([2.0 1.0; 1.0 3.0], [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0])
             a_opt  = soft_symcover_min(AbsLinear{2}(), A)
-            a_heur = soft_symcover(AbsLinear{2}(), A; iter=50)
+            a_heur = soft_symcover(AbsLinear{2}(), A; maxiter=50)
             @test cover_objective(AbsLinear{2}(), a_opt, A) <=
                   cover_objective(AbsLinear{2}(), a_heur, A) + 1e-6
         end
@@ -976,6 +1131,32 @@ using Test
         end
     end
 
+    @testset "symcover_min(AbsLog{2}) on complex Hermitian/Symmetric input" begin
+        # The cover problem only depends on abs.(A), so a complex Hermitian (real
+        # diagonal, conjugate-symmetric off-diagonals) or complex Symmetric matrix
+        # must give the same result as symcover_min on the real magnitude matrix.
+        rng = MersenneTwister(42)
+        n = 6
+        M = randn(rng, ComplexF64, n, n)
+        Href = symcover_min(AbsLog{2}(), abs.(Matrix(Hermitian(M + M'))))
+
+        Hdense = Hermitian(M + M')
+        @test symcover_min(AbsLog{2}(), Hdense) ≈ Href rtol = 1e-10
+
+        Msp = sprandn(rng, ComplexF64, n, n, 0.5)
+        Hsp = Hermitian(sparse(Msp + Msp'))
+        @test symcover_min(AbsLog{2}(), Hsp) ≈ symcover_min(AbsLog{2}(), abs.(Matrix(Hsp))) rtol = 1e-7
+
+        # Symmetric{<:Complex} carries no conjugate-symmetry guarantee, but the cover
+        # problem still only depends on abs.(A), so the same identity holds.
+        Ssp = Symmetric(sparse(Msp + transpose(Msp)))
+        @test symcover_min(AbsLog{2}(), Ssp) ≈ symcover_min(AbsLog{2}(), abs.(Matrix(Ssp))) rtol = 1e-7
+
+        # Real input is unaffected by deriving T from real(eltype(A)).
+        Ar = [4.0 1.0; 1.0 4.0]
+        @test symcover_min(AbsLog{2}(), Ar) ≈ [2.0, 2.0]
+    end
+
     @testset "MCM disconnected-support gauge" begin
         # A support graph that splits into k connected components carries k independent
         # (e; −e) gauges. The asymmetric dense normal equations pin only the global one
@@ -1007,13 +1188,13 @@ using Test
         for (_, A) in symmetric_matrices
             Af = Float64.(A)
             # Initialization should give a valid cover
-            a0 = symcover(AbsLog{2}(), Af; iter=0)
+            a0 = symcover(AbsLog{2}(), Af; maxiter=0)
             @test all(a0[i] * a0[j] >= abs(Af[i, j]) - 1e-12 for i in axes(Af, 1), j in axes(Af, 2))
-            a0 = symcover(AbsLog{2}(), Af / 100; iter=0)
+            a0 = symcover(AbsLog{2}(), Af / 100; maxiter=0)
             @test all(a0[i] * a0[j] >= abs(Af[i, j])/100 - 1e-12 for i in axes(Af, 1), j in axes(Af, 2))
             # Covers are nearly quadratically optimal
             qopt  = cover_objective(AbsLog{2}(), symcover_min(AbsLog{2}(), Af), Af)
-            qfast = cover_objective(AbsLog{2}(), symcover(AbsLog{2}(), Af; iter=10), Af)
+            qfast = cover_objective(AbsLog{2}(), symcover(AbsLog{2}(), Af; maxiter=10), Af)
             iszero(qopt) || push!(sym_ratios, qfast / qopt)
         end
         @test median(sym_ratios) < 1.02
@@ -1021,12 +1202,12 @@ using Test
         gen_ratios = Float64[]
         for (_, A) in general_matrices
             Af = Float64.(A)
-            a0, b0 = cover(AbsLog{2}(), Af; iter=0)
+            a0, b0 = cover(AbsLog{2}(), Af; maxiter=0)
             @test all(a0[i] * b0[j] >= abs(Af[i, j]) - 1e-12 for i in axes(Af, 1), j in axes(Af, 2))
-            a0, b0 = cover(AbsLog{2}(), Af / 100; iter=0)
+            a0, b0 = cover(AbsLog{2}(), Af / 100; maxiter=0)
             @test all(a0[i] * b0[j] >= abs(Af[i, j])/100 - 1e-12 for i in axes(Af, 1), j in axes(Af, 2))
             qopt  = cover_objective(AbsLog{2}(), cover_min(AbsLog{2}(), Af)..., Af)
-            qfast = cover_objective(AbsLog{2}(), cover(AbsLog{2}(), Af; iter=10)..., Af)
+            qfast = cover_objective(AbsLog{2}(), cover(AbsLog{2}(), Af; maxiter=10)..., Af)
             iszero(qopt) || push!(gen_ratios, qfast / qopt)
         end
         @test median(gen_ratios) < 1.02
@@ -1073,13 +1254,13 @@ using Test
         n = 8
         B = randn(rng, n, n); A = (B + B') / 2
         d = exp.(randn(rng, n))
-        @test symcover(AbsLog{2}(), A .* d .* d'; iter=0) ≈ d .* symcover(AbsLog{2}(), A; iter=0) rtol=1e-10
+        @test symcover(AbsLog{2}(), A .* d .* d'; maxiter=0) ≈ d .* symcover(AbsLog{2}(), A; maxiter=0) rtol=1e-10
 
         m = 6
         Ag = randn(rng, n, m)
         dr, dc = exp.(randn(rng, n)), exp.(randn(rng, m))
-        a1, b1 = cover(AbsLog{2}(), Ag; iter=0)
-        a2, b2 = cover(AbsLog{2}(), dr .* Ag .* dc'; iter=0)
+        a1, b1 = cover(AbsLog{2}(), Ag; maxiter=0)
+        a2, b2 = cover(AbsLog{2}(), dr .* Ag .* dc'; maxiter=0)
         # cover has a free global gauge a→c*a, b→b/c; only the product co-varies.
         c = a2 \ (dr .* a1)
         @test c * a2 ≈ dr .* a1 rtol=1e-10
@@ -1095,14 +1276,14 @@ using Test
             B = randn(qrng, n, n) .* exp.(rand(qrng) * 3 * randn(qrng, n, n))
             A = (B + B') / 2
             Emin = cover_objective(AbsLog{2}(), symcover_min(AbsLog{2}(), A), A)
-            E3   = cover_objective(AbsLog{2}(), symcover(AbsLog{2}(), A; iter=3), A)
+            E3   = cover_objective(AbsLog{2}(), symcover(AbsLog{2}(), A; maxiter=3), A)
             iszero(Emin) || push!(gaps, log(E3 / Emin))
         end
         for _ in 1:10
             n = rand(qrng, 5:15)
             S = sprand(qrng, n, n, 0.3); A = Matrix(S + S')
             Emin = cover_objective(AbsLog{2}(), symcover_min(AbsLog{2}(), A), A)
-            E3   = cover_objective(AbsLog{2}(), symcover(AbsLog{2}(), A; iter=3), A)
+            E3   = cover_objective(AbsLog{2}(), symcover(AbsLog{2}(), A; maxiter=3), A)
             iszero(Emin) || push!(gaps, log(E3 / Emin))
         end
         @test median(gaps) < 0.0181 * 1.5
@@ -1111,11 +1292,11 @@ using Test
     @testset "boost feasibility: lower-dominant bands and extreme dynamic range" begin
         # Lower-dominant bands: the symmetric-contract value is the max over both
         # triangles, so the subdiagonal must be covered even when it dominates.
-        a = symcover(AbsLog{2}(), Bidiagonal([0.01, 0.01, 0.01], [100.0, 100.0], 'L'); iter=0)
+        a = symcover(AbsLog{2}(), Bidiagonal([0.01, 0.01, 0.01], [100.0, 100.0], 'L'); maxiter=0)
         @test a[1] * a[2] >= 100 * (1 - 8eps())
         @test a[2] * a[3] >= 100 * (1 - 8eps())
         T40 = Tridiagonal(fill(50.0, 39), fill(0.01, 40), fill(0.02, 39))
-        a = symcover(AbsLog{2}(), T40; iter=0)
+        a = symcover(AbsLog{2}(), T40; maxiter=0)
         M = Matrix(T40)
         @test all(a[i] * a[j] >= max(abs(M[i, j]), abs(M[j, i])) * (1 - 8eps()) for i in axes(M, 1), j in axes(M, 2))
 

@@ -71,18 +71,18 @@ which the solvers minimize.  Two penalty families are provided:
 ```jldoctest quality; filter = r"(\d+\.\d{6})\d+" => s"\1"
 julia> using ScaleInvariantAnalysis
 
-julia> A = [4.0 2.0; 2.0 9.0];
+julia> A = [4.0 2.0; 2.0 16.0];
 
 julia> a = symcover(A)
 2-element Vector{Float64}:
  2.0
- 3.0
+ 4.0
 
 julia> cover_objective(AbsLog{1}(), a, A)   # sum of log-excesses (L1)
-2.1972245773362196
+2.772588722239781
 
 julia> cover_objective(AbsLog{2}(), a, A)   # sum of squared log-excesses (L2)
-2.413897921625164
+3.843624111345611
 ```
 
 Both objectives are zero if and only if every constraint is exactly tight.
@@ -98,6 +98,7 @@ Both objectives are zero if and only if every constraint is exactly tight.
 | [`soft_symcover`](@ref) | yes | soft (penalized) | `AbsLinear{2}` (or `AbsLog`, `AbsLinear{1}`) | — |
 | [`soft_cover`](@ref) | no | soft (penalized) | `AbsLinear{2}` (or `AbsLinear{1}`) | — |
 | [`soft_symcover_min`](@ref) | yes | soft (penalized) | `AbsLog{2}`, `AbsLinear` | JuMP |
+| [`soft_cover_min`](@ref) | no | soft (penalized) | `AbsLog{2}` only | native |
 
 **[`symcover`](@ref), [`cover`](@ref), [`soft_symcover`](@ref), and
 [`soft_cover`](@ref) are recommended for production use.**  The hard-cover
