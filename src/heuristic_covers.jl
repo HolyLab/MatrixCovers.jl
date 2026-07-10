@@ -567,10 +567,11 @@ end
 # `exp(t)` alone would overflow.
 function inflate_feasible!(a::AbstractVector{T}, A::AbstractMatrix) where T
     la = map(log, a)
-    t = zero(T)
+    tref = Ref(zero(T))
     foreach_support_sym(A) do i, j, v
-        t = max(t, (log(T(v)) - la[i] - la[j]) / 2)
+        tref[] = max(tref[], (log(T(v)) - la[i] - la[j]) / 2)
     end
+    t = tref[]
     # A supported row with zero scale gives la = -Inf, hence t = +Inf.
     isfinite(t) ||
         throw(ArgumentError("inflate_feasible! requires a start with positive scale on every supported row"))
