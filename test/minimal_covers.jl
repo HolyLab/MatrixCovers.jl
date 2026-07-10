@@ -1,0 +1,291 @@
+# The *_min family: native AbsLog{2} minimal-cover solvers and their edge cases.
+
+# Committed 5x5 matrix libraries (`symmetric_matrices`, `general_matrices`); the guard
+# permits re-inclusion of this file in an already-initialized session.
+if !isdefined(@__MODULE__, :symmetric_matrices)
+    include("testmatrices.jl")
+end
+
+@testset "symcover_min native AbsLog{2}" begin
+    # Non-square rejected.
+    @test_throws ArgumentError symcover_min(AbsLog{2}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
+
+    # Native solver matches the HiGHS reference in objective across the whole
+    # committed symmetric library, and returns a feasible cover.
+    for (_, A) in symmetric_matrices
+        Af = Float64.(A)
+        a  = symcover_min(AbsLog{2}(), Af)
+        aj = ScaleInvariantAnalysis.symcover_min_jump(AbsLog{2}(), Af)
+        @test all(a[i] * a[j] >= abs(Af[i, j]) - 1e-8 for i in axes(Af, 1), j in axes(Af, 2))
+        oj = cover_objective(AbsLog{2}(), aj, Af)
+        o  = cover_objective(AbsLog{2}(), a, Af)
+        @test o <= oj * (1 + 1e-6) + 1e-10
+    end
+
+    # Scale-covariance: for a positive diagonal D, the optimal cover of D*A*D
+    # is D times the optimal cover of A (up to the a·aᵀ gauge), so the product
+    # a[i]*a[j] covaries as d[i]*d[j].
+    rng = MersenneTwister(1234)
+    for (_, A) in symmetric_matrices[1:30]
+        Af = Float64.(A); n = size(Af, 1)
+        d = exp.(2 .* randn(rng, n))
+        AD = (d .* Af) .* d'
+        a  = symcover_min(AbsLog{2}(), Af)
+        aD = symcover_min(AbsLog{2}(), AD)
+        for i in 1:n, j in 1:n
+            (a[i] == 0 || a[j] == 0) && continue
+            @test aD[i] * aD[j] ≈ d[i] * d[j] * a[i] * a[j] rtol=1e-6
+        end
+    end
+
+    # Edge cases.
+    @test symcover_min(AbsLog{2}(), reshape([4.0], 1, 1)) ≈ [2.0]           # n = 1
+    # [0 1; 1 0]: a₁a₂ = 1 is the (gauge-invariant) optimum, objective 0.
+    a = symcover_min(AbsLog{2}(), [0.0 1.0; 1.0 0.0])
+    @test a[1] * a[2] ≈ 1.0
+    @test cover_objective(AbsLog{2}(), a, [0.0 1.0; 1.0 0.0]) < 1e-12
+    # A zero row/column leaves its scale at 0 while the rest is covered.
+    Az = [1.0 0.0 2.0; 0.0 0.0 0.0; 2.0 0.0 3.0]
+    a = symcover_min(AbsLog{2}(), Az)
+    @test a[2] == 0.0
+    @test all(a[i] * a[j] >= abs(Az[i, j]) - 1e-8 for i in 1:3, j in 1:3)
+    # Scattered zeros with an exact rank-1 cover.
+    A = [0 0 1; 0 0 2; 1 2 1]
+    a = symcover_min(AbsLog{2}(), A)
+    @test a ≈ [1, 2, 1]
+    @test abs(cover_objective(AbsLog{2}(), a, A)) < 1e-8
+    # κs keyword is accepted.
+    @test symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; κs=(1e2, 1e4, 1e6, 1e8, 1e10)) isa Vector
+end
+
+@testset "cover_min native AbsLog{2}" begin
+    # Native solver returns a feasible cover across the whole committed general
+    # library, and matches the HiGHS reference in objective on a deterministic
+    # subsample (the full 4367-matrix JuMP cross-check is slow).
+    idx_sub = Set(round.(Int, range(1, length(general_matrices), length=500)))
+    for (k, (_, A)) in enumerate(general_matrices)
+        Af = Float64.(A)
+        a, b = cover_min(AbsLog{2}(), Af)
+        @test all(a[i] * b[j] >= abs(Af[i, j]) - 1e-7 for i in axes(Af, 1), j in axes(Af, 2))
+        if k in idx_sub
+            aj, bj = ScaleInvariantAnalysis.cover_min_jump(AbsLog{2}(), Af)
+            oj = cover_objective(AbsLog{2}(), aj, bj, Af)
+            o  = cover_objective(AbsLog{2}(), a, b, Af)
+            @test o <= oj * (1 + 1e-6) + 1e-10
+            # The balance convention is shared, so a, b agree entrywise with JuMP.
+            @test a ≈ aj rtol=1e-5
+            @test b ≈ bj rtol=1e-5
+        end
+    end
+
+    # Scale-covariance under independent row/column scalings: covering D_r*A*D_c
+    # scales the product a[i]*b[j] by d_r[i]*d_c[j].
+    rng = MersenneTwister(1234)
+    for (_, A) in general_matrices[1:30]
+        Af = Float64.(A); m, n = size(Af)
+        dr = exp.(2 .* randn(rng, m)); dc = exp.(2 .* randn(rng, n))
+        AD = (dr .* Af) .* dc'
+        a, b   = cover_min(AbsLog{2}(), Af)
+        aD, bD = cover_min(AbsLog{2}(), AD)
+        for i in 1:m, j in 1:n
+            (a[i] == 0 || b[j] == 0) && continue
+            @test aD[i] * bD[j] ≈ dr[i] * dc[j] * a[i] * b[j] rtol=1e-6
+        end
+    end
+
+    # Non-square matrices, both orientations (transpose swaps the roles of a, b).
+    A = [1.0 2.0 3.0; 4.0 5.0 6.0]
+    a, b = cover_min(AbsLog{2}(), A)
+    @test all(a[i] * b[j] >= abs(A[i, j]) - 1e-8 for i in 1:2, j in 1:3)
+    aT, bT = cover_min(AbsLog{2}(), permutedims(A))
+    @test aT ≈ b rtol=1e-6
+    @test bT ≈ a rtol=1e-6
+
+    # Edge cases.
+    a, b = cover_min(AbsLog{2}(), reshape([4.0], 1, 1))   # 1×1
+    @test a[1] * b[1] ≈ 4.0
+    # [0 1; 1 0]: bipartite support (singular signless Laplacian), covered by
+    # the gauge term v0*v0ᵀ; a₁b₂ = a₂b₁ = 1 is optimal, objective 0.
+    a, b = cover_min(AbsLog{2}(), [0.0 1.0; 1.0 0.0])
+    @test a[1] * b[2] ≈ 1.0
+    @test a[2] * b[1] ≈ 1.0
+    @test cover_objective(AbsLog{2}(), a, b, [0.0 1.0; 1.0 0.0]) < 1e-12
+    # An all-zero row and column leave their scales at 0 while the rest is covered.
+    Az = [1.0 0.0 2.0; 0.0 0.0 0.0; 3.0 0.0 4.0]
+    a, b = cover_min(AbsLog{2}(), Az)
+    @test a[2] == 0.0
+    @test b[2] == 0.0
+    @test all(iszero(Az[i, j]) || a[i] * b[j] >= abs(Az[i, j]) - 1e-8 for i in 1:3, j in 1:3)
+    # A matrix with a zero column, exact objective known from the AbsLog{2} optimum.
+    A = [0 0 0 1; 1 1 0 2; 1 0 2 1]
+    a, b = cover_min(AbsLog{2}(), A)
+    @test all(a[i] * b[j] >= abs(A[i, j]) - 1e-8 for i in axes(A, 1), j in axes(A, 2))
+    @test cover_objective(AbsLog{2}(), a, b, A) ≈ 2 * log(sqrt(2))^2
+    # κs keyword is accepted.
+    @test cover_min(AbsLog{2}(), [1.0 2.0; 3.0 4.0]; κs=(1e2, 1e4, 1e6, 1e8, 1e10)) isa Tuple
+end
+
+@testset "MCM native AbsLog{2} matrix-free LSQR path" begin
+    # Invalid solver selection is rejected.
+    @test_throws ArgumentError symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; linsolve=:qr)
+    @test_throws ArgumentError cover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; linsolve=:qr)
+
+    # The matrix-free LSQR path reproduces the dense path and the HiGHS reference
+    # across the committed symmetric library, and returns a feasible cover.
+    for (_, A) in symmetric_matrices
+        Af = Float64.(A)
+        a  = symcover_min(AbsLog{2}(), Af; linsolve=:lsqr)
+        aj = ScaleInvariantAnalysis.symcover_min_jump(AbsLog{2}(), Af)
+        @test all(a[i] * a[j] >= abs(Af[i, j]) - 1e-8 for i in axes(Af, 1), j in axes(Af, 2))
+        @test cover_objective(AbsLog{2}(), a, Af) <=
+              cover_objective(AbsLog{2}(), aj, Af) * (1 + 1e-6) + 1e-10
+    end
+
+    # Asymmetric LSQR path: feasible and matching HiGHS on a deterministic
+    # subsample of the committed general library.
+    idx_sub = Set(round.(Int, range(1, length(general_matrices), length=200)))
+    for (k, (_, A)) in enumerate(general_matrices)
+        k in idx_sub || continue
+        Af = Float64.(A)
+        a, b = cover_min(AbsLog{2}(), Af; linsolve=:lsqr)
+        @test all(a[i] * b[j] >= abs(Af[i, j]) - 1e-7 for i in axes(Af, 1), j in axes(Af, 2))
+        aj, bj = ScaleInvariantAnalysis.cover_min_jump(AbsLog{2}(), Af)
+        @test cover_objective(AbsLog{2}(), a, b, Af) <=
+              cover_objective(AbsLog{2}(), aj, bj, Af) * (1 + 1e-6) + 1e-10
+    end
+
+    # Gauge/edge cases the dense path handles via a ridge or v0*v0ᵀ must also work
+    # matrix-free: bipartite support, a scalar, and scattered zeros.
+    a = symcover_min(AbsLog{2}(), [0.0 1.0; 1.0 0.0]; linsolve=:lsqr)
+    @test a[1] * a[2] ≈ 1.0
+    @test symcover_min(AbsLog{2}(), reshape([4.0], 1, 1); linsolve=:lsqr) ≈ [2.0]
+    Az = [1.0 0.0 2.0; 0.0 0.0 0.0; 2.0 0.0 3.0]
+    a = symcover_min(AbsLog{2}(), Az; linsolve=:lsqr)
+    @test a[2] == 0.0
+    @test all(a[i] * a[j] >= abs(Az[i, j]) - 1e-8 for i in 1:3, j in 1:3)
+    a, b = cover_min(AbsLog{2}(), [0.0 1.0; 1.0 0.0]; linsolve=:lsqr)
+    @test a[1] * b[2] ≈ 1.0
+    @test a[2] * b[1] ≈ 1.0
+end
+
+@testset "MCM disconnected-support gauge" begin
+    # A support graph that splits into k connected components carries k independent
+    # (e; −e) gauges. The asymmetric dense normal equations pin only the global one
+    # with v0*v0ᵀ; a minimal scale-relative ridge lifts the remaining k−1, so
+    # `cover_min` no longer hits a SingularException on block-disconnected supports.
+    # The dense (`:auto`) and matrix-free (`:lsqr`) paths must agree.
+    singletons(vals) = Matrix(sparse(1:length(vals), 1:length(vals), float.(vals)))  # k singleton components
+    block2(k) = cat(([2.0+i i; i 3.0+i] for i in 1:k)...; dims = (1, 2))              # k dense 2×2 components
+    for M in (singletons([4.0, 9.0, 1.0]), singletons(1.0:6.0), block2(3), block2(6))
+        ad, bd = cover_min(AbsLog{2}(), M)                    # :auto = dense + ridge
+        al, bl = cover_min(AbsLog{2}(), M; linsolve = :lsqr)
+        @test all(ad[i] * bd[j] >= abs(M[i, j]) - 1e-8 for i in axes(M, 1), j in axes(M, 2))
+        @test all(al[i] * bl[j] >= abs(M[i, j]) - 1e-8 for i in axes(M, 1), j in axes(M, 2))
+        @test cover_objective(AbsLog{2}(), ad, bd, M) ≈
+              cover_objective(AbsLog{2}(), al, bl, M) rtol = 1e-6 atol = 1e-8
+    end
+    # The canonical failure mode: `cover_min` on a Diagonal (n singleton components).
+    D = Diagonal([4.0, 9.0, 1.0])
+    a, b = cover_min(AbsLog{2}(), D)
+    @test cover_objective(AbsLog{2}(), a, b, Matrix(D)) ≈ 0.0 atol = 1e-10
+end
+
+@testset "symcover_min(AbsLog{2}) on complex Hermitian/Symmetric input" begin
+    # The cover problem only depends on abs.(A), so a complex Hermitian (real
+    # diagonal, conjugate-symmetric off-diagonals) or complex Symmetric matrix
+    # must give the same result as symcover_min on the real magnitude matrix.
+    rng = MersenneTwister(42)
+    n = 6
+    M = randn(rng, ComplexF64, n, n)
+    Href = symcover_min(AbsLog{2}(), abs.(Matrix(Hermitian(M + M'))))
+
+    Hdense = Hermitian(M + M')
+    @test symcover_min(AbsLog{2}(), Hdense) ≈ Href rtol = 1e-10
+
+    Msp = sprandn(rng, ComplexF64, n, n, 0.5)
+    Hsp = Hermitian(sparse(Msp + Msp'))
+    @test symcover_min(AbsLog{2}(), Hsp) ≈ symcover_min(AbsLog{2}(), abs.(Matrix(Hsp))) rtol = 1e-7
+
+    # Symmetric{<:Complex} carries no conjugate-symmetry guarantee, but the cover
+    # problem still only depends on abs.(A), so the same identity holds.
+    Ssp = Symmetric(sparse(Msp + transpose(Msp)))
+    @test symcover_min(AbsLog{2}(), Ssp) ≈ symcover_min(AbsLog{2}(), abs.(Matrix(Ssp))) rtol = 1e-7
+
+    # Real input is unaffected by deriving T from real(eltype(A)).
+    Ar = [4.0 1.0; 1.0 4.0]
+    @test symcover_min(AbsLog{2}(), Ar) ≈ [2.0, 2.0]
+end
+
+@testset "soft_cover_min native AbsLog{2}" begin
+    # Matches the analytic asymmetric minimizer directly.
+    A = [1.0 2.0 3.0; 6.0 5.0 4.0]
+    a, b = soft_cover_min(AbsLog{2}(), A)
+    a_ref, b_ref = similar(a), similar(b)
+    ScaleInvariantAnalysis.unconstrained_min!(AbsLog{2}(), a_ref, b_ref, A)
+    @test a == a_ref && b == b_ref
+
+    # It's the unconstrained minimum: any perturbation can only raise the objective.
+    obj0 = cover_objective(AbsLog{2}(), a, b, A)
+    rng = MersenneTwister(42)
+    for _ in 1:20
+        ap = a .* exp.(0.1 .* randn(rng, length(a)))
+        bp = b .* exp.(0.1 .* randn(rng, length(b)))
+        @test cover_objective(AbsLog{2}(), ap, bp, A) >= obj0 - 1e-10
+    end
+
+    # Non-1-based axes propagate from A, not from 1:n.
+    Ao = OffsetArray(A, 10, 20)
+    ao, bo = soft_cover_min(AbsLog{2}(), Ao)
+    @test axes(ao, 1) == axes(Ao, 1)
+    @test axes(bo, 1) == axes(Ao, 2)
+    @test collect(ao) == a && collect(bo) == b
+end
+
+@testset "no-ϕ convenience methods for the *_min family" begin
+    # symcover_min(A) and cover_min(A) default to AbsLog{2}, matching
+    # symcover(A)/cover(A). Solved natively, so no extension is needed.
+    A = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
+    @test symcover_min(A) == symcover_min(AbsLog{2}(), A)
+    Aasym = [1.0 2.0 3.0; 4.0 5.0 6.0]
+    @test cover_min(Aasym) == cover_min(AbsLog{2}(), Aasym)
+
+    # soft_symcover_min(A) defaults to AbsLinear{2}, matching soft_symcover(A);
+    # requires JuMP+Ipopt.
+    @test soft_symcover_min(A) == soft_symcover_min(AbsLinear{2}(), A)
+
+    # soft_cover_min(A) also defaults to AbsLinear{2}, matching soft_cover(A), but
+    # that penalty isn't implemented yet (only AbsLog{2} is) — the default forward
+    # raises the same MethodError as calling it directly.
+    @test_throws MethodError soft_cover_min(Aasym)
+    @test_throws MethodError soft_cover_min(AbsLinear{2}(), Aasym)
+end
+
+@testset "quality vs optimal (testmatrices)" begin
+    sym_ratios = Float64[]
+    for (_, A) in symmetric_matrices
+        Af = Float64.(A)
+        # Initialization should give a valid cover
+        a0 = symcover(AbsLog{2}(), Af; maxiter=0)
+        @test all(a0[i] * a0[j] >= abs(Af[i, j]) - 1e-12 for i in axes(Af, 1), j in axes(Af, 2))
+        a0 = symcover(AbsLog{2}(), Af / 100; maxiter=0)
+        @test all(a0[i] * a0[j] >= abs(Af[i, j])/100 - 1e-12 for i in axes(Af, 1), j in axes(Af, 2))
+        # Covers are nearly quadratically optimal
+        qopt  = cover_objective(AbsLog{2}(), symcover_min(AbsLog{2}(), Af), Af)
+        qfast = cover_objective(AbsLog{2}(), symcover(AbsLog{2}(), Af; maxiter=10), Af)
+        iszero(qopt) || push!(sym_ratios, qfast / qopt)
+    end
+    @test median(sym_ratios) < 1.02
+
+    gen_ratios = Float64[]
+    for (_, A) in general_matrices
+        Af = Float64.(A)
+        a0, b0 = cover(AbsLog{2}(), Af; maxiter=0)
+        @test all(a0[i] * b0[j] >= abs(Af[i, j]) - 1e-12 for i in axes(Af, 1), j in axes(Af, 2))
+        a0, b0 = cover(AbsLog{2}(), Af / 100; maxiter=0)
+        @test all(a0[i] * b0[j] >= abs(Af[i, j])/100 - 1e-12 for i in axes(Af, 1), j in axes(Af, 2))
+        qopt  = cover_objective(AbsLog{2}(), cover_min(AbsLog{2}(), Af)..., Af)
+        qfast = cover_objective(AbsLog{2}(), cover(AbsLog{2}(), Af; maxiter=10)..., Af)
+        iszero(qopt) || push!(gen_ratios, qfast / qopt)
+    end
+    @test median(gen_ratios) < 1.02
+end
