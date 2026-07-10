@@ -43,7 +43,7 @@ julia> a * a'   # covers |A|: a[i]*a[j] >= abs(A[i, j])
 symcover(ϕ, A::AbstractMatrix; kwargs...) = symcover(A; kwargs...)
 
 function symcover(A::AbstractMatrix; kwargs...)
-    T = float(eltype(A))
+    T = float(real(eltype(A)))
     a = similar(Array{T}, axes(A, 1))
     return symcover!(a, A; kwargs...)
 end
@@ -98,7 +98,7 @@ julia> a * b'
 cover(ϕ, A::AbstractMatrix; kwargs...) = cover(A; kwargs...)
 
 function cover(A::AbstractMatrix; kwargs...)
-    T = float(eltype(A))
+    T = float(real(eltype(A)))
     a = similar(Array{T}, axes(A, 1))
     b = similar(Array{T}, axes(A, 2))
     return cover!(a, b, A; kwargs...)

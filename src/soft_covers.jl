@@ -65,7 +65,7 @@ soft_symcover(A::AbstractMatrix; kwargs...) = soft_symcover(AbsLinear{2}(), A; k
 function soft_symcover(ϕ::AbsLog{2}, A::AbstractMatrix)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("soft_symcover requires a square matrix"))
-    T = float(eltype(A))
+    T = float(real(eltype(A)))
     # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     a = similar(Array{T}, ax)
     unconstrained_min!(ϕ, a, A)   # analytical minimum; no iterations needed
@@ -75,7 +75,7 @@ end
 function soft_symcover(::AbsLog{1}, A::AbstractMatrix; maxiter::Int=20)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("soft_symcover requires a square matrix"))
-    T = float(eltype(A))
+    T = float(real(eltype(A)))
     # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     a = similar(Array{T}, ax)
     unconstrained_min!(AbsLog{2}(), a, A)   # convex AbsLog{2} minimum: a good start
@@ -210,7 +210,7 @@ function soft_cover_min end
 soft_cover_min(A::AbstractMatrix; kwargs...) = soft_cover_min(AbsLinear{2}(), A; kwargs...)
 
 function soft_cover_min(::AbsLog{2}, A::AbstractMatrix)
-    T = float(eltype(A))
+    T = float(real(eltype(A)))
     a = similar(Array{T}, axes(A, 1))
     b = similar(Array{T}, axes(A, 2))
     unconstrained_min!(AbsLog{2}(), a, b, A)
@@ -344,7 +344,7 @@ end
 # frame-independent). `starts` below the number of deterministic starts truncates the list.
 function _soft_symcover_abslinear2_inits(A::AbstractMatrix, starts::Int, σ::Real, rng)
     ax = axes(A, 1)
-    T = float(eltype(A))
+    T = float(real(eltype(A)))
     # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     ag = similar(Array{T}, ax)
     unconstrained_min!(AbsLog{2}(), ag, A)   # geometric mean; also the perturbation base
@@ -619,7 +619,7 @@ end
 # geometric-mean point, `ξ`/`η` drawn from `rng` (drawn for every index so the stream is
 # frame-independent).
 function _soft_cover_abslinear2_inits(A::AbstractMatrix, starts::Int, σ::Real, rng)
-    T = float(eltype(A))
+    T = float(real(eltype(A)))
     ag, bg = cover(A; maxiter=0)   # geometric-mean init (boosted, untightened); perturbation base
     labels = ["geomean"]
     inits = [(copy(ag), copy(bg))]
@@ -667,7 +667,7 @@ function _mscm_als!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, ite
     axr, axc = axes(A, 1), axes(A, 2)
     eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axr) vs $(eachindex(a))"))
     eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(axc) vs $(eachindex(b))"))
-    T = float(promote_type(eltype(a), eltype(b), eltype(A)))
+    T = float(promote_type(eltype(a), eltype(b), real(eltype(A))))
     # Invert to inverse-scale variables; empty-support rows/columns (scale 0) stay at 0.
     u = map(x -> x > 0 ? inv(T(x)) : zero(T), a)
     v = map(x -> x > 0 ? inv(T(x)) : zero(T), b)
@@ -676,7 +676,7 @@ function _mscm_als!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, ite
         for i in axr
             num = den = zero(T)
             for j in axc
-                Aij = abs(T(A[i, j]))
+                Aij = T(abs(A[i, j]))
                 iszero(Aij) && continue
                 Av = Aij * v[j]
                 num += Av
@@ -687,7 +687,7 @@ function _mscm_als!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, ite
         for j in axc
             num = den = zero(T)
             for i in axr
-                Aij = abs(T(A[i, j]))
+                Aij = T(abs(A[i, j]))
                 iszero(Aij) && continue
                 Au = Aij * u[i]
                 num += Au
@@ -710,12 +710,12 @@ end
 
 # Soft-cover objective in inverse-scale variables: ∑_{i,j: A[i,j]≠0} (1 - |A[i,j]| u[i] v[j])².
 function _mscm_objective(A::AbstractMatrix, u::AbstractVector, v::AbstractVector)
-    T = float(promote_type(eltype(A), eltype(u), eltype(v)))
+    T = float(promote_type(real(eltype(A)), eltype(u), eltype(v)))
     E = zero(T)
     for j in axes(A, 2)
         vj = v[j]
         for i in axes(A, 1)
-            Aij = abs(T(A[i, j]))
+            Aij = T(abs(A[i, j]))
             iszero(Aij) && continue
             r = one(T) - Aij * u[i] * vj
             E += r * r

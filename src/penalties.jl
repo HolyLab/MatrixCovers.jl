@@ -60,13 +60,13 @@ See also:
 - Solvers: [`symcover`](@ref), [`cover`](@ref), [`soft_symcover`](@ref), [`soft_cover`](@ref).
 """
 function cover_objective(ϕ, a, b, A)
-    T = float(promote_type(eltype(a), eltype(b), eltype(A)))
+    T = float(promote_type(eltype(a), eltype(b), real(eltype(A))))
     s = zero(T)
     for j in eachindex(b)
         bj = T(b[j])
         for i in eachindex(a)
             ai = T(a[i])
-            Aij = abs(T(A[i, j]))
+            Aij = T(abs(A[i, j]))
             ab = ai * bj
             # 0/0 → 0 (no cover constraint); nonzero/0 → Inf (violated cover)
             r = iszero(ab) ? (iszero(Aij) ? zero(T) : typemax(T)) : Aij / ab
