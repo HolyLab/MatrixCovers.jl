@@ -6,13 +6,13 @@
                    [100.0 1.0; 1.0 0.01])
         for A in (sparse(Adense), Symmetric(sparse(tril(Adense)), :L), Symmetric(sparse(triu(Adense)), :U),
                   Hermitian(sparse(tril(Adense)), :L), Hermitian(sparse(triu(Adense)), :U))
-            for ϕ in (AbsLog{2}(), AbsLinear{2}())
+            for ϕ in PENALTIES
                 a = symcover(ϕ, A)
-                @test all(a[i] * a[j] >= abs(Adense[i, j]) - 1e-12 for i in axes(Adense, 1), j in axes(Adense, 2))
+                @test iscover(a, Adense; atol=1e-12)
             end
             # Default dispatch
             a = symcover(A)
-            @test all(a[i] * a[j] >= abs(Adense[i, j]) - 1e-12 for i in axes(Adense, 1), j in axes(Adense, 2))
+            @test iscover(a, Adense; atol=1e-12)
             # cover_objective matches dense for AbsLog
             a = symcover(AbsLog{2}(), A)
             @test cover_objective(AbsLog{2}(), a, A) ≈ cover_objective(AbsLog{2}(), a, Adense)
@@ -21,7 +21,7 @@
     for Adense in ([2.0 1.0; 1.0 3.0], [0.0 1.0; -2.0 0.0], [1.0 2.0 3.0; 4.0 5.0 6.0])
         A = sparse(Adense)
         a, b = cover(A)
-        @test all(a[i] * b[j] >= abs(Adense[i, j]) - 1e-12 for i in axes(Adense, 1), j in axes(Adense, 2))
+        @test iscover(a, b, Adense; atol=1e-12)
     end
     # Zero-diagonal sparse matrix
     A0 = sparse([0.0 1.0; 1.0 0.0])
@@ -33,12 +33,12 @@ end
         for dv in ([4.0, 9.0, 1.0], [4.0, 0.0, 1.0], [0.25, 100.0])
             D = Diagonal(dv)
             Ddense = Matrix(D)
-            for ϕ in (AbsLog{2}(), AbsLinear{2}())
+            for ϕ in PENALTIES
                 a = symcover(ϕ, D)
-                @test all(a[i] * a[j] >= abs(Ddense[i, j]) - 1e-12 for i in axes(Ddense, 1), j in axes(Ddense, 2))
+                @test iscover(a, Ddense; atol=1e-12)
             end
             a3, b3 = cover(D)
-            @test all(a3[i] * b3[j] >= abs(Ddense[i, j]) - 1e-12 for i in axes(Ddense, 1), j in axes(Ddense, 2))
+            @test iscover(a3, b3, Ddense; atol=1e-12)
         end
     end
 
@@ -50,9 +50,8 @@ end
         ]
         for A in asym_cases
             Adense = Matrix(A)
-            n = size(A, 1)
             a, b = cover(A)
-            @test all(a[i] * b[j] >= abs(Adense[i, j]) - 1e-12 for i in 1:n, j in 1:n)
+            @test iscover(a, b, Adense; atol=1e-12)
         end
         sym_cases = [
             SymTridiagonal([4.0, 3.0, 1.0], [2.0, 0.5]),
@@ -61,12 +60,11 @@ end
         ]
         for A in sym_cases
             Adense = Matrix(A)
-            n = size(A, 1)
             a, b = cover(A)
-            @test all(a[i] * b[j] >= abs(Adense[i, j]) - 1e-12 for i in 1:n, j in 1:n)
-            for ϕ in (AbsLog{2}(), AbsLinear{2}())
+            @test iscover(a, b, Adense; atol=1e-12)
+            for ϕ in PENALTIES
                 a = symcover(ϕ, A)
-                @test all(a[i] * a[j] >= abs(Adense[i, j]) - 1e-12 for i in 1:n, j in 1:n)
+                @test iscover(a, Adense; atol=1e-12)
             end
             # cover_objective matches dense for AbsLog{2}
             a = symcover(AbsLog{2}(), A)
@@ -80,8 +78,7 @@ end
                 A = wrapper(Adense)
                 Adense_wrap = Matrix(A)
                 a, b = cover(A)
-                @test all(a[i] * b[j] >= abs(Adense_wrap[i, j]) - 1e-12
-                          for i in axes(Adense_wrap, 1), j in axes(Adense_wrap, 2))
+                @test iscover(a, b, Adense_wrap; atol=1e-12)
                 # cover_objective matches dense
                 @test cover_objective(AbsLog{2}(), a, b, A) ≈ cover_objective(AbsLog{2}(), a, b, Adense_wrap)
                 # Objectives are same as computing cover on parent and swapping
@@ -102,7 +99,7 @@ end
     # triangle in the dense fallback's column-major order are compared
     # elementwise, the rest on feasibility and objective value. cover's boost
     # order is likewise storage-dependent and is not compared elementwise.
-    rng = MersenneTwister(11)
+    rng = StableRNG(11)
     n = 8
     Adense = randn(rng, n, n); Adense = Adense + Adense'
     Asp = sparse(Adense)
@@ -128,17 +125,16 @@ end
     # off-diagonal, dense interleaves them), so the bucketed boost's
     # within-bucket order can differ: compare on feasibility and objective
     # value rather than elementwise.
-    feasible_sym(ac, M) = all(ac[i] * ac[j] >= abs(M[i, j]) * (1 - 8eps()) for i in axes(M, 1), j in axes(M, 2))
     objclose(a1, M1, a2, M2) = isapprox(cover_objective(AbsLog{2}(), a1, M1),
         cover_objective(AbsLog{2}(), a2, M2); rtol=1e-2, atol=1e-10)
     for A in (Ssp_L,)
         aA, aref = symcover(AbsLog{2}(), A), symcover(AbsLog{2}(), Adense)
-        @test feasible_sym(aA, Adense)
+        @test iscover(aA, Adense; rtol=8eps())
         @test objclose(aA, Adense, aref, Adense)
     end
     for A in (St, Tsym)
         aA, aM = symcover(AbsLog{2}(), A), symcover(AbsLog{2}(), Matrix(A))
-        @test feasible_sym(aA, Matrix(A))
+        @test iscover(aA, Matrix(A); rtol=8eps())
         @test objclose(aA, Matrix(A), aM, Matrix(A))
     end
 
@@ -163,7 +159,7 @@ end
     # the generic AbstractMatrix method and foreach_support(_sym) dispatch (no
     # per-type specialization remains), so it must agree with the dense result
     # up to the traversal-order ties noted above.
-    rng = MersenneTwister(13)
+    rng = StableRNG(13)
     n = 7
     Adense = randn(rng, n, n); Adense = Adense + Adense'
     Asp = sparse(Adense)
@@ -205,7 +201,7 @@ end
     @test symcover_min(AbsLog{2}(), sparse(symdenses[1])) isa Vector{Float64}
     # Every soft_symcover penalty returns a dense Vector on sparse-backed input.
     let Ssp = sparse(symdenses[1])
-        for ϕ in (AbsLog{2}(), AbsLog{1}(), AbsLinear{2}(), AbsLinear{1}())
+        for ϕ in PENALTIES
             @test soft_symcover(ϕ, Ssp) isa Vector{Float64}
             @test soft_symcover(ϕ, Symmetric(Ssp)) isa Vector{Float64}
         end

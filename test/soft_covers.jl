@@ -25,32 +25,28 @@ end
     end
 
     # Non-square rejected (default dispatch and all ϕ)
-    @test_throws ArgumentError soft_symcover([1.0 2.0; 3.0 4.0; 5.0 6.0])
-    for ϕ in (AbsLog{1}(), AbsLog{2}(), AbsLinear{1}(), AbsLinear{2}())
-        @test_throws ArgumentError soft_symcover(ϕ, [1.0 2.0; 3.0 4.0; 5.0 6.0])
+    @test_throws "requires a square matrix" soft_symcover([1.0 2.0; 3.0 4.0; 5.0 6.0])
+    for ϕ in PENALTIES
+        @test_throws "requires a square matrix" soft_symcover(ϕ, [1.0 2.0; 3.0 4.0; 5.0 6.0])
     end
 
     # Rank-1 is exact: A = [4 2; 2 1] = [2;1]*[2 1], so exact cover has all ratios = 1
     A = [4.0 2.0; 2.0 1.0]
-    for ϕ in (AbsLog{1}(), AbsLog{2}(), AbsLinear{1}(), AbsLinear{2}())
+    for ϕ in PENALTIES
         a = soft_symcover(ϕ, A)
         @test cover_objective(ϕ, a, A) ≈ 0.0 atol=1e-8
     end
 
-    # Diagonal-scaling covariance: soft_symcover(ϕ, A .* d .* d') outer-product ≈ d .* d' scaled
+    # Diagonal-scaling covariance: soft_symcover(ϕ, ·) co-varies with a diagonal rescaling of A.
     A = [2.0 1.0; 1.0 3.0]
     d = [2.0, 0.5]
-    for ϕ in (AbsLog{1}(), AbsLog{2}(), AbsLinear{1}(), AbsLinear{2}())
-        a0 = soft_symcover(ϕ, A)
-        a_scaled = soft_symcover(ϕ, A .* d .* d')
-        C0 = a0 .* a0'
-        Cs = a_scaled .* a_scaled'
-        @test Cs ≈ (d .* d') .* C0 rtol=1e-5
+    for ϕ in PENALTIES
+        @test covaries(a -> soft_symcover(ϕ, a), A, d; rtol=1e-5)
     end
 
     # Lower objective than naive uniform scaling perturbations
     A = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
-    for ϕ in (AbsLog{1}(), AbsLog{2}(), AbsLinear{1}(), AbsLinear{2}())
+    for ϕ in PENALTIES
         a = soft_symcover(ϕ, A)
         E = cover_objective(ϕ, a, A)
         for scale in [0.5, 0.9, 1.1, 2.0]
@@ -127,9 +123,7 @@ end
     A = [2.0 1.0 0.5; 0.1 4.0 3.0; 1.0 2.0 0.2; 5.0 0.3 1.0]
     dr = [3.0, 0.5, 2.0, 0.25]
     dc = [4.0, 0.1, 1.5]
-    a0, b0 = soft_cover(A)
-    as, bs = soft_cover(dr .* A .* dc')
-    @test as * bs' ≈ (dr .* (a0 * b0') .* dc') rtol=1e-8
+    @test covaries(soft_cover, A, dr, dc; rtol=1e-8)
 
     # Zeros: an entirely-zero row/column gets scale 0; scattered zeros are handled.
     Az = [0.0 0.0 0.0; 1.0 2.0 3.0; 4.0 0.0 5.0]
@@ -137,11 +131,6 @@ end
     @test az[1] == 0
     @test all(isfinite, az) && all(isfinite, bz)
     @test isfinite(cover_objective(AbsLinear{2}(), az, bz, Az))
-
-    # An all-zero column forces its scale to 0.
-    Ac = [1.0 0.0 2.0; 3.0 0.0 4.0]
-    ac, bc = soft_cover(Ac)
-    @test bc[2] == 0
 
     # AbsLinear{1}: alternating weighted-median descent, warm-started from AbsLinear{2}.
     @testset "AbsLinear{1}" begin
@@ -158,18 +147,16 @@ end
         # AbsLinear{2} warm start (each block update is an exact minimization).
         for M in ([1.0 2.0 3.0; 6.0 5.0 4.0],
                   [2.0 1.0 0.5; 0.1 4.0 3.0; 1.0 2.0 0.2; 5.0 0.3 1.0])
-            a0, b0 = soft_cover(AbsLinear{2}(), M; maxiter=5, starts=8, rng=MersenneTwister(0))
+            a0, b0 = soft_cover(AbsLinear{2}(), M; maxiter=5, starts=8, rng=StableRNG(0))
             Einit = cover_objective(AbsLinear{1}(), a0, b0, M)
-            ar, br = soft_cover(AbsLinear{1}(), M; rng=MersenneTwister(0))
+            ar, br = soft_cover(AbsLinear{1}(), M; rng=StableRNG(0))
             @test cover_objective(AbsLinear{1}(), ar, br, M) <= Einit + 1e-12
         end
 
         # Scale-covariance of the product under independent row/column rescalings.
         Ac1 = [2.0 1.0 0.5; 0.1 4.0 3.0; 1.0 2.0 0.2; 5.0 0.3 1.0]
         dr = [3.0, 0.5, 2.0, 0.25]; dc = [4.0, 0.1, 1.5]
-        a0, b0 = soft_cover(AbsLinear{1}(), Ac1; rng=MersenneTwister(7))
-        as, bs = soft_cover(AbsLinear{1}(), dr .* Ac1 .* dc'; rng=MersenneTwister(7))
-        @test as * bs' ≈ (dr .* (a0 * b0') .* dc') rtol=1e-8
+        @test covaries(A -> soft_cover(AbsLinear{1}(), A; rng=StableRNG(7)), Ac1, dr, dc; rtol=1e-8)
 
         # Zeros: an entirely-zero row gets scale 0; results stay finite.
         Az1 = [0.0 0.0 0.0; 1.0 2.0 3.0; 4.0 0.0 5.0]
@@ -184,15 +171,12 @@ end
 end
 
 @testset "AbsLinear soft-cover multistart" begin
-    # Determinism: the default fresh-seeded RNG makes repeated calls bit-identical.
     A = [1.0 2.0 3.0; 6.0 5.0 4.0]
-    @test soft_cover(A) == soft_cover(A)
     As = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
-    @test soft_symcover(As) == soft_symcover(As)
 
     # A caller-supplied `rng` is threaded through: identical RNG state ⇒ identical result.
-    @test soft_cover(A; rng=MersenneTwister(7)) == soft_cover(A; rng=MersenneTwister(7))
-    @test soft_symcover(As; rng=MersenneTwister(7)) == soft_symcover(As; rng=MersenneTwister(7))
+    @test soft_cover(A; rng=StableRNG(7)) == soft_cover(A; rng=StableRNG(7))
+    @test soft_symcover(As; rng=StableRNG(7)) == soft_symcover(As; rng=StableRNG(7))
 
     # `starts` and `σ` are accepted; `starts=1` is a plain single start.
     @test soft_cover(A; starts=1, σ=1.5) isa Tuple
@@ -227,34 +211,35 @@ end
     # of A and the objective is scale-invariant, so the selected product co-varies too.
     Ac = [2.0 1.0 0.5; 0.1 4.0 3.0; 1.0 2.0 0.2; 5.0 0.3 1.0]
     dr = [3.0, 0.5, 2.0, 0.25]; dc = [4.0, 0.1, 1.5]
-    a0, b0 = soft_cover(Ac); ac, bc = soft_cover(dr .* Ac .* dc')
-    @test ac * bc' ≈ dr .* (a0 * b0') .* dc' rtol=1e-7
+    @test covaries(soft_cover, Ac, dr, dc; rtol=1e-7)
     d = [2.0, 0.5, 3.0]
-    a0s = soft_symcover(As); ass = soft_symcover(As .* d .* d')
-    @test ass * ass' ≈ (d .* d') .* (a0s * a0s') rtol=1e-7
+    @test covaries(soft_symcover, As, d; rtol=1e-7)
 
     # On a hard lognormal-σ=5 ensemble the multistart strictly lowers the objective on a
-    # substantial fraction of instances (fixed seed; loose statistical bound).
-    rng = MersenneTwister(2024)
+    # substantial fraction of a fixed corpus. Both the corpus and the solver's internal
+    # perturbation draws use `StableRNG`, so the count is fixed across Julia versions.
+    rng = StableRNG(2024)
     imp_sym = 0; imp_gen = 0
-    for _ in 1:40
+    for k in 1:40
         S = exp.(5 .* randn(rng, 6, 6)); S = (S + S') / 2
-        e1 = cover_objective(AbsLinear{2}(), soft_symcover(S; starts=1), S)
-        e8 = cover_objective(AbsLinear{2}(), soft_symcover(S; starts=8), S)
+        e1 = cover_objective(AbsLinear{2}(), soft_symcover(S; starts=1, rng=StableRNG(k)), S)
+        e8 = cover_objective(AbsLinear{2}(), soft_symcover(S; starts=8, rng=StableRNG(k)), S)
         e8 < e1 - 1e-9 && (imp_sym += 1)
         G = exp.(5 .* randn(rng, 5, 7))
-        g1a, g1b = soft_cover(G; starts=1); g8a, g8b = soft_cover(G; starts=8)
+        g1a, g1b = soft_cover(G; starts=1, rng=StableRNG(k)); g8a, g8b = soft_cover(G; starts=8, rng=StableRNG(k))
         cover_objective(AbsLinear{2}(), g8a, g8b, G) <
             cover_objective(AbsLinear{2}(), g1a, g1b, G) - 1e-9 && (imp_gen += 1)
     end
-    @test imp_sym >= 20
-    @test imp_gen >= 15
+    # Gate set a modest margin below the measured counts on this corpus (33 and 30 of 40):
+    # multistart must beat the single start on a solid fraction of instances.
+    @test imp_sym >= 28
+    @test imp_gen >= 25
 end
 
 @testset "feasible start and provenance" begin
     # The multistart fills caller-supplied `labels`/`objs` in place; the winner is
     # `labels[_multistart_select(objs)]`, using the same selection rule as the solver.
-    function provenance(A; rng=MersenneTwister(0))
+    function provenance(A; rng=StableRNG(0))
         labels = String[]; objs = Float64[]
         a = ScaleInvariantAnalysis._soft_symcover_abslinear2(A, 20, 8, 2.0, rng; labels, objs)
         return a, labels[ScaleInvariantAnalysis._multistart_select(objs)], labels, objs
@@ -267,7 +252,7 @@ end
     a, winner, labels, objs = provenance(Afe)
     @test winner == "feasible"
     # The instrumented call returns exactly what the public entry point selects.
-    @test a == soft_symcover(Afe)
+    @test a == soft_symcover(Afe; rng=StableRNG(0))
     # `feasible` wins by a genuine basin gap, not descent-tolerance noise: it is
     # co-optimal in the best basin (a perturbed start may also reach that basin and
     # tie it to within the descent tolerance), and that basin beats every start in a
@@ -279,7 +264,7 @@ end
 
     # Selecting the `feasible` start preserves scale-covariance of the returned cover.
     d = [1.5, 0.3, 4.0, 0.7, 2.2]
-    a_scaled = soft_symcover(Afe .* d .* d')
+    a_scaled = soft_symcover(Afe .* d .* d'; rng=StableRNG(0))
     @test a_scaled * a_scaled' ≈ (d .* d') .* (a * a') rtol=1e-7
 
     # Gate off: a fully dense matrix (no zeros) never offers the `feasible` start.
@@ -289,9 +274,9 @@ end
     # The asymmetric multistart exposes provenance the same way (no `feasible` start there).
     Ag = [1.0 2.0 3.0; 6.0 5.0 4.0]
     albs = String[]; aobjs = Float64[]
-    ab = ScaleInvariantAnalysis._soft_cover_abslinear2(Ag, 100, 8, 2.0, MersenneTwister(0);
+    ab = ScaleInvariantAnalysis._soft_cover_abslinear2(Ag, 100, 8, 2.0, StableRNG(0);
                                                        labels=albs, objs=aobjs)
-    @test ab == soft_cover(Ag)
+    @test ab == soft_cover(Ag; rng=StableRNG(0))
     @test albs[ScaleInvariantAnalysis._multistart_select(aobjs)] in albs
     @test "feasible" ∉ albs
 end

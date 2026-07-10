@@ -23,6 +23,18 @@
     @test cover_objective(AbsLinear{2}(), a0, A0) ≈ 0.0 + 1.0 + 1.0 + 1/16   # (0,1), (1,0) off-diag zeros
 end
 
+@testset "cover_objective: complex input" begin
+    # The objective depends only on entry magnitudes, so complex A and abs.(A)
+    # give identical results, and the accumulator stays real.
+    Ac = [1.0+2.0im 0.5-1.0im; 0.3+0.1im 3.0+0.0im]
+    a, b = [2.0, 1.0], [1.5, 0.5]
+    for ϕ in PENALTIES
+        v = cover_objective(ϕ, a, b, Ac)
+        @test v isa Real
+        @test v == cover_objective(ϕ, a, b, abs.(Ac))
+    end
+end
+
 @testset "dotabs" begin
     @test dotabs([1.0, -2.0, 3.0], [4.0, 5.0, -6.0]) ≈ 4.0 + 10.0 + 18.0
     @test dotabs([0.0, 1.0], [1.0, 0.0]) == 0.0
@@ -39,9 +51,8 @@ end
     asc, magsc = divmag(1000 * A, 1000 * b)
     @test asc ≈ sqrt(1000) .* a
     @test magsc ≈ sqrt(1000) * mag
-    # Diagonal scaling covariance
-    for _ in 1:10
-        d = -log.(rand(2))
+    # Diagonal scaling covariance, from mild to strong anisotropy
+    for d in ([1.0, 1.0], [0.5, 2.0], [0.05, 3.0], [10.0, 0.01])
         Ad = A .* d .* d'
         bd = b .* d
         a_d, mag_d = divmag(Ad, bd)

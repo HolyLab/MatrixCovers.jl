@@ -6,7 +6,7 @@
         a_lmin  = symcover_min(AbsLog{1}(), A)
         a_qmin  = symcover_min(AbsLog{2}(), A)
         # qmin is a valid cover
-        @test all(a_qmin[i] * a_qmin[j] >= abs(A[i, j]) - 1e-10 for i in axes(A, 1), j in axes(A, 2))
+        @test iscover(a_qmin, A; atol=1e-10)
         # qmin achieves lower or equal AbsLog{2} objective than symcover and lmin
         # (up to the near-exact solver's penalty-continuation tolerance).
         @test cover_objective(AbsLog{2}(), a_qmin, A) <= cover_objective(AbsLog{2}(), a_fast, A) * (1 + 1e-6) + 1e-10
@@ -15,11 +15,11 @@
     # Exact case with zeros
     A = [0 0 1; 0 0 2; 1 2 1]
     a = symcover_min(AbsLog{1}(), A)
-    @test all(a[i] * a[j] >= abs(A[i, j]) - 1e-10 for i in axes(A, 1), j in axes(A, 2))
+    @test iscover(a, A; atol=1e-10)
     @test a ≈ [1, 2, 1]
     @test abs(cover_objective(AbsLog{1}(), a, A)) < 1e-10
     a = symcover_min(AbsLog{2}(), A)
-    @test all(a[i] * a[j] >= abs(A[i, j]) - 1e-10 for i in axes(A, 1), j in axes(A, 2))
+    @test iscover(a, A; atol=1e-10)
     @test a ≈ [1, 2, 1]
     @test abs(cover_objective(AbsLog{2}(), a, A)) < 1e-10
 
@@ -27,16 +27,16 @@
         a_fast, b_fast = cover(A)
         a_lmin, b_lmin = cover_min(AbsLog{1}(), A)
         a_qmin, b_qmin = cover_min(AbsLog{2}(), A)
-        @test all(a_qmin[i] * b_qmin[j] >= abs(A[i, j]) - 1e-10 for i in axes(A, 1), j in axes(A, 2))
+        @test iscover(a_qmin, b_qmin, A; atol=1e-10)
         @test cover_objective(AbsLog{2}(), a_qmin, b_qmin, A) <= cover_objective(AbsLog{2}(), a_fast, b_fast, A) + 1e-8
         @test cover_objective(AbsLog{2}(), a_qmin, b_qmin, A) <= cover_objective(AbsLog{2}(), a_lmin, b_lmin, A) + 1e-8
     end
     A = [0 0 0 1; 1 1 0 2; 1 0 2 1]
     a, b = cover_min(AbsLog{1}(), A)
-    @test all(a[i] * b[j] >= abs(A[i, j]) - 1e-10 for i in axes(A, 1), j in axes(A, 2))
+    @test iscover(a, b, A; atol=1e-10)
     @test cover_objective(AbsLog{1}(), a, b, A) ≈ log(2)
     a, b = cover_min(AbsLog{2}(), A)
-    @test all(a[i] * b[j] >= abs(A[i, j]) - 1e-10 for i in axes(A, 1), j in axes(A, 2))
+    @test iscover(a, b, A; atol=1e-10)
     @test cover_objective(AbsLog{2}(), a, b, A) ≈ 2*log(sqrt(2))^2
 
     # soft_symcover_min(AbsLog{2}): unconstrained, lower objective than constrained
@@ -53,18 +53,17 @@ end
 
 @testset "symcover_min and soft_symcover_min (JuMP/Ipopt, AbsLinear)" begin
     # non-square rejected
-    @test_throws ArgumentError symcover_min(AbsLinear{2}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
-    @test_throws ArgumentError symcover_min(AbsLinear{1}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
-    @test_throws ArgumentError soft_symcover_min(AbsLinear{2}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
-    @test_throws ArgumentError soft_symcover_min(AbsLinear{1}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
+    @test_throws "symcover_min requires a square matrix" symcover_min(AbsLinear{2}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
+    @test_throws "symcover_min requires a square matrix" symcover_min(AbsLinear{1}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
+    @test_throws "soft_symcover_min requires a square matrix" soft_symcover_min(AbsLinear{2}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
+    @test_throws "soft_symcover_min requires a square matrix" soft_symcover_min(AbsLinear{1}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
 
     for A in ([2.0 1.0; 1.0 3.0], [100.0 1.0; 1.0 0.01], [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0])
         a_fast = symcover(AbsLinear{2}(), A)
         for ϕ in (AbsLinear{1}(), AbsLinear{2}())
             # symcover_min: valid hard cover, at most as costly as heuristic
             a_min = symcover_min(ϕ, A)
-            @test all(a_min[i] * a_min[j] >= abs(A[i, j]) - 1e-6
-                      for i in axes(A, 1), j in axes(A, 2))
+            @test iscover(a_min, A; atol=1e-6)
             @test cover_objective(ϕ, a_min, A) <= cover_objective(ϕ, a_fast, A) + 1e-8
 
             # soft_symcover_min: lower or equal objective than constrained version

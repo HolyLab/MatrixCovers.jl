@@ -6,11 +6,10 @@ using LinearAlgebra
 using OffsetArrays
 using Statistics: median
 using Random: MersenneTwister
+using StableRNGs: StableRNG
 using Test
 
-# Cover feasibility up to an additive slack: a[i]*b[j] >= |A[i,j]| - atol on every entry.
-iscover(a, b, A; atol) = all(a[i] * b[j] >= abs(A[i, j]) - atol for i in axes(A, 1), j in axes(A, 2))
-iscover(a, A; atol) = iscover(a, a, A; atol)
+include("helpers.jl")               # iscover, covaries, PENALTIES
 
 @testset "ScaleInvariantAnalysis.jl" begin
 
@@ -21,11 +20,15 @@ iscover(a, A; atol) = iscover(a, a, A; atol)
     include("minimal_covers.jl")    # the *_min family (native solvers)
     include("storage_types.jl")     # sparse/structured/wrapped storage vs dense reference
     include("extensions.jl")        # JuMP/HiGHS and Ipopt solvers, missing-extension hints
+    include("invariants.jl")        # shared conventions checked across every notion
 
     @testset "method ambiguities" begin
         @test isempty(detect_ambiguities(ScaleInvariantAnalysis; recursive=true))
-        ext = Base.get_extension(ScaleInvariantAnalysis, :SIASparseArrays)
-        @test isempty(detect_ambiguities(ScaleInvariantAnalysis, ext; recursive=true))
+        for extname in (:SIASparseArrays, :SIAJuMP, :SIAIpopt)
+            ext = Base.get_extension(ScaleInvariantAnalysis, extname)
+            @test ext !== nothing
+            @test isempty(detect_ambiguities(ScaleInvariantAnalysis, ext; recursive=true))
+        end
     end
 
 end
