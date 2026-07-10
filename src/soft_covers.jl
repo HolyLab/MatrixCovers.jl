@@ -662,6 +662,19 @@ end
 # E = ∑ (1 - M[i,j] u[i] v[j])² is biconvex; each half-sweep sets u[i] (resp. v[j]) to its
 # exact minimizer. Rows/columns with empty support keep scale 0 and are held fixed.
 # Refines `a`, `b` in place starting from their incoming values.
+#
+# Both half-sweeps accumulate over `i` with `j` held fixed, walking `A` down its columns.
+#
+# The post-sweep objective costs no extra pass over `A`: once the v-half-sweep has set
+# v[j] = num[j]/den[j] from num[j] = ∑_i M[i,j] u[i] and den[j] = ∑_i (M[i,j] u[i])²,
+# column j contributes
+#     ∑_i (1 - M[i,j] u[i] v[j])² = nnz[j] - 2 v[j] num[j] + v[j]² den[j]
+#                                 = nnz[j] - num[j]²/den[j]
+# with nnz[j] the number of stored nonzeros in column j. An empty column has
+# den[j] = nnz[j] = 0 and contributes nothing.
+#
+# Zero entries of `A` need no branch in the accumulators: M[i,j] = 0 adds zero to both
+# num and den. Only `nnz` distinguishes them, and it is formed once up front.
 function _mscm_als!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, iter::Int;
                     tol=1e-14)
     axr, axc = axes(A, 1), axes(A, 2)
@@ -671,31 +684,40 @@ function _mscm_als!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, ite
     # Invert to inverse-scale variables; empty-support rows/columns (scale 0) stay at 0.
     u = map(x -> x > 0 ? inv(T(x)) : zero(T), a)
     v = map(x -> x > 0 ? inv(T(x)) : zero(T), b)
+    numu = similar(u)
+    denu = similar(u)
+    nnzc = zeros(Int, axc)
+    foreach_support(A) do _, j, _
+        nnzc[j] += 1
+    end
     E = _mscm_objective(A, u, v)
     for _ in 1:iter
-        for i in axr
-            num = den = zero(T)
-            for j in axc
-                Aij = T(abs(A[i, j]))
-                iszero(Aij) && continue
-                Av = Aij * v[j]
-                num += Av
-                den += Av * Av
+        fill!(numu, zero(T))
+        fill!(denu, zero(T))
+        for j in axc
+            vj = v[j]
+            for i in axr
+                Av = T(abs(A[i, j])) * vj
+                numu[i] += Av
+                denu[i] += Av * Av
             end
-            den > 0 && (u[i] = num / den)
         end
+        for i in axr
+            denu[i] > 0 && (u[i] = numu[i] / denu[i])
+        end
+        Enew = zero(T)
         for j in axc
             num = den = zero(T)
             for i in axr
-                Aij = T(abs(A[i, j]))
-                iszero(Aij) && continue
-                Au = Aij * u[i]
+                Au = T(abs(A[i, j])) * u[i]
                 num += Au
                 den += Au * Au
             end
-            den > 0 && (v[j] = num / den)
+            if den > 0
+                v[j] = num / den
+                Enew += nnzc[j] - num * num / den
+            end
         end
-        Enew = _mscm_objective(A, u, v)
         E - Enew <= tol * max(E, one(T)) && (E = Enew; break)
         E = Enew
     end
