@@ -43,6 +43,7 @@ julia> a * a'   # covers |A|: a[i]*a[j] >= abs(A[i, j])
 symcover(ϕ, A::AbstractMatrix; kwargs...) = symcover(A; kwargs...)
 
 function symcover(A::AbstractMatrix; kwargs...)
+    axes(A, 2) == axes(A, 1) || throw(ArgumentError("symcover requires a square matrix"))
     T = float(real(eltype(A)))
     a = similar(Array{T}, axes(A, 1))
     return symcover!(a, A; kwargs...)

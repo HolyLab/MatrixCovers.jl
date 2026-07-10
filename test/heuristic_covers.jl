@@ -27,8 +27,9 @@
     for ϕ in PENALTIES
         @test covaries(A -> symcover(ϕ, A), A, d)
     end
-    # Non-square input is rejected
-    @test_throws "symcover! requires a square matrix" symcover([1.0 2.0; 3.0 4.0; 5.0 6.0])
+    # Non-square input is rejected, with the message naming the called function
+    @test_throws "symcover requires a square matrix" symcover([1.0 2.0; 3.0 4.0; 5.0 6.0])
+    @test_throws "symcover! requires a square matrix" symcover!(zeros(3), [1.0 2.0; 3.0 4.0; 5.0 6.0])
 end
 
 @testset "symcover ignores ϕ" begin
