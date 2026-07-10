@@ -7,8 +7,8 @@
 # ============================================================
 
 """
-    a = soft_symcover(ϕ, A; maxiter=20, starts=8, σ=2.0, rng=MersenneTwister(0))
-    a = soft_symcover(A; maxiter=20, starts=8, σ=2.0, rng=MersenneTwister(0))
+    a = soft_symcover(ϕ, A; maxiter=32, starts=5, σ=2.0, rng=MersenneTwister(0))
+    a = soft_symcover(A; maxiter=32, starts=5, σ=2.0, rng=MersenneTwister(0))
 
 Given a square matrix `A` assumed to be symmetric, return a vector `a` approximately
 minimizing the soft-cover objective `∑_{i,j} ϕ(|A[i,j]| / (a[i]*a[j]))`.
@@ -28,16 +28,18 @@ Supported penalty functions:
   weighted-median step.
 
 For the `AbsLinear` penalties the objective is non-convex, so `starts` starting points are
-tried and the best kept. The first four are deterministic — the geometric-mean minimum, the
-tightened hard cover, the geometric-mean minimum inflated uniformly until it covers `A`, and a
-leave-one-out geometric mean that drops the support entry with the most negative log-residual
-(this last start keeps the result continuous as an entry `|A[i,j]|` approaches zero) — and the
-rest are multiplicative log-normal perturbations `a .* exp.(σ .* ξ)` of the geometric-mean point with
-spread `σ`, `ξ` drawn from `rng`. Every start co-varies with a diagonal rescaling of `A` and
-the objective is scale-invariant, so the selection is scale-covariant. The default `rng` is a
-fresh `MersenneTwister(0)` per call, making repeated calls (and the two frames of a covariance
-check) agree; pass your own `rng` for reproducibility you control, since default RNG streams
-are not stable across Julia versions. `sigma` is accepted as an ASCII alias for `σ`.
+tried and the best kept, taken in this order: the geometric-mean minimum, the tightened hard
+cover, the geometric-mean minimum inflated uniformly until it covers `A`, a leave-one-out
+geometric mean that drops the support entry with the most negative log-residual (this start
+keeps the result continuous as an entry `|A[i,j]|` approaches zero), and — only when `A` has a
+zero entry — a greedy feasible cover. Any slots left over are multiplicative log-normal
+perturbations `a .* exp.(σ .* ξ)` of the geometric-mean point with spread `σ`, `ξ` drawn from
+`rng`; at the default `starts=5` there is at most one such perturbation. Every start co-varies
+with a diagonal rescaling of `A` and the objective is scale-invariant, so the selection is
+scale-covariant. The default `rng` is a fresh `MersenneTwister(0)` per call, making repeated
+calls (and the two frames of a covariance check) agree; pass your own `rng` for reproducibility
+you control, since default RNG streams are not stable across Julia versions. `sigma` is
+accepted as an ASCII alias for `σ`.
 
 See also: [`symcover`](@ref), [`cover_objective`](@ref), [`soft_symcover_min`](@ref).
 
@@ -86,7 +88,7 @@ end
 # Sole owner of the starts/σ/rng defaults for the AbsLinear{2} soft-cover family;
 # every other method in that family (the no-ϕ wrapper, the AbsLinear{1} method)
 # forwards them via `kwargs...` rather than restating the default.
-function soft_symcover(::AbsLinear{2}, A::AbstractMatrix; maxiter::Int=20, starts::Int=8,
+function soft_symcover(::AbsLinear{2}, A::AbstractMatrix; maxiter::Int=32, starts::Int=5,
                        σ::Union{Real,Nothing}=nothing, sigma::Union{Real,Nothing}=nothing,
                        rng::AbstractRNG=MersenneTwister(_MULTISTART_SEED))
     ax = axes(A, 1)
@@ -105,8 +107,8 @@ function soft_symcover(::AbsLinear{1}, A::AbstractMatrix; maxiter::Int=20, kwarg
 end
 
 """
-    a, b = soft_cover(ϕ, A; maxiter=100, starts=8, σ=2.0, rng=MersenneTwister(0))
-    a, b = soft_cover(A; maxiter=100, starts=8, σ=2.0, rng=MersenneTwister(0))
+    a, b = soft_cover(ϕ, A; maxiter=200, starts=4, σ=2.0, rng=MersenneTwister(0))
+    a, b = soft_cover(A; maxiter=200, starts=4, σ=2.0, rng=MersenneTwister(0))
 
 Given a matrix `A`, return vectors `a` and `b` approximately minimizing the soft-cover
 objective `∑_{i,j} ϕ(|A[i,j]| / (a[i]*b[j]))`. This is the asymmetric analog of
@@ -161,7 +163,7 @@ soft_cover(A::AbstractMatrix; kwargs...) = soft_cover(AbsLinear{2}(), A; kwargs.
 # Sole owner of the starts/σ/rng defaults for the AbsLinear{2} soft-cover family;
 # every other method in that family (the no-ϕ wrapper, the AbsLinear{1} method)
 # forwards them via `kwargs...` rather than restating the default.
-function soft_cover(ϕ::AbsLinear{2}, A::AbstractMatrix; maxiter::Int=100, starts::Int=8,
+function soft_cover(ϕ::AbsLinear{2}, A::AbstractMatrix; maxiter::Int=200, starts::Int=4,
                     σ::Union{Real,Nothing}=nothing, sigma::Union{Real,Nothing}=nothing,
                     rng::AbstractRNG=MersenneTwister(_MULTISTART_SEED))
     return _soft_cover_abslinear2(A, maxiter, starts, _resolve_alias(σ, sigma, 2.0, :σ, :sigma), rng)
@@ -236,10 +238,14 @@ function _resolve_alias(primary, alias, default, primary_name::Symbol, alias_nam
     return primary
 end
 
-# Relative-objective margin a later start must beat the incumbent by to replace it. Set well
-# above the descent's objective tolerance (~1e-14) and well below any genuine basin gap, so
-# same-basin convergence noise never flips the selection (which would break covariance) while
-# real improvements always do.
+# Relative-objective margin a later start must beat the incumbent by to replace it.
+#
+# Two candidates that reach the same point differ, between one frame and a rescaled one, only
+# by roundoff in evaluating the objective — a sum of O(n²) terms, so of relative size O(n·eps).
+# The margin must exceed that, or the selection could flip with the frame and forfeit
+# covariance; it must also stay below any genuine basin gap, which is orders of magnitude
+# larger. Candidates stopped short of convergence may differ by far more than roundoff, but
+# such differences are deterministic and co-vary with the frame, so switching on them is safe.
 const _MULTISTART_SWITCHTOL = 1e-9
 
 # Leave-one-out geometric mean, an alternative starting point to the AbsLog{2}

@@ -124,6 +124,7 @@ end
     dr = [3.0, 0.5, 2.0, 0.25]
     dc = [4.0, 0.1, 1.5]
     @test covaries(soft_cover, A, dr, dc; rtol=1e-8)
+    @test covaries_objective(AbsLinear{2}(), soft_cover, A, dr, dc; rtol=1e-12)
 
     # Zeros: an entirely-zero row/column gets scale 0; scattered zeros are handled.
     Az = [0.0 0.0 0.0; 1.0 2.0 3.0; 4.0 0.0 5.0]
@@ -215,6 +216,12 @@ end
     d = [2.0, 0.5, 3.0]
     @test covaries(soft_symcover, As, d; rtol=1e-7)
 
+    # The objective is the sharp covariant: it depends on the cover only through the
+    # scale-invariant ratios |A[i,j]|/(a[i]*b[j]), so it matches across frames to roundoff
+    # even where the cover itself does not (see "converged cover covariance" below).
+    @test covaries_objective(AbsLinear{2}(), soft_cover, Ac, dr, dc; rtol=1e-12)
+    @test covaries_objective(AbsLinear{2}(), soft_symcover, As, d; rtol=1e-12)
+
     # On a hard lognormal-σ=5 ensemble the multistart strictly lowers the objective on a
     # substantial fraction of a fixed corpus. Both the corpus and the solver's internal
     # perturbation draws use `StableRNG`, so the count is fixed across Julia versions.
@@ -230,18 +237,22 @@ end
         cover_objective(AbsLinear{2}(), g8a, g8b, G) <
             cover_objective(AbsLinear{2}(), g1a, g1b, G) - 1e-9 && (imp_gen += 1)
     end
-    # Gate set a modest margin below the measured counts on this corpus (33 and 30 of 40):
-    # multistart must beat the single start on a solid fraction of instances.
-    @test imp_sym >= 28
-    @test imp_gen >= 25
+    # Gate set a modest margin below the measured counts on this corpus (29 and 24 of 40):
+    # multistart must beat the single start on a solid fraction of instances. The counts
+    # depend on `maxiter`: the better each start converges, the less room a rival start has
+    # to improve on it, so raising `maxiter` lowers them.
+    @test imp_sym >= 24
+    @test imp_gen >= 19
 end
 
 @testset "feasible start and provenance" begin
     # The multistart fills caller-supplied `labels`/`objs` in place; the winner is
     # `labels[_multistart_select(objs)]`, using the same selection rule as the solver.
+    # The positional arguments mirror `soft_symcover`'s `maxiter`, `starts` and `σ` defaults,
+    # so the instrumented call reproduces the public entry point exactly (asserted below).
     function provenance(A; rng=StableRNG(0))
         labels = String[]; objs = Float64[]
-        a = ScaleInvariantAnalysis._soft_symcover_abslinear2(A, 20, 8, 2.0, rng; labels, objs)
+        a = ScaleInvariantAnalysis._soft_symcover_abslinear2(A, 32, 5, 2.0, rng; labels, objs)
         return a, labels[ScaleInvariantAnalysis._multistart_select(objs)], labels, objs
     end
 
@@ -272,11 +283,31 @@ end
     @test "feasible" ∉ dense_labels
 
     # The asymmetric multistart exposes provenance the same way (no `feasible` start there).
+    # As above, the positional arguments mirror `soft_cover`'s defaults.
     Ag = [1.0 2.0 3.0; 6.0 5.0 4.0]
     albs = String[]; aobjs = Float64[]
-    ab = ScaleInvariantAnalysis._soft_cover_abslinear2(Ag, 100, 8, 2.0, StableRNG(0);
+    ab = ScaleInvariantAnalysis._soft_cover_abslinear2(Ag, 200, 4, 2.0, StableRNG(0);
                                                        labels=albs, objs=aobjs)
     @test ab == soft_cover(Ag; rng=StableRNG(0))
     @test albs[ScaleInvariantAnalysis._multistart_select(aobjs)] in albs
     @test "feasible" ∉ albs
+end
+
+@testset "converged cover covariance" begin
+    # A cover driven to convergence pins the objective to `eps` but its own entries only to
+    # `sqrt(eps)`. The objective is stationary at the minimizer, so a displacement `δ` along a
+    # direction of low curvature changes it by only `O(δ²)`; two frames of the same problem,
+    # whose entries differ by roundoff, therefore settle `O(sqrt(eps))` apart in `a` and `b`
+    # while agreeing on the objective to `O(eps)`. Most matrices have no such soft direction
+    # and co-vary to roundoff; this one does.
+    rng = StableRNG(1)
+    B = exp.(2 .* randn(rng, 40, 40)) .* randn(rng, 40, 40)
+    A = (B + B') / 2
+    dr = exp.(randn(rng, 40)); dc = exp.(randn(rng, 40))
+
+    @test covaries_objective(AbsLinear{2}(), soft_cover, A, dr, dc; rtol=1e-12)
+    @test covaries(soft_cover, A, dr, dc; rtol=1e-5)
+    # The cover's agreement is near `sqrt(eps)`, not `eps`: the looser bound is a property
+    # of any converged minimizer, not slack that a better solver could recover.
+    @test !covaries(soft_cover, A, dr, dc; rtol=1e-9)
 end

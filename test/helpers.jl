@@ -29,6 +29,12 @@ Scale covariance under diagonal rescaling. The symmetric form checks
 freedom, so the vectors must match directly. The general form checks the
 outer product `a .* b'`, the gauge-invariant object under the free rescaling
 `(a, b) → (c*a, b/c)`. Keyword arguments are forwarded to `isapprox`.
+
+A converged cover pins the objective to `eps` but its own entries only to
+`sqrt(eps)`: the objective is stationary at the minimizer, so a displacement
+`δ` along a soft direction costs only `O(δ²)`. Solvers that iterate to
+convergence therefore satisfy [`covaries_objective`](@ref) far more tightly
+than `covaries`, and `rtol` here must leave room for `sqrt(eps)`.
 """
 function covaries(coverfn, A, d::AbstractVector; kwargs...)
     a = coverfn(A)
@@ -39,4 +45,27 @@ function covaries(coverfn, A, dr::AbstractVector, dc::AbstractVector; kwargs...)
     a, b = coverfn(A)
     aD, bD = coverfn(dr .* A .* transpose(dc))
     return isapprox(aD .* transpose(bD), (dr .* a) .* transpose(dc .* b); kwargs...)
+end
+
+"""
+    covaries_objective(ϕ, coverfn, A, d; kwargs...)
+    covaries_objective(ϕ, coverfn, A, dr, dc; kwargs...)
+
+Scale invariance of the attained objective: the cover found in a rescaled frame
+must score the same as the cover found in the original frame, since `ϕ` sees only
+the ratios `|A[i,j]| / (a[i]*b[j])`, which every diagonal rescaling leaves fixed.
+
+This is the sharp statement of covariance for an iterate driven to convergence.
+"""
+function covaries_objective(ϕ, coverfn, A, d::AbstractVector; kwargs...)
+    E = cover_objective(ϕ, coverfn(A), A)
+    AD = d .* A .* transpose(d)
+    return isapprox(cover_objective(ϕ, coverfn(AD), AD), E; kwargs...)
+end
+function covaries_objective(ϕ, coverfn, A, dr::AbstractVector, dc::AbstractVector; kwargs...)
+    a, b = coverfn(A)
+    E = cover_objective(ϕ, a, b, A)
+    AD = dr .* A .* transpose(dc)
+    aD, bD = coverfn(AD)
+    return isapprox(cover_objective(ϕ, aD, bD, AD), E; kwargs...)
 end
