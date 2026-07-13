@@ -8,7 +8,7 @@ export AbsLog, AbsLinear
 export cover_objective
 export cover, cover!, symcover, symcover!, soft_symcover, soft_cover
 export initialize_cover, initialize_cover!, initialize_symcover, initialize_symcover!
-export symcover_min, cover_min, soft_symcover_min, soft_cover_min
+export symcover_min, symcover_min!, cover_min, cover_min!, soft_symcover_min, soft_cover_min
 export dotabs, divmag
 
 include("penalties.jl")
@@ -55,22 +55,30 @@ end
 ratio_nz(n, d) = iszero(d) ? zero(n) / oneunit(d) : n / d
 
 
-# True only when a MethodError's argument types are consistent with the
-# `(ϕ::AbstractCoverPenalty, A::AbstractMatrix; kwargs...)` calling convention
-# of the `*_min` solvers, i.e. the failure could plausibly be fixed by loading
-# an extension rather than by passing arguments of the right kind.
-_looks_like_missing_extension(argtypes) = length(argtypes) >= 2 && argtypes[1] <: AbstractCoverPenalty && argtypes[2] <: AbstractMatrix
+# True only when a MethodError's argument types are consistent with the calling
+# convention of the `*_min` solvers — a penalty, the scale vectors the mutating
+# forms refine in place, and the matrix — i.e. the failure could plausibly be fixed
+# by loading an extension rather than by passing arguments of the right kind.
+function _looks_like_missing_extension(argtypes)
+    length(argtypes) >= 2 || return false
+    argtypes[1] <: AbstractCoverPenalty || return false
+    argtypes[end] <: AbstractMatrix || return false
+    return all(T -> T <: AbstractVector, argtypes[2:end-1])
+end
 
 function __init__()
     Base.Experimental.register_error_hint(MethodError) do io, exc, argtypes, kwargs
         _looks_like_missing_extension(argtypes) || return
-        if exc.f === symcover_min
+        # `cover_min` is the one entry point whose AbsLinear gap is an implementation
+        # hole rather than an unloaded extension: it has no multistart driver, though
+        # its `cover_min!` kernel is available once Ipopt is loaded.
+        if exc.f === symcover_min || exc.f === symcover_min! || exc.f === cover_min!
             printstyled(io, "\nAbsLog{2} is solved natively; other penalties require loading JuMP plus HiGHS (for AbsLog{1}) or Ipopt (for AbsLinear)."; color=:yellow)
             return true
         end
         if exc.f === cover_min
             if argtypes[1] <: AbsLinear
-                printstyled(io, "\nAbsLinear penalties are not yet supported by cover_min."; color=:yellow)
+                printstyled(io, "\nAbsLinear penalties are not yet supported by cover_min; refine a start with cover_min! instead, which accepts them once Ipopt is loaded."; color=:yellow)
             else
                 printstyled(io, "\nAbsLog{2} is solved natively; AbsLog{1} requires loading JuMP plus HiGHS."; color=:yellow)
             end

@@ -235,6 +235,59 @@ end
     @test_throws MethodError soft_cover_min(AbsLinear{2}(), Aasym)
 end
 
+@testset "symcover_min!/cover_min! native AbsLog{2}" begin
+    A = [4.0 1.0 0.0; 1.0 9.0 2.0; 0.0 2.0 16.0]
+    Aasym = [4.0 1.0 0.0; 1.0 9.0 2.0]
+
+    # AbsLog{2} has a unique minimizer, so refining any valid start reproduces the
+    # cold solve exactly, and the no-ϕ form selects the same penalty.
+    a = initialize_symcover(A)
+    @test symcover_min!(AbsLog{2}(), copy(a), A) ≈ symcover_min(AbsLog{2}(), A)
+    @test symcover_min!(copy(a), A) == symcover_min!(AbsLog{2}(), copy(a), A)
+    ab, bb = initialize_cover(Aasym)
+    ra, rb = cover_min!(AbsLog{2}(), copy(ab), copy(bb), Aasym)
+    ca, cb = cover_min(AbsLog{2}(), Aasym)
+    @test ra ≈ ca && rb ≈ cb
+    @test cover_min!(copy(ab), copy(bb), Aasym) == (ra, rb)
+
+    # The refiners write through the buffers they are handed.
+    a = initialize_symcover(A)
+    @test symcover_min!(AbsLog{2}(), a, A) === a
+    @test iscover(a, A; atol=1e-9)
+
+    # The heuristics land on the coverage boundary only to within the roundoff of
+    # their log-domain updates, so their output must be accepted as a start.
+    @test symcover_min!(AbsLog{2}(), symcover(A), A) ≈ symcover_min(AbsLog{2}(), A)
+    @test cover_min!(AbsLog{2}(), cover(Aasym)..., Aasym)[1] ≈ ca
+
+    # Every start is read only up to the gauge a -> c*a, b -> b/c, which leaves
+    # every product a[i]*b[j] fixed.
+    ga, gb = cover_min!(AbsLog{2}(), 8 .* ab, bb ./ 8, Aasym)
+    @test ga ≈ ra && gb ≈ rb
+
+    # Scales on rows carrying no support are inert: ignored on input, zero on output.
+    Anosupp = [4.0 1.0 0.0; 1.0 9.0 0.0; 0.0 0.0 0.0]
+    a = initialize_symcover(Anosupp)
+    a[3] = 7.0
+    @test symcover_min!(AbsLog{2}(), a, Anosupp)[3] == 0.0
+
+    # A start must cover A, and be positive wherever A carries support.
+    @test_throws "requires a start that covers `A`" symcover_min!(AbsLog{2}(), fill(0.1, 3), A)
+    @test_throws "requires a start that covers `A`" symcover_min!(AbsLog{2}(), symcover(A) .* (1 - 1e-8), A)
+    @test_throws "finite positive scale on every supported row" symcover_min!(AbsLog{2}(), [100.0, 0.0, 100.0], A)
+    @test_throws "requires a start that covers `A`" cover_min!(AbsLog{2}(), fill(0.1, 2), fill(0.1, 3), Aasym)
+    @test_throws "finite positive scale on every supported column" cover_min!(AbsLog{2}(), fill(100.0, 2), [100.0, 0.0, 100.0], Aasym)
+    @test_throws DimensionMismatch symcover_min!(AbsLog{2}(), zeros(2), A)
+    @test_throws DimensionMismatch cover_min!(AbsLog{2}(), zeros(2), zeros(2), Aasym)
+
+    # Offset axes propagate through the start and the result.
+    Ao = OffsetArray(A, -1, -1)
+    ao = initialize_symcover(Ao)
+    @test symcover_min!(AbsLog{2}(), ao, Ao) === ao
+    @test axes(ao, 1) == axes(Ao, 1)
+    @test collect(ao) ≈ symcover_min(AbsLog{2}(), A)
+end
+
 @testset "quality vs optimal (testmatrices)" begin
     sym_ratios = Float64[]
     for (_, A) in symmetric_matrices

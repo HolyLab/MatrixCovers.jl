@@ -67,6 +67,59 @@ See also: [`symcover_min`](@ref), [`cover`](@ref).
 function cover_min end
 cover_min(A::AbstractMatrix; kwargs...) = cover_min(AbsLog{2}(), A; kwargs...)
 
+"""
+    a = symcover_min!(ϕ, a, A; kwargs...)
+    a = symcover_min!(a, A; kwargs...)
+
+Refine the starting cover `a` into the ϕ-minimal symmetric hard cover of `A`, in
+place. This is the second half of the initialize/refine pair: `a` must already be
+a starting point, as produced by [`initialize_symcover`](@ref) (or by
+[`symcover`](@ref)). The no-ϕ form defaults to `AbsLog{2}()`, matching
+[`symcover_min`](@ref), whose keyword arguments and supported ϕ values these
+methods share.
+
+`a` must be strictly positive on every row of `A` that carries support, and must
+cover `A` — `a[i]*a[j] >= abs(A[i,j])` — to within the roundoff of the log-domain
+arithmetic; otherwise an `ArgumentError` is raised. Scales on rows carrying no
+support are inert: whatever they hold on input, they are zero on output.
+
+How much the start matters depends on ϕ. The `AbsLog` penalties are convex in the
+log-scales, so the minimum *value* is reached from any start; `AbsLog{2}` also has
+a unique minimizer, so its result is start-independent, while `AbsLog{1}` generally
+admits a whole flat family of equally-good optima and which one comes back may
+depend on the start. The `AbsLinear` penalties are non-convex, so there the start
+selects the local minimum the solver descends into — that is the point of naming
+the starts, and it is why [`symcover_min`](@ref) tries several rather than
+committing to one.
+
+See also: [`initialize_symcover`](@ref), [`symcover_min`](@ref), [`cover_min!`](@ref).
+"""
+function symcover_min! end
+symcover_min!(a::AbstractVector, A::AbstractMatrix; kwargs...) =
+    symcover_min!(AbsLog{2}(), a, A; kwargs...)
+
+"""
+    a, b = cover_min!(ϕ, a, b, A; kwargs...)
+    a, b = cover_min!(a, b, A; kwargs...)
+
+Refine the starting cover `(a, b)` into the ϕ-minimal asymmetric hard cover of
+`A`, in place. This is the asymmetric counterpart of [`symcover_min!`](@ref), and
+carries the same contract on the start: strict positivity on every supported row
+and column, coverage of `A` to within roundoff, and inert scales on the
+unsupported rows and columns. The no-ϕ form defaults to `AbsLog{2}()`, matching
+[`cover_min`](@ref), whose keyword arguments and supported ϕ values these methods
+share.
+
+The product `a[i]*b[j]` is unchanged by `a -> c*a`, `b -> b/c`, so the start is
+read only up to that gauge: `(a, b)` and `(2a, b/2)` give the same result, and
+the result itself is pinned to the balance convention of [`cover_min`](@ref).
+
+See also: [`initialize_cover`](@ref), [`cover_min`](@ref), [`symcover_min!`](@ref).
+"""
+function cover_min! end
+cover_min!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
+    cover_min!(AbsLog{2}(), a, b, A; kwargs...)
+
 # Symmetric AbsLog{2} hard cover via a one-sided quadratic penalty on the
 # log-residuals z_ij = α_i + α_j - log|A_ij| (α = log a):
 #
@@ -96,9 +149,130 @@ function cover_min(::AbsLog{2}, A::AbstractMatrix; kwargs...)
     return a, b
 end
 
+# The AbsLog{2} objective is convex in the log-scales, so the continuation converges
+# to the same cover from any start; the start is honored (it replaces the cold
+# unweighted solve as the first iterate) but is not observable in the result.
+function symcover_min!(::AbsLog{2}, a::AbstractVector, A::AbstractMatrix; kwargs...)
+    _prepare_symcover_start!(a, A)
+    anew, _ = _symcover_min_abslog2(A; start=a, kwargs...)
+    a .= anew
+    return a
+end
+
+function cover_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
+    _prepare_cover_start!(a, b, A)
+    anew, bnew, _ = _cover_min_abslog2(A; start=(a, b), kwargs...)
+    a .= anew
+    b .= bnew
+    return a, b
+end
+
 # ============================================================
 # Internal helpers
 # ============================================================
+
+# Log-domain slack allowed of a start supplied to the `*_min!` refiners, in units of
+# `eps(T)` scaled by the magnitudes entering the residual. The heuristics reach the
+# coverage boundary through log-domain updates and so land on it only to within their
+# own roundoff — a fresh `symcover` violates `a[i]*a[j] >= abs(A[i,j])` by a fraction
+# of one such unit — and an exact test would reject them. This bound accepts that
+# while still rejecting a start that misses coverage by any margin a solver would see.
+const START_FEASIBILITY_ULPS = 64
+
+_start_slack(lv::T, li::T, lj::T) where {T} =
+    START_FEASIBILITY_ULPS * eps(T) * max(oneunit(T), abs(lv), abs(li), abs(lj))
+
+# Shared prologue of the `symcover_min!` kernels: check that the caller's start is a
+# cover of `A`, discard the inert scales on unsupported rows, and move the start onto
+# the coverage boundary exactly, so every kernel begins from a feasible point.
+function _prepare_symcover_start!(a::AbstractVector, A::AbstractMatrix)
+    ax = axes(A, 1)
+    axes(A, 2) == ax || throw(ArgumentError("symcover_min! requires a square matrix"))
+    eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$ax"))
+    T = float(eltype(a))
+    supp = fill!(similar(a, Bool), false)
+    foreach_support_sym(A) do i, j, v
+        supp[i] = true
+        supp[j] = true
+    end
+    for i in ax
+        supp[i] || (a[i] = zero(eltype(a)))
+    end
+    foreach_support_sym(A) do i, j, v
+        (isfinite(a[i]) && a[i] > zero(a[i])) ||
+            throw(ArgumentError("symcover_min! requires a start with finite positive scale on every supported row, got a[$i] = $(a[i])"))
+        (isfinite(a[j]) && a[j] > zero(a[j])) ||
+            throw(ArgumentError("symcover_min! requires a start with finite positive scale on every supported row, got a[$j] = $(a[j])"))
+        lv, li, lj = log(T(v)), log(T(a[i])), log(T(a[j]))
+        lv - li - lj <= _start_slack(lv, li, lj) ||
+            throw(ArgumentError("symcover_min! requires a start that covers `A`, but a[$i]*a[$j] = $(a[i] * a[j]) < $v = abs(A[$i,$j]); see initialize_symcover"))
+    end
+    return inflate_feasible!(a, A)
+end
+
+# Shared prologue of the `cover_min!` kernels; the asymmetric counterpart of
+# `_prepare_symcover_start!`. The start is additionally pinned to the balance
+# convention, so the refiners read it only up to the row/column gauge.
+function _prepare_cover_start!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
+    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$(axes(A, 1))"))
+    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
+    T = float(promote_type(eltype(a), eltype(b)))
+    suppa = fill!(similar(a, Bool), false)
+    suppb = fill!(similar(b, Bool), false)
+    foreach_support(A) do i, j, v
+        suppa[i] = true
+        suppb[j] = true
+    end
+    for i in eachindex(a)
+        suppa[i] || (a[i] = zero(eltype(a)))
+    end
+    for j in eachindex(b)
+        suppb[j] || (b[j] = zero(eltype(b)))
+    end
+    foreach_support(A) do i, j, v
+        (isfinite(a[i]) && a[i] > zero(a[i])) ||
+            throw(ArgumentError("cover_min! requires a start with finite positive scale on every supported row, got a[$i] = $(a[i])"))
+        (isfinite(b[j]) && b[j] > zero(b[j])) ||
+            throw(ArgumentError("cover_min! requires a start with finite positive scale on every supported column, got b[$j] = $(b[j])"))
+        lv, li, lj = log(T(v)), log(T(a[i])), log(T(b[j]))
+        lv - li - lj <= _start_slack(lv, li, lj) ||
+            throw(ArgumentError("cover_min! requires a start that covers `A`, but a[$i]*b[$j] = $(a[i] * b[j]) < $v = abs(A[$i,$j]); see initialize_cover"))
+    end
+    _balance_cover!(a, b, A)
+    return inflate_feasible!(a, b, A)
+end
+
+# Shift `(a, b)` along the gauge `a -> c*a`, `b -> b/c`, which leaves every product
+# `a[i]*b[j]` — and hence every objective and every coverage constraint — untouched,
+# onto the balance convention `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` that `cover_min`
+# reports its results in. Summing `log a[i]` over the support counts row `i` exactly
+# `nzaᵢ` times, which is those weighted sums. Two starts differing only by the gauge
+# land on the same point here, so the refiners cannot see the difference. The
+# subsequent uniform inflation to feasibility raises every supported scale of `a` and
+# `b` alike, and `∑ nzaᵢ = ∑ nzbⱼ = nnz`, so it preserves the balance it finds.
+function _balance_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
+    T = float(promote_type(eltype(a), eltype(b)))
+    Lα = Ref(zero(T))
+    Lβ = Ref(zero(T))
+    nnz = Ref(0)
+    foreach_support(A) do i, j, v
+        Lα[] += log(T(a[i]))
+        Lβ[] += log(T(b[j]))
+        nnz[] += 1
+    end
+    iszero(nnz[]) && return a, b
+    s = (Lβ[] - Lα[]) / (2 * nnz[])
+    iszero(s) && return a, b
+    # Grow the log-scales directly: `exp(s)` alone can overflow where the shifted
+    # scale is perfectly representable.
+    for i in eachindex(a)
+        iszero(a[i]) || (a[i] = exp(log(T(a[i])) + s))
+    end
+    for j in eachindex(b)
+        iszero(b[j]) || (b[j] = exp(log(T(b[j])) - s))
+    end
+    return a, b
+end
 
 # Inner linear solve for the AbsLog{2} MCM Newton steps. `:auto` (the default)
 # forms and factorizes the reweighted normal equations densely, which is fastest
@@ -176,9 +350,11 @@ end
 # NamedTuple `(; nsolves, lsqriters, linsolve)` recording the number of inner linear
 # solves, the total LSQR iterations (0 on the dense path), and which path ran — used
 # by the benchmarks. `linsolve` is `:auto`/`:dense` (dense factorization) or `:lsqr`
-# (matrix-free, for sparse supports).
+# (matrix-free, for sparse supports). `start`, when given, is a positive cover of `A`
+# indexed like `axes(A, 1)` and supplies the first iterate in place of the cold
+# unweighted solve; the objective is convex, so it changes the path but not the result.
 function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
-                               maxiter::Int=40, linsolve::Symbol=:auto)
+                               maxiter::Int=40, linsolve::Symbol=:auto, start=nothing)
     linsolve in (:auto, :dense, :lsqr) ||
         throw(ArgumentError("linsolve must be :auto, :dense, or :lsqr; got :$linsolve"))
     ax = axes(A, 1)
@@ -283,7 +459,8 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             return Symmetric(B) \ f
         end
     end
-    α = solve_weighted(zeros(T, n), nothing)
+    α = start === nothing ? solve_weighted(zeros(T, n), nothing) :
+        T[hassupp[ip] ? log(T(start[i])) : zero(T) for (ip, i) in enumerate(ax)]
     for κ in κs
         fcur = fκ(α, κ)
         for _ in 1:maxiter
@@ -314,8 +491,10 @@ end
 
 # Worker for `cover_min(::AbsLog{2})`. Returns `(a, b, stats)` with `stats` a
 # NamedTuple `(; nsolves, lsqriters, linsolve)` (see `_symcover_min_abslog2`).
+# `start`, when given, is a positive cover `(a, b)` indexed like the rows and columns
+# of `A`, supplying the first iterate in place of the cold unweighted solve.
 function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
-                            maxiter::Int=40, linsolve::Symbol=:auto)
+                            maxiter::Int=40, linsolve::Symbol=:auto, start=nothing)
     linsolve in (:auto, :dense, :lsqr) ||
         throw(ArgumentError("linsolve must be :auto, :dense, or :lsqr; got :$linsolve"))
     axr = axes(A, 1)
@@ -450,7 +629,19 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             return Symmetric(B) \ f
         end
     end
-    x = solve_weighted(zeros(T, N), nothing)
+    x = if start === nothing
+        solve_weighted(zeros(T, N), nothing)
+    else
+        sa, sb = start
+        x0 = zeros(T, N)
+        for (ip, i) in enumerate(axr)
+            hasrow[ip] && (x0[ip] = log(T(sa[i])))
+        end
+        for (jp, j) in enumerate(axc)
+            hascol[jp] && (x0[m+jp] = log(T(sb[j])))
+        end
+        x0
+    end
     for κ in κs
         fcur = fκ(x, κ)
         for _ in 1:maxiter

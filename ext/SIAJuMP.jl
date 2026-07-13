@@ -38,7 +38,19 @@ function ScaleInvariantAnalysis.symcover_min_jump(::AbsLog{2}, A)
     return a
 end
 
-function ScaleInvariantAnalysis.symcover_min(::AbsLog{1}, A)
+ScaleInvariantAnalysis.symcover_min(::AbsLog{1}, A) = _symcover_min_abslog1(A, nothing)
+
+function ScaleInvariantAnalysis.symcover_min!(::AbsLog{1}, a::AbstractVector, A)
+    ScaleInvariantAnalysis._prepare_symcover_start!(a, A)
+    a .= _symcover_min_abslog1(A, a)
+    return a
+end
+
+# The AbsLog{1} hard cover is an LP: the coverage constraint forces every residual
+# α[i]+α[j]-log|A[i,j]| to be nonnegative, so |·| drops away and the objective is
+# linear in α. `start`, when given, is a cover of `A` supplying the initial point;
+# the problem is convex, so it is a hint to the solver and not visible in the result.
+function _symcover_min_abslog1(A, start)
     axr = axes(A, 1)
     axes(A, 2) == axr || throw(ArgumentError("symcover_min requires a square matrix"))
     T = float(real(eltype(A)))
@@ -51,7 +63,12 @@ function ScaleInvariantAnalysis.symcover_min(::AbsLog{1}, A)
     supported = [colcount[i] > 0 || rowcount[i] > 0 for i in 1:n]
     model = JuMP.Model(HiGHS.Optimizer)
     JuMP.set_silent(model)
-    @variable(model, α[1:n])
+    if start === nothing
+        @variable(model, α[1:n])
+    else
+        α0 = [supported[k] ? log(T(start[pr[k]])) : zero(T) for k in 1:n]
+        @variable(model, α[k=1:n], start = α0[k])
+    end
     @objective(model, Min, dot(α, colcount .+ rowcount))
     for i in 1:n, j in i:n
         Apos[i, j] != 0 && @constraint(model, α[i] + α[j] - logA[i, j] >= 0)
@@ -96,7 +113,20 @@ function ScaleInvariantAnalysis.cover_min_jump(::AbsLog{2}, A)
     return a, b
 end
 
-function ScaleInvariantAnalysis.cover_min(::AbsLog{1}, A)
+ScaleInvariantAnalysis.cover_min(::AbsLog{1}, A) = _cover_min_abslog1(A, nothing)
+
+function ScaleInvariantAnalysis.cover_min!(::AbsLog{1}, a::AbstractVector, b::AbstractVector, A)
+    ScaleInvariantAnalysis._prepare_cover_start!(a, b, A)
+    anew, bnew = _cover_min_abslog1(A, (a, b))
+    a .= anew
+    b .= bnew
+    return a, b
+end
+
+# Asymmetric counterpart of `_symcover_min_abslog1`, on the bipartite support: the
+# same LP over row scales α and column scales β, with the row/column gauge pinned by
+# the balance constraint so the split between `a` and `b` is deterministic.
+function _cover_min_abslog1(A, start)
     axr = axes(A, 1)
     axc = axes(A, 2)
     T = float(real(eltype(A)))
@@ -110,8 +140,16 @@ function ScaleInvariantAnalysis.cover_min(::AbsLog{1}, A)
     rowcount = vec(count(!iszero, Apos, dims=2))
     model = JuMP.Model(HiGHS.Optimizer)
     JuMP.set_silent(model)
-    @variable(model, α[1:m])
-    @variable(model, β[1:n])
+    if start === nothing
+        @variable(model, α[1:m])
+        @variable(model, β[1:n])
+    else
+        sa, sb = start
+        α0 = [rowcount[i] > 0 ? log(T(sa[pr[i]])) : zero(T) for i in 1:m]
+        β0 = [colcount[j] > 0 ? log(T(sb[pc[j]])) : zero(T) for j in 1:n]
+        @variable(model, α[i=1:m], start = α0[i])
+        @variable(model, β[j=1:n], start = β0[j])
+    end
     @objective(model, Min, dot(α, rowcount) + dot(β, colcount))
     for i in 1:m, j in 1:n
         Apos[i, j] != 0 && @constraint(model, α[i] + β[j] - logA[i, j] >= 0)

@@ -100,6 +100,60 @@ end
     end
 end
 
+@testset "symcover_min!/cover_min! refiners (JuMP/HiGHS/Ipopt)" begin
+    A = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
+    Aasym = [1.0 2.0 3.0; 4.0 5.0 6.0]
+
+    for ϕ in PENALTIES
+        # Refining a start yields a hard cover no worse than the start itself, to
+        # within the tolerance the solvers converge to (on this matrix the :hardcover
+        # start is already all but optimal, so there is nothing else separating them).
+        a0 = initialize_symcover(A)
+        a = symcover_min!(ϕ, copy(a0), A)
+        @test iscover(a, A; rtol=1e-6)
+        @test cover_objective(ϕ, a, A) <= cover_objective(ϕ, a0, A) * (1 + 1e-6) + 1e-8
+
+        ab0, bb0 = initialize_cover(Aasym)
+        ab, bb = cover_min!(ϕ, copy(ab0), copy(bb0), Aasym)
+        @test iscover(ab, bb, Aasym; rtol=1e-6)
+        @test cover_objective(ϕ, ab, bb, Aasym) <= cover_objective(ϕ, ab0, bb0, Aasym) * (1 + 1e-6) + 1e-8
+
+        # The asymmetric result is pinned to the balance convention, so the start is
+        # read only up to the gauge a -> c*a, b -> b/c that leaves a[i]*b[j] fixed.
+        ga, gb = cover_min!(ϕ, 4 .* ab0, bb0 ./ 4, Aasym)
+        @test ga ≈ ab && gb ≈ bb
+    end
+
+    # AbsLog{1}'s optimum is a flat family rather than a point, so the start can pick
+    # out a different member of it; the objective attained is the same either way.
+    a_cold = symcover_min(AbsLog{1}(), A)
+    a_hot = symcover_min!(AbsLog{1}(), initialize_symcover(A), A)
+    @test cover_objective(AbsLog{1}(), a_hot, A) ≈ cover_objective(AbsLog{1}(), a_cold, A)
+
+    # The AbsLinear objectives are non-convex: on this matrix the :hardcover and
+    # :geomean starts descend into genuinely different local minima, which is what
+    # makes a menu of starts worth having.
+    Abasin = [6.609216272192496 1.032613546278995 55.276094662396076 0.5076927138328724;
+              1.032613546278995 3.1390835186570034 11.658167585612446 38.315826566607555;
+              55.276094662396076 11.658167585612446 0.001705708114264713 21.68951642774627;
+              0.5076927138328724 38.315826566607555 21.68951642774627 0.006443251375371587]
+    ϕ = AbsLinear{2}()
+    a_hard = symcover_min!(ϕ, initialize_symcover(Abasin; strategy=:hardcover), Abasin)
+    a_geo = symcover_min!(ϕ, initialize_symcover(Abasin; strategy=:geomean), Abasin)
+    @test iscover(a_hard, Abasin; rtol=1e-6)
+    @test iscover(a_geo, Abasin; rtol=1e-6)
+    @test cover_objective(ϕ, a_geo, Abasin) < cover_objective(ϕ, a_hard, Abasin) - 1e-3
+
+    # The non-bang AbsLinear entry point refines the :hardcover start, its own default.
+    @test symcover_min(ϕ, Abasin) ≈ a_hard
+
+    # Offset axes survive the Ipopt position mapping.
+    Ao = OffsetArray(A, -1, -1)
+    ao = symcover_min!(ϕ, initialize_symcover(Ao), Ao)
+    @test axes(ao, 1) == axes(Ao, 1)
+    @test collect(ao) ≈ symcover_min!(ϕ, initialize_symcover(A), A)
+end
+
 @testset "error hint gated on argument types" begin
     # Wrong-argument-type MethodError: no extension load would fix this,
     # so the hint must not fire.
@@ -182,4 +236,33 @@ end
     """
     out_cover = read(`$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script_cover`, String)
     @test occursin("loading JuMP", out_cover)
+
+    # cover_min!, unlike cover_min, does implement the AbsLinear penalties — behind
+    # the Ipopt extension — so its hint must advise the load rather than report a
+    # hole, and cover_min's own hint should point the user at it.
+    @test occursin("cover_min!", msg4)
+    script_bang = """
+    using ScaleInvariantAnalysis
+    A = [4.0 1.0; 1.0 4.0]
+    for call in (() -> symcover_min!(AbsLinear{2}(), [2.0, 2.0], A),
+                 () -> cover_min!(AbsLinear{2}(), [2.0, 2.0], [2.0, 2.0], A))
+        try
+            call()
+        catch e
+            print(sprint(showerror, e))
+        end
+    end
+    """
+    out_bang = read(`$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script_bang`, String)
+    @test count("loading JuMP", out_bang) == 2
+
+    # The widened gate still refuses to fire when no package load could help.
+    e5 = try
+        symcover_min!(AbsLog{2}(), [1.0, 1.0], "not a matrix")
+        nothing
+    catch err
+        err
+    end
+    @test e5 isa MethodError
+    @test !occursin("loading JuMP", sprint(showerror, e5))
 end

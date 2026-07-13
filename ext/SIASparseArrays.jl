@@ -94,4 +94,23 @@ function ScaleInvariantAnalysis.symcover_min(ϕ::AbsLog{2}, H::Hermitian{<:Any, 
     return Vector(a)
 end
 
+# The refiners take the same sparse `linsolve` default as the solvers above.
+function ScaleInvariantAnalysis.symcover_min!(ϕ::AbsLog{2}, a::AbstractVector,
+        S::Union{SparseMatrixCSC,Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}};
+        linsolve::Symbol=:lsqr, kwargs...)
+    ScaleInvariantAnalysis._prepare_symcover_start!(a, S)
+    anew, _ = _symcover_min_abslog2(S; start=a, linsolve, kwargs...)
+    a .= anew
+    return a
+end
+
+function ScaleInvariantAnalysis.cover_min!(ϕ::AbsLog{2}, a::AbstractVector, b::AbstractVector,
+                                           A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
+    ScaleInvariantAnalysis._prepare_cover_start!(a, b, A)
+    anew, bnew, _ = _cover_min_abslog2(A; start=(a, b), linsolve, kwargs...)
+    a .= anew
+    b .= bnew
+    return a, b
+end
+
 end  # module SIASparseArrays
