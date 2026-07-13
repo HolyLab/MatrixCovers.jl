@@ -157,4 +157,29 @@ end
     msg3 = sprint(showerror, e3)
     @test occursin("not yet supported", msg3)
     @test !occursin("loading JuMP", msg3)
+
+    # cover_min's hint depends on the penalty: AbsLog{1} lives in an extension,
+    # but AbsLinear is unimplemented, so only the former may advise a package load.
+    e4 = try
+        cover_min(AbsLinear{2}(), A)
+        nothing
+    catch err
+        err
+    end
+    @test e4 isa MethodError
+    msg4 = sprint(showerror, e4)
+    @test occursin("not yet supported", msg4)
+    @test !occursin("loading JuMP", msg4)
+
+    script_cover = """
+    using ScaleInvariantAnalysis
+    A = [4.0 1.0; 1.0 4.0]
+    try
+        cover_min(AbsLog{1}(), A)
+    catch e
+        print(sprint(showerror, e))
+    end
+    """
+    out_cover = read(`$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script_cover`, String)
+    @test occursin("loading JuMP", out_cover)
 end

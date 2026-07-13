@@ -62,8 +62,16 @@ _looks_like_missing_extension(argtypes) = length(argtypes) >= 2 && argtypes[1] <
 function __init__()
     Base.Experimental.register_error_hint(MethodError) do io, exc, argtypes, kwargs
         _looks_like_missing_extension(argtypes) || return
-        if exc.f === symcover_min || exc.f === cover_min
+        if exc.f === symcover_min
             printstyled(io, "\nAbsLog{2} is solved natively; other penalties require loading JuMP plus HiGHS (for AbsLog{1}) or Ipopt (for AbsLinear)."; color=:yellow)
+            return true
+        end
+        if exc.f === cover_min
+            if argtypes[1] <: AbsLinear
+                printstyled(io, "\nAbsLinear penalties are not yet supported by cover_min."; color=:yellow)
+            else
+                printstyled(io, "\nAbsLog{2} is solved natively; AbsLog{1} requires loading JuMP plus HiGHS."; color=:yellow)
+            end
             return true
         end
         if exc.f === soft_symcover_min
