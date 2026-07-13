@@ -37,7 +37,12 @@ Supported ϕ values:
   commit to one start, these methods refine each of `strategies` — the
   [`initialize_symcover`](@ref) menu, by default `$(SYMCOVER_MIN_STRATEGIES)` — and return
   the best cover found, at a cost of one solve per start. A strategy that `A` admits no
-  start for is skipped.
+  start for is skipped. The result is the best *local* minimum on that menu: the multistart
+  is a hedge against a poor basin, not a certificate of global optimality.
+
+The `AbsLog` penalties are convex in the log-scales, so for them the minimum value is
+unique and no such hedge is needed. `AbsLog{2}` has a unique minimizer too; `AbsLog{1}`
+generally admits a whole flat family of equally-good optima, of which one is returned.
 
 !!! note
     Even the native solver is more expensive than the [`symcover`](@ref) heuristic.
@@ -73,7 +78,13 @@ Supported ϕ values:
   non-convex, so the solver returns the minimum of the basin it starts in. Rather than
   commit to one start, these methods refine each of `strategies` — the
   [`initialize_cover`](@ref) menu, by default `$(COVER_MIN_STRATEGIES)` — and return the
-  best cover found, at a cost of one solve per start.
+  best cover found, at a cost of one solve per start. The result is the best *local*
+  minimum on that menu: the multistart is a hedge against a poor basin, not a certificate
+  of global optimality.
+
+The `AbsLog` penalties are convex in the log-scales, so for them the minimum value is
+unique and no such hedge is needed. `AbsLog{2}` has a unique minimizer too; `AbsLog{1}`
+generally admits a whole flat family of equally-good optima, of which one is returned.
 
 !!! note
     Even the native solver is more expensive than the [`cover`](@ref) heuristic.

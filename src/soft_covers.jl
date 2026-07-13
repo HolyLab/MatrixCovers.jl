@@ -188,6 +188,14 @@ with no coverage constraints. The no-ϕ form defaults to `AbsLinear{2}()`, match
 Supported ϕ values and required extensions:
 - `AbsLog{2}()`: requires JuMP and HiGHS.
 - `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt.
+- `AbsLog{1}()`: not yet implemented.
+
+!!! warning
+    The `AbsLinear` objectives are non-convex, and these methods commit to a single start,
+    so what they return is a *local* minimum — despite the name, not necessarily the
+    smallest value of the objective. Both [`soft_symcover`](@ref) and [`symcover_min`](@ref)
+    hedge against that by trying several starting points and keeping the best; these methods
+    do not, and have no `strategies` keyword.
 """
 function soft_symcover_min end
 soft_symcover_min(A::AbstractMatrix; kwargs...) = soft_symcover_min(AbsLinear{2}(), A; kwargs...)

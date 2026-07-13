@@ -163,6 +163,49 @@ polytope rather than an isolated point), so a native solver would additionally
 need a canonical selection rule to be deterministic and scale-covariant.  For
 these reasons the `AbsLog{1}` hard covers require `JuMP` + `HiGHS`.
 
+### Starting points: initialize and refine
+
+The `AbsLinear` penalties are **non-convex**.  A solver handed one of them descends into
+whichever local minimum lies below its starting point, so the start is a genuine input,
+not a hint — two starts can return two different covers, both correct answers to "a local
+minimum of this objective."  The package makes that structure explicit rather than hiding
+it behind a default:
+
+- **Initializers** name the starting points.  [`initialize_symcover`](@ref) and
+  [`initialize_cover`](@ref) take a `strategy` — `:hardcover`, `:geomean`, `:leaveout`,
+  `:diagfeasible` — and return that point.  Each is a property of `A` alone; no objective
+  is involved, so an initializer takes no penalty.  By default the result is inflated until
+  it covers `A`, which is what the hard-cover solvers require; `feasible=false` returns the
+  point raw, which is what the soft covers want.
+- **Refiners** improve a starting point in place.  [`symcover_min!`](@ref) and
+  [`cover_min!`](@ref) validate the start, then optimize from it.  Which basin they reach
+  is the caller's choice, by construction.
+- **Solvers** bundle the two.  [`symcover_min`](@ref) and [`cover_min`](@ref) refine every
+  start on a menu (the `strategies` keyword) and return the best cover by
+  [`cover_objective`](@ref), so their result depends on `A` and not on an initialization the
+  caller never chose.
+
+```julia
+using JuMP, Ipopt   # Ipopt for the AbsLinear penalties
+using ScaleInvariantAnalysis
+
+a = symcover_min(AbsLinear{2}(), A)                      # multistart over the whole menu
+a = symcover_min(AbsLinear{2}(), A; strategies=(:geomean,))   # or commit to one start
+
+a0 = initialize_symcover(A; strategy=:geomean)           # or drive it yourself
+symcover_min!(AbsLinear{2}(), a0, A)
+```
+
+The same menu supplies the starting points of the [`soft_symcover`](@ref) and
+[`soft_cover`](@ref) multistarts, so it is worth meeting once.  Those add randomized
+perturbations of a base point to fill out their `starts` budget, which is multistart policy
+rather than a named point, and so is not part of the menu.
+
+For the convex `AbsLog` penalties the start cannot change the minimum *value*, and the
+refiners accept one only so that the two families share an interface.  `AbsLog{2}` has a
+unique minimizer, so its result is start-independent outright; `AbsLog{1}` has a flat face
+of equally-good optima, so the start may select which member of that family comes back.
+
 ## Index of available tools
 
 ```@index
