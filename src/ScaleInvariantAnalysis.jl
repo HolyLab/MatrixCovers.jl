@@ -7,12 +7,14 @@ using Random
 export AbsLog, AbsLinear
 export cover_objective
 export cover, cover!, symcover, symcover!, soft_symcover, soft_cover
+export initialize_cover, initialize_cover!, initialize_symcover, initialize_symcover!
 export symcover_min, cover_min, soft_symcover_min, soft_cover_min
 export dotabs, divmag
 
 include("penalties.jl")
 include("support.jl")
 include("heuristic_covers.jl")
+include("initializers.jl")   # the start menu; consumed by both solver families below
 include("soft_covers.jl")
 include("minimal_covers.jl")
 

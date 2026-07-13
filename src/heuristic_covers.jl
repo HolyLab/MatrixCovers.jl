@@ -581,3 +581,28 @@ function inflate_feasible!(a::AbstractVector{T}, A::AbstractMatrix) where T
     end
     return a
 end
+
+# Asymmetric counterpart: multiply every scale of `a` and `b` by the same factor
+# until `a[i]*b[j] >= |A[i,j]|` for every entry visited by `foreach_support`.
+# Requires a start with strictly positive scale on every supported row and column.
+# The shift is covariant under an independent row/column rescaling `D_r*A*D_c`,
+# and is accumulated in the log domain for the reasons given in the symmetric method.
+function inflate_feasible!(a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix) where T
+    la, lb = map(log, a), map(log, b)
+    tref = Ref(zero(T))
+    foreach_support(A) do i, j, v
+        tref[] = max(tref[], (log(T(v)) - la[i] - lb[j]) / 2)
+    end
+    t = tref[]
+    # A supported row or column with zero scale gives la (or lb) = -Inf, hence t = +Inf.
+    isfinite(t) ||
+        throw(ArgumentError("inflate_feasible! requires a start with positive scale on every supported row/column"))
+    iszero(t) && return a, b
+    for i in eachindex(a)
+        iszero(a[i]) || (a[i] = exp(la[i] + t))
+    end
+    for j in eachindex(b)
+        iszero(b[j]) || (b[j] = exp(lb[j] + t))
+    end
+    return a, b
+end

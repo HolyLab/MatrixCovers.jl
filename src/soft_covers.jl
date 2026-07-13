@@ -248,123 +248,36 @@ end
 # such differences are deterministic and co-vary with the frame, so switching on them is safe.
 const _MULTISTART_SWITCHTOL = 1e-9
 
-# Leave-one-out geometric mean, an alternative starting point to the AbsLog{2}
-# geometric-mean init for the AbsLinear soft cover. The geometric mean weights every nonzero
-# entry equally, so an entry with |A[i,j]| far below the rest (in the scale-invariant sense
-# of its log-residual z[i,j] = log|A[i,j]| - α[i] - α[j] at the unweighted minimum) skews
-# the start into a worse basin than the exact-zero limit. Here the entry with the most
-# negative residual is dropped from the support and the geometric mean recomputed, giving a
-# start in the basin that treats that entry as effectively zero; the AbsLinear objective is
-# finite at r = 0, so refinement then varies continuously as the entry vanishes.
-#
-# Scale-covariance: the residuals z are scale-invariant, so selecting the entry by argmin z
-# is covariant, as is the reduced-support geometric mean. Residual ties are broken by
-# ascending raw |A[i,j]| — NOT scale-invariant, but exact ties are precisely where
-# covariance is unachievable: whenever A is scale-equivalent to a row/column permutation of
-# itself (true of EVERY symmetric 2×2 with nonzero off-diagonal, via t² = A[2,2]/A[1,1]),
-# the competing basins have exactly equal objectives, so no deterministic algorithm can be
-# simultaneously scale-covariant, permutation-equivariant, and continuous there. The raw
-# magnitude is the only continuity-relevant information left, and using it only on ties
-# confines the covariance exception to that degenerate class. (Weighting all entries by raw
-# |A[i,j]|² instead would carry per-entry physical units — incommensurate sums — and break
-# covariance on an open set of matrices.)
-#
-# Returns `true` and fills `a` with the leave-one-out start, or returns `false` (leaving `a`
-# unspecified) when no entry can be dropped: empty support, or dropping the selected entry
-# would empty some row's support.
-function _leaveout_logmean_init!(a::AbstractVector{T}, A::AbstractMatrix) where T
-    ax = eachindex(a)
-    axes(A) == (ax, ax) || throw(DimensionMismatch("`_leaveout_logmean_init!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(axes(A)), axes(a)=$(axes(a)))"))
-    nza = unconstrained_min!(AbsLog{2}(), a, A)
-    sum(nza) == 0 && return false
-    # Most negative residual over the support, with a roundoff-tolerant tie set: exact ties
-    # (e.g. z[1,1] == z[2,2] for every 2×2) must not be ordered by floating-point noise.
-    zmin = T(Inf)
-    for j in ax, i in first(ax):j
-        Aij = abs(A[i, j])
-        iszero(Aij) && continue
-        zmin = min(zmin, log(T(Aij)) - log(a[i]) - log(a[j]))
-    end
-    ztol = 64 * eps(T) * max(one(T), abs(zmin))
-    ibest = jbest = first(ax) - 1
-    Abest = T(Inf)
-    for j in ax, i in first(ax):j
-        Aij = T(abs(A[i, j]))
-        iszero(Aij) && continue
-        z = log(Aij) - log(a[i]) - log(a[j])
-        if z <= zmin + ztol && Aij < Abest
-            ibest, jbest, Abest = i, j, Aij
-        end
-    end
-    # Dropping entry (i,j) removes one support count from row i and (if off-diagonal) row j.
-    nza[ibest] > 1 || return false
-    ibest == jbest || nza[jbest] > 1 || return false
-    # Minimize the unconstrained AbsLog{2} objective over the reduced support by
-    # Gauss-Seidel on its normal equations, starting from the full-support solution
-    # already in `a`. The closed-form geometric-mean formula used by
-    # `unconstrained_min!` is exactly scale-covariant only for rank-1 support
-    # patterns, which the reduced support never is; a Gauss-Seidel update, by
-    # contrast, is exactly covariant from any covariant iterate, for any sweep
-    # count, so basin selection downstream cannot depend on the frame.
-    α = similar(a)
-    for i in ax
-        α[i] = iszero(nza[i]) ? zero(T) : log(a[i])
-    end
-    for _ in 1:8
-        for i in ax
-            iszero(nza[i]) && continue
-            num = zero(T)   # Σ_j W[i,j] (log|A[i,j]| - α[j]), α[i]-coefficient split out
-            den = zero(T)
-            for j in ax
-                (min(i, j) == ibest && max(i, j) == jbest) && continue
-                Aij = abs(A[i, j])
-                iszero(Aij) && continue
-                lAij = log(Aij)
-                if j == i
-                    num += lAij
-                    den += 2
-                else
-                    num += lAij - α[j]
-                    den += 1
-                end
-            end
-            iszero(den) && continue   # row's only support was the dropped entry (guarded above)
-            α[i] = num / den
-        end
-    end
-    for i in ax
-        a[i] = iszero(nza[i]) ? zero(T) : exp(α[i])
-    end
-    return true
-end
-
 # Labeled candidate starts for the symmetric AbsLinear{2} multistart, in selection order.
-# Deterministic starts: the AbsLog{2} geometric-mean minimum (also the perturbation base),
-# the tightened hard cover, the uniformly inflated geometric mean, the leave-one-out
-# geometric mean (when a support entry can be dropped), and — only when `A` has a zero entry
-# — the greedy feasible cover `init_feasible_diag!`. The feasible start is gated because on a
-# fully dense `A` it never uniquely wins, and "which entries are zero" is invariant under a
-# diagonal rescaling `D*A*D`, so the gate keeps the selection scale-covariant. Remaining
-# slots, up to `starts` total, are multiplicative log-normal perturbations `a_g .* exp.(σ .* ξ)`
-# of the geometric-mean point, `ξ` drawn from `rng` (drawn for every index so the stream is
+# The deterministic starts are the `initialize_symcover` menu: the geometric mean (raw — it is
+# the exact soft AbsLog{2} optimum, so forcing it to feasibility would spoil it — and also the
+# perturbation base), the tightened hard cover, the uniformly inflated geometric mean, the
+# leave-one-out geometric mean (when a support entry can be dropped), and — only when `A` has
+# a zero entry — the greedy feasible cover. The feasible start is gated because on a fully
+# dense `A` it never uniquely wins, and "which entries are zero" is invariant under a diagonal
+# rescaling `D*A*D`, so the gate keeps the selection scale-covariant. Remaining slots, up to
+# `starts` total, are multiplicative log-normal perturbations `a_g .* exp.(σ .* ξ)` of the
+# geometric-mean point, `ξ` drawn from `rng` (drawn for every index so the stream is
 # frame-independent). `starts` below the number of deterministic starts truncates the list.
 function _soft_symcover_abslinear2_inits(A::AbstractMatrix, starts::Int, σ::Real, rng)
     ax = axes(A, 1)
     T = float(real(eltype(A)))
-    # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
-    ag = similar(Array{T}, ax)
-    unconstrained_min!(AbsLog{2}(), ag, A)   # geometric mean; also the perturbation base
+    # The soft cover imposes no coverage constraint, so the starts are taken raw
+    # (`feasible=false`); "inflate" is the one candidate that is deliberately a cover.
+    ag = initialize_symcover(A; strategy=:geomean, feasible=false)   # also the perturbation base
     labels = ["geomean"]
     inits = [copy(ag)]
-    length(inits) < starts && (push!(labels, "hardcover"); push!(inits, symcover(A)))
+    length(inits) < starts &&
+        (push!(labels, "hardcover"); push!(inits, initialize_symcover(A; strategy=:hardcover, feasible=false)))
+    length(inits) < starts &&
+        (push!(labels, "inflate"); push!(inits, initialize_symcover(A; strategy=:geomean, feasible=true)))
     if length(inits) < starts
-        ce = copy(ag); inflate_feasible!(ce, A); push!(labels, "inflate"); push!(inits, ce)
-    end
-    if length(inits) < starts
+        # The public `:leaveout` throws when no entry can be dropped; here that case simply
+        # forfeits the start, so go through the predicate directly.
         lo = similar(ag); _leaveout_logmean_init!(lo, A) && (push!(labels, "leaveout"); push!(inits, lo))
     end
     if length(inits) < starts && any(iszero, A)
-        fe = similar(ag); init_feasible_diag!(fe, A); push!(labels, "feasible"); push!(inits, fe)
+        push!(labels, "feasible"); push!(inits, initialize_symcover(A; strategy=:diagfeasible, feasible=false))
     end
     k = 0
     while length(inits) < starts
@@ -618,15 +531,15 @@ function _abslog1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol:
 end
 
 # Labeled `(a, b)` candidate starts for the asymmetric AbsLinear{2} multistart, in selection
-# order. Deterministic starts: the geometric-mean init `cover(A; maxiter=0)` (also the perturbation
-# base) and the tightened hard cover `cover(A)`, obtained by tightening a copy of the
-# geometric-mean init so the shared passes run once. Remaining slots, up to `starts` total, are
-# multiplicative log-normal perturbations `a_g .* exp.(σ .* ξ)`, `b_g .* exp.(σ .* η)` of the
-# geometric-mean point, `ξ`/`η` drawn from `rng` (drawn for every index so the stream is
-# frame-independent).
+# order. Deterministic starts: the boosted-but-untightened hard cover (also the perturbation
+# base) and the tightened hard cover, obtained by tightening a copy of the former so the shared
+# passes run once. Remaining slots, up to `starts` total, are multiplicative log-normal
+# perturbations `a_g .* exp.(σ .* ξ)`, `b_g .* exp.(σ .* η)` of that base, `ξ`/`η` drawn from
+# `rng` (drawn for every index so the stream is frame-independent).
 function _soft_cover_abslinear2_inits(A::AbstractMatrix, starts::Int, σ::Real, rng)
     T = float(real(eltype(A)))
-    ag, bg = cover(A; maxiter=0)   # geometric-mean init (boosted, untightened); perturbation base
+    # `maxiter=0` stops the hard cover after its feasibility boost, before any tightening.
+    ag, bg = initialize_cover(A; strategy=:hardcover, feasible=false, maxiter=0)
     labels = ["geomean"]
     inits = [(copy(ag), copy(bg))]
     # The tightened hard cover `cover(A)` differs from `(ag, bg)` only by its tightening

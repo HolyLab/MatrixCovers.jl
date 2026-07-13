@@ -17,6 +17,7 @@ include("helpers.jl")               # iscover, covaries, PENALTIES
     include("support.jl")           # foreach_support(_sym) traversal
     include("heuristic_covers.jl")  # symcover/cover and their internals
     include("soft_covers.jl")       # soft_symcover/soft_cover multistart descent
+    include("initializers.jl")      # initialize_symcover/initialize_cover strategies
     include("minimal_covers.jl")    # the *_min family (native solvers)
     include("storage_types.jl")     # sparse/structured/wrapped storage vs dense reference
     include("extensions.jl")        # JuMP/HiGHS and Ipopt solvers, missing-extension hints
