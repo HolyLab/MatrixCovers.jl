@@ -2,6 +2,12 @@
 # here; the other penalties are provided by the SIAJuMP and SIAIpopt extensions,
 # whose entry points are declared as stubs below.
 
+# Starting covers the non-convex AbsLinear drivers refine, in the order they are tried.
+# They name points on the `initialize_symcover`/`initialize_cover` menu; `:leaveout` and
+# `:diagfeasible` have no asymmetric formulation, so the two menus differ.
+const SYMCOVER_MIN_STRATEGIES = (:hardcover, :geomean, :leaveout)
+const COVER_MIN_STRATEGIES = (:hardcover, :geomean)
+
 # ============================================================
 # Public interface
 # ============================================================
@@ -26,12 +32,17 @@ Supported ϕ values:
   factorization of the reweighted normal equations is the wrong solve when
   `nnz ≪ n²`.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
-- `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt.
+- `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt. These objectives are
+  non-convex, so the solver returns the minimum of the basin it starts in. Rather than
+  commit to one start, these methods refine each of `strategies` — the
+  [`initialize_symcover`](@ref) menu, by default `$(SYMCOVER_MIN_STRATEGIES)` — and return
+  the best cover found, at a cost of one solve per start. A strategy that `A` admits no
+  start for is skipped.
 
 !!! note
     Even the native solver is more expensive than the [`symcover`](@ref) heuristic.
 
-See also: [`cover_min`](@ref), [`symcover`](@ref).
+See also: [`cover_min`](@ref), [`symcover`](@ref), [`symcover_min!`](@ref).
 """
 function symcover_min end
 symcover_min(A::AbstractMatrix; kwargs...) = symcover_min(AbsLog{2}(), A; kwargs...)
@@ -58,11 +69,16 @@ Supported ϕ values:
   extension) defaults to `:lsqr` instead, since a dense factorization of the
   reweighted normal equations is the wrong solve when `nnz ≪ n²`.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
+- `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt. These objectives are
+  non-convex, so the solver returns the minimum of the basin it starts in. Rather than
+  commit to one start, these methods refine each of `strategies` — the
+  [`initialize_cover`](@ref) menu, by default `$(COVER_MIN_STRATEGIES)` — and return the
+  best cover found, at a cost of one solve per start.
 
 !!! note
     Even the native solver is more expensive than the [`cover`](@ref) heuristic.
 
-See also: [`symcover_min`](@ref), [`cover`](@ref).
+See also: [`symcover_min`](@ref), [`cover`](@ref), [`cover_min!`](@ref).
 """
 function cover_min end
 cover_min(A::AbstractMatrix; kwargs...) = cover_min(AbsLog{2}(), A; kwargs...)
@@ -165,6 +181,40 @@ function cover_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::Abstra
     a .= anew
     b .= bnew
     return a, b
+end
+
+# The AbsLinear objectives are non-convex, so a refinement reports the minimum of whichever
+# basin its start lies in. The drivers below therefore refine every start on a menu and keep
+# the best, which is what makes the result of the non-mutating entry point a property of `A`
+# rather than of an initialization the caller never chose. The kernels they call — the
+# `*_min!` refiners for the AbsLinear penalties — live in the SIAIpopt extension, but the
+# menu and the selection are native, so the two families need only one description.
+#
+# The winner is picked by `_multistart_select`, the same scale-covariant rule the soft-cover
+# multistarts use: a later start replaces the incumbent only on a genuine relative
+# improvement, never on the roundoff by which two starts reaching the same basin differ.
+function symcover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=SYMCOVER_MIN_STRATEGIES)
+    ax = axes(A, 1)
+    axes(A, 2) == ax || throw(ArgumentError("symcover_min requires a square matrix"))
+    T = float(real(eltype(A)))
+    starts = [similar(Array{T}, ax) for _ in strategies]
+    # A strategy for which `A` admits no start forfeits its slot; only a menu that yields
+    # no start at all leaves nothing to refine.
+    built = [_initialize_symcover!(a, A, strategy, true) for (a, strategy) in zip(starts, strategies)]
+    covers = [symcover_min!(ϕ, a, A) for (a, ok) in zip(starts, built) if ok]
+    isempty(covers) &&
+        throw(ArgumentError("symcover_min: no strategy in $strategies yields a starting cover of `A`"))
+    return covers[_multistart_select([cover_objective(ϕ, a, A) for a in covers])]
+end
+
+function cover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=COVER_MIN_STRATEGIES)
+    isempty(strategies) &&
+        throw(ArgumentError("cover_min: `strategies` must name at least one starting cover"))
+    covers = [initialize_cover(A; strategy) for strategy in strategies]
+    for (a, b) in covers
+        cover_min!(ϕ, a, b, A)
+    end
+    return covers[_multistart_select([cover_objective(ϕ, a, b, A) for (a, b) in covers])]
 end
 
 # ============================================================

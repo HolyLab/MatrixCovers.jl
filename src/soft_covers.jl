@@ -272,9 +272,10 @@ function _soft_symcover_abslinear2_inits(A::AbstractMatrix, starts::Int, σ::Rea
     length(inits) < starts &&
         (push!(labels, "inflate"); push!(inits, initialize_symcover(A; strategy=:geomean, feasible=true)))
     if length(inits) < starts
-        # The public `:leaveout` throws when no entry can be dropped; here that case simply
-        # forfeits the start, so go through the predicate directly.
-        lo = similar(ag); _leaveout_logmean_init!(lo, A) && (push!(labels, "leaveout"); push!(inits, lo))
+        # `:leaveout` is unavailable when no entry can be dropped; a multistart forfeits that
+        # slot rather than fail, so it takes the start through the gated builder.
+        lo = similar(ag)
+        _initialize_symcover!(lo, A, :leaveout, false) && (push!(labels, "leaveout"); push!(inits, lo))
     end
     if length(inits) < starts && any(iszero, A)
         push!(labels, "feasible"); push!(inits, initialize_symcover(A; strategy=:diagfeasible, feasible=false))

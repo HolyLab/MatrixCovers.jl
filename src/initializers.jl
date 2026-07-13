@@ -74,22 +74,8 @@ function initialize_symcover!(a::AbstractVector, A::AbstractMatrix;
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("initialize_symcover! requires a square matrix"))
     eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$ax"))
-    if strategy === :hardcover
-        symcover!(a, A; kwargs...)
-    elseif strategy === :geomean
-        _reject_kwargs(strategy, kwargs)
-        unconstrained_min!(AbsLog{2}(), a, A)
-    elseif strategy === :leaveout
-        _reject_kwargs(strategy, kwargs)
-        _leaveout_logmean_init!(a, A) ||
-            throw(ArgumentError("strategy=:leaveout requires a support entry that can be dropped without emptying a row"))
-    elseif strategy === :diagfeasible
-        _reject_kwargs(strategy, kwargs)
-        init_feasible_diag!(a, A)
-    else
-        throw(ArgumentError("unknown strategy :$strategy; expected one of :hardcover, :geomean, :leaveout, :diagfeasible"))
-    end
-    feasible && inflate_feasible!(a, A)
+    _initialize_symcover!(a, A, strategy, feasible; kwargs...) ||
+        throw(ArgumentError("strategy=:leaveout requires a support entry that can be dropped without emptying a row"))
     return a
 end
 
@@ -149,6 +135,31 @@ end
 # ============================================================
 # Internal helpers
 # ============================================================
+
+# Build the named symmetric start in `a` and return `true`, or return `false` — leaving `a`
+# unspecified — when `A` admits no such start. Only `:leaveout` can decline, and only for
+# want of a support entry it can drop. The two callers want opposite things there:
+# `initialize_symcover!` raises the `ArgumentError`, since the caller named one strategy and
+# did not get it, while a multistart forfeits the slot and refines the rest of its menu.
+function _initialize_symcover!(a::AbstractVector, A::AbstractMatrix, strategy::Symbol,
+                               feasible::Bool; kwargs...)
+    if strategy === :hardcover
+        symcover!(a, A; kwargs...)
+    elseif strategy === :geomean
+        _reject_kwargs(strategy, kwargs)
+        unconstrained_min!(AbsLog{2}(), a, A)
+    elseif strategy === :leaveout
+        _reject_kwargs(strategy, kwargs)
+        _leaveout_logmean_init!(a, A) || return false
+    elseif strategy === :diagfeasible
+        _reject_kwargs(strategy, kwargs)
+        init_feasible_diag!(a, A)
+    else
+        throw(ArgumentError("unknown strategy :$strategy; expected one of :hardcover, :geomean, :leaveout, :diagfeasible"))
+    end
+    feasible && inflate_feasible!(a, A)
+    return true
+end
 
 # Strategies with no tunables of their own must reject stray keywords rather than
 # discard them: a forwarded `maxiter` that silently does nothing would misreport

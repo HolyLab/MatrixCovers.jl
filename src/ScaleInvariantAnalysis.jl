@@ -69,19 +69,9 @@ end
 function __init__()
     Base.Experimental.register_error_hint(MethodError) do io, exc, argtypes, kwargs
         _looks_like_missing_extension(argtypes) || return
-        # `cover_min` is the one entry point whose AbsLinear gap is an implementation
-        # hole rather than an unloaded extension: it has no multistart driver, though
-        # its `cover_min!` kernel is available once Ipopt is loaded.
-        if exc.f === symcover_min || exc.f === symcover_min! || exc.f === cover_min!
+        if exc.f === symcover_min || exc.f === symcover_min! ||
+           exc.f === cover_min || exc.f === cover_min!
             printstyled(io, "\nAbsLog{2} is solved natively; other penalties require loading JuMP plus HiGHS (for AbsLog{1}) or Ipopt (for AbsLinear)."; color=:yellow)
-            return true
-        end
-        if exc.f === cover_min
-            if argtypes[1] <: AbsLinear
-                printstyled(io, "\nAbsLinear penalties are not yet supported by cover_min; refine a start with cover_min! instead, which accepts them once Ipopt is loaded."; color=:yellow)
-            else
-                printstyled(io, "\nAbsLog{2} is solved natively; AbsLog{1} requires loading JuMP plus HiGHS."; color=:yellow)
-            end
             return true
         end
         if exc.f === soft_symcover_min

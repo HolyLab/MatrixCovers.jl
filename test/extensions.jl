@@ -144,14 +144,67 @@ end
     @test iscover(a_geo, Abasin; rtol=1e-6)
     @test cover_objective(ϕ, a_geo, Abasin) < cover_objective(ϕ, a_hard, Abasin) - 1e-3
 
-    # The non-bang AbsLinear entry point refines the :hardcover start, its own default.
-    @test symcover_min(ϕ, Abasin) ≈ a_hard
-
     # Offset axes survive the Ipopt position mapping.
     Ao = OffsetArray(A, -1, -1)
     ao = symcover_min!(ϕ, initialize_symcover(Ao), Ao)
     @test axes(ao, 1) == axes(Ao, 1)
     @test collect(ao) ≈ symcover_min!(ϕ, initialize_symcover(A), A)
+end
+
+@testset "AbsLinear multistart drivers (Ipopt)" begin
+    # The matrix on which the starts genuinely disagree: :geomean reaches a better
+    # AbsLinear{2} minimum than :hardcover, so a driver that tried only the latter
+    # would report the worse of the two.
+    Abasin = [6.609216272192496 1.032613546278995 55.276094662396076 0.5076927138328724;
+              1.032613546278995 3.1390835186570034 11.658167585612446 38.315826566607555;
+              55.276094662396076 11.658167585612446 0.001705708114264713 21.68951642774627;
+              0.5076927138328724 38.315826566607555 21.68951642774627 0.006443251375371587]
+    Aasym = [1.0 2.0 3.0; 40.0 5.0 0.6]
+
+    for ϕ in (AbsLinear{1}(), AbsLinear{2}())
+        a = symcover_min(ϕ, Abasin)
+        @test iscover(a, Abasin; rtol=1e-6)
+        # No start on the menu beats the driver.
+        for strategy in (:hardcover, :geomean, :leaveout)
+            single = symcover_min!(ϕ, initialize_symcover(Abasin; strategy), Abasin)
+            @test cover_objective(ϕ, a, Abasin) <=
+                  cover_objective(ϕ, single, Abasin) * (1 + 1e-6) + 1e-8
+        end
+        @test symcover_min(ϕ, Abasin) == a   # deterministic
+
+        ab, bb = cover_min(ϕ, Aasym)
+        @test iscover(ab, bb, Aasym; rtol=1e-6)
+        for strategy in (:hardcover, :geomean)
+            sa, sb = cover_min!(ϕ, initialize_cover(Aasym; strategy)..., Aasym)
+            @test cover_objective(ϕ, ab, bb, Aasym) <=
+                  cover_objective(ϕ, sa, sb, Aasym) * (1 + 1e-6) + 1e-8
+        end
+        @test cover_min(ϕ, Aasym) == (ab, bb)   # deterministic
+
+        # The asymmetric cover relaxes the symmetric one: independent row and column
+        # scales can only do better on the same matrix.
+        asym_a, asym_b = cover_min(ϕ, Abasin)
+        @test cover_objective(ϕ, asym_a, asym_b, Abasin) <=
+              cover_objective(ϕ, symcover_min(ϕ, Abasin), Abasin) * (1 + 1e-6) + 1e-8
+    end
+
+    # On Abasin the :geomean start wins, so restricting the menu to :hardcover is
+    # observable — the driver is refining the menu it is given, not a fixed start.
+    ϕ = AbsLinear{2}()
+    @test symcover_min(ϕ, Abasin; strategies=(:hardcover,)) ≈
+          symcover_min!(ϕ, initialize_symcover(Abasin; strategy=:hardcover), Abasin)
+    @test cover_objective(ϕ, symcover_min(ϕ, Abasin), Abasin) <
+          cover_objective(ϕ, symcover_min(ϕ, Abasin; strategies=(:hardcover,)), Abasin) - 1e-3
+
+    # A matrix whose every row carries a single support entry admits no :leaveout start;
+    # that strategy forfeits its slot rather than failing the solve.
+    Adiag = [4.0 0.0; 0.0 9.0]
+    @test symcover_min(ϕ, Adiag) ≈ [2.0, 3.0] rtol=1e-4
+
+    @test_throws "unknown strategy :banana" symcover_min(ϕ, Abasin; strategies=(:banana,))
+    @test_throws "no strategy in (:leaveout,)" symcover_min(ϕ, Adiag; strategies=(:leaveout,))
+    @test_throws "has no asymmetric formulation" cover_min(ϕ, Aasym; strategies=(:leaveout,))
+    @test_throws "at least one starting cover" cover_min(ϕ, Aasym; strategies=())
 end
 
 @testset "error hint gated on argument types" begin
@@ -212,35 +265,25 @@ end
     @test occursin("not yet supported", msg3)
     @test !occursin("loading JuMP", msg3)
 
-    # cover_min's hint depends on the penalty: AbsLog{1} lives in an extension,
-    # but AbsLinear is unimplemented, so only the former may advise a package load.
-    e4 = try
-        cover_min(AbsLinear{2}(), A)
-        nothing
-    catch err
-        err
-    end
-    @test e4 isa MethodError
-    msg4 = sprint(showerror, e4)
-    @test occursin("not yet supported", msg4)
-    @test !occursin("loading JuMP", msg4)
-
+    # Every penalty cover_min does not solve natively lives in an extension, whether the
+    # call reaches it directly (AbsLog{1}) or through the AbsLinear multistart driver,
+    # whose MethodError is raised on the cover_min! kernel it calls.
     script_cover = """
     using ScaleInvariantAnalysis
     A = [4.0 1.0; 1.0 4.0]
-    try
-        cover_min(AbsLog{1}(), A)
-    catch e
-        print(sprint(showerror, e))
+    for call in (() -> cover_min(AbsLog{1}(), A), () -> cover_min(AbsLinear{2}(), A))
+        try
+            call()
+        catch e
+            print(sprint(showerror, e))
+        end
     end
     """
     out_cover = read(`$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script_cover`, String)
-    @test occursin("loading JuMP", out_cover)
+    @test count("loading JuMP", out_cover) == 2
 
-    # cover_min!, unlike cover_min, does implement the AbsLinear penalties — behind
-    # the Ipopt extension — so its hint must advise the load rather than report a
-    # hole, and cover_min's own hint should point the user at it.
-    @test occursin("cover_min!", msg4)
+    # The refiners are themselves the extension's entry points, so a caller who reaches
+    # for one directly must be advised of the load just as the drivers' callers are.
     script_bang = """
     using ScaleInvariantAnalysis
     A = [4.0 1.0; 1.0 4.0]

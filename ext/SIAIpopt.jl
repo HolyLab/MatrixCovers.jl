@@ -3,7 +3,7 @@ module SIAIpopt
 using JuMP: JuMP, @variable, @objective, @constraint, @NLobjective, @NLconstraint
 using Ipopt: Ipopt
 using ScaleInvariantAnalysis
-using ScaleInvariantAnalysis: AbsLinear, soft_symcover, initialize_symcover
+using ScaleInvariantAnalysis: AbsLinear, soft_symcover
 
 # The models are built over 1-based positions 1:n; `pr`/`pc` map each position to the
 # corresponding axis index of `A`, and results are scattered back onto vectors
@@ -13,8 +13,9 @@ using ScaleInvariantAnalysis: AbsLinear, soft_symcover, initialize_symcover
 
 # The AbsLinear objectives are non-convex, so Ipopt returns a local minimum of
 # whichever basin it descends into from the start it is given. That makes the start a
-# genuine input rather than a hint: the `*_min!` refiners take it from the caller, and
-# the non-mutating entry points pick one.
+# genuine input rather than a hint, and it is why the hard-cover entry points here are the
+# `*_min!` refiners, which take the start from the caller. The non-mutating `symcover_min`
+# and `cover_min` are multistart drivers over these kernels and live in the main package.
 
 # Ipopt is a local solver on a non-convex problem; any termination other than a
 # solved one means the returned point does not solve the problem posed, so it is an
@@ -94,12 +95,6 @@ function ScaleInvariantAnalysis.symcover_min!(::AbsLinear{1}, a::AbstractVector,
         a[k] = supported[i] ? exp(JuMP.value(α[i])) : zero(T)
     end
     return a
-end
-
-function ScaleInvariantAnalysis.symcover_min(ϕ::Union{AbsLinear{1},AbsLinear{2}}, A)
-    axes(A, 2) == axes(A, 1) || throw(ArgumentError("symcover_min requires a square matrix"))
-    a = initialize_symcover(A)
-    return ScaleInvariantAnalysis.symcover_min!(ϕ, a, A)
 end
 
 # ============================================================

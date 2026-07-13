@@ -94,7 +94,7 @@ Both objectives are zero if and only if every constraint is exactly tight.
 | [`symcover`](@ref) | yes | hard (`r ≤ 1`) | heuristic | — |
 | [`cover`](@ref) | no | hard (`r ≤ 1`) | heuristic | — |
 | [`symcover_min`](@ref) | yes | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
-| [`cover_min`](@ref) | no | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`) | native for `AbsLog{2}`; else JuMP |
+| [`cover_min`](@ref) | no | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
 | [`soft_symcover`](@ref) | yes | soft (penalized) | `AbsLinear{2}` (or `AbsLog`, `AbsLinear{1}`) | — |
 | [`soft_cover`](@ref) | no | soft (penalized) | `AbsLinear{2}` (or `AbsLinear{1}`) | — |
 | [`soft_symcover_min`](@ref) | yes | soft (penalized) | `AbsLog{2}`, `AbsLinear` | JuMP |
