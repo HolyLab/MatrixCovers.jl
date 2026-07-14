@@ -9,7 +9,7 @@
 # ============================================================
 
 """
-    a = initialize_symcover(A; strategy=:hardcover, feasible=true, kwargs...)
+    a = initialize_symcover(A; strategy=:hardcover, feasible=:inflate, kwargs...)
 
 Build a starting point for the symmetric cover of `A`, as consumed by
 [`symcover_min`](@ref) and by the [`soft_symcover`](@ref) multistart.
@@ -19,8 +19,6 @@ starting point does not depend on the objective it will be refined against.
 
 `strategy` names the point:
 
-- `:hardcover` — the tightened hard cover of [`symcover`](@ref). Forwards
-  `maxiter` to the tightening pass. Feasible by construction.
 - `:geomean` — the AbsLog{2} unconstrained minimum, the geometric mean of the
   nonzero entries of each row. This is the minimizer of the soft AbsLog{2}
   objective, and is *not* a cover.
@@ -30,25 +28,29 @@ starting point does not depend on the objective it will be refined against.
   (empty support, or dropping it would empty a row). Not a cover.
 - `:diagfeasible` — a cover grown from the diagonal by nearest-neighbor
   propagation. Feasible by construction.
+- `:hardcover` — the tightened hard cover of [`symcover`](@ref), which is
+  `:geomean` boosted to feasibility and then tightened. Forwards `maxiter` to the
+  tightening pass. Feasible by construction, so `feasible` has no effect on it.
 
-`feasible=true` (the default) inflates the result bodily — by the smallest
-uniform factor that makes it cover `A` — so that `a[i]*a[j] >= abs(A[i,j])` up
-to the roundoff of the log-domain arithmetic. This is a no-op for the strategies
-that already cover. `feasible=false` returns the strategy's own point with no
-coverage guarantee, which is what the soft covers want: forcing the geometric
-mean to feasibility would destroy the very property that makes it the soft
-AbsLog{2} optimum.
+`feasible` names how the point is brought up to covering `A` — that is, to
+`a[i]*a[j] >= abs(A[i,j])`, up to the roundoff of the log-domain arithmetic:
 
-Under either setting the result is strictly positive on every row that carries
+- `:inflate` (the default) multiplies every scale by the smallest common factor
+  that achieves coverage, moving the point bodily and leaving its shape intact.
+- `:boost` raises only the rows that touch a violated entry, so it changes the
+  shape of the point. This is the route [`symcover`](@ref) itself takes.
+- `:none` returns the strategy's own point, with no coverage guarantee. This is
+  what the soft covers want: forcing the geometric mean to cover `A` would
+  destroy the very property that makes it the soft AbsLog{2} optimum.
+
+The two feasible routes land on the boundary at different points, and so in
+different basins of the non-convex `AbsLinear` objectives — which is exactly why a
+menu of starts is worth having, and why the choice is exposed rather than fixed.
+
+Under every setting the result is strictly positive on every row that carries
 support and exactly zero on every row that carries none.
 
-`:hardcover` inflated and `:geomean` inflated reach the feasibility boundary by
-different routes — the first raises only the rows touching violated entries, the
-second moves the whole point bodily — and so land in different basins of the
-non-convex `AbsLinear` objectives. That is what makes a menu of starts worth
-having.
-
-An unrecognized `strategy` raises an `ArgumentError`.
+An unrecognized `strategy` or `feasible` raises an `ArgumentError`.
 
 See also: [`initialize_symcover!`](@ref), [`initialize_cover`](@ref), [`symcover`](@ref), [`symcover_min`](@ref).
 """
@@ -61,7 +63,7 @@ function initialize_symcover(A::AbstractMatrix; kwargs...)
 end
 
 """
-    a = initialize_symcover!(a, A; strategy=:hardcover, feasible=true, kwargs...)
+    a = initialize_symcover!(a, A; strategy=:hardcover, feasible=:inflate, kwargs...)
 
 Mutating counterpart of [`initialize_symcover`](@ref): writes the starting cover
 into `a` and returns it, rather than allocating a new vector. `eachindex(a)` must
@@ -70,7 +72,7 @@ match `axes(A, 1)` (and `A` must be square).
 See also: [`initialize_symcover`](@ref).
 """
 function initialize_symcover!(a::AbstractVector, A::AbstractMatrix;
-                              strategy::Symbol=:hardcover, feasible::Bool=true, kwargs...)
+                              strategy::Symbol=:hardcover, feasible::Symbol=:inflate, kwargs...)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("initialize_symcover! requires a square matrix"))
     eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$ax"))
@@ -80,7 +82,7 @@ function initialize_symcover!(a::AbstractVector, A::AbstractMatrix;
 end
 
 """
-    a, b = initialize_cover(A; strategy=:hardcover, feasible=true, kwargs...)
+    a, b = initialize_cover(A; strategy=:hardcover, feasible=:inflate, kwargs...)
 
 Build a starting point for the cover of `A`, as consumed by [`cover_min`](@ref)
 and by the [`soft_cover`](@ref) multistart. This is the asymmetric analog of
@@ -90,9 +92,10 @@ which the result covers `A` as `a[i]*b[j] >= abs(A[i,j])`.
 Two of the strategies carry over: `:hardcover` (the tightened hard cover of
 [`cover`](@ref), forwarding `maxiter`) and `:geomean` (the AbsLog{2}
 unconstrained minimum). `:leaveout` and `:diagfeasible` have no asymmetric
-formulation and raise an `ArgumentError`, as does any unrecognized `strategy`.
+formulation and raise an `ArgumentError`, as does any unrecognized `strategy` or
+`feasible`.
 
-Under either `feasible` setting the result is strictly positive on every
+Under every `feasible` setting the result is strictly positive on every
 supported row and column and exactly zero on the unsupported ones.
 
 See also: [`initialize_cover!`](@ref), [`initialize_symcover`](@ref), [`cover`](@ref), [`cover_min`](@ref).
@@ -105,7 +108,7 @@ function initialize_cover(A::AbstractMatrix; kwargs...)
 end
 
 """
-    a, b = initialize_cover!(a, b, A; strategy=:hardcover, feasible=true, kwargs...)
+    a, b = initialize_cover!(a, b, A; strategy=:hardcover, feasible=:inflate, kwargs...)
 
 Mutating counterpart of [`initialize_cover`](@ref): writes the starting cover
 into `a` and `b` and returns them, rather than allocating new vectors.
@@ -115,7 +118,7 @@ into `a` and `b` and returns them, rather than allocating new vectors.
 See also: [`initialize_cover`](@ref).
 """
 function initialize_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
-                           strategy::Symbol=:hardcover, feasible::Bool=true, kwargs...)
+                           strategy::Symbol=:hardcover, feasible::Symbol=:inflate, kwargs...)
     axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$(axes(A, 1))"))
     axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
     if strategy === :hardcover
@@ -128,7 +131,7 @@ function initialize_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatr
     else
         throw(ArgumentError("unknown strategy :$strategy; expected one of :hardcover, :geomean"))
     end
-    feasible && inflate_feasible!(a, b, A)
+    _make_feasible!(feasible, a, b, A)
     return a, b
 end
 
@@ -142,7 +145,7 @@ end
 # `initialize_symcover!` raises the `ArgumentError`, since the caller named one strategy and
 # did not get it, while a multistart forfeits the slot and refines the rest of its menu.
 function _initialize_symcover!(a::AbstractVector, A::AbstractMatrix, strategy::Symbol,
-                               feasible::Bool; kwargs...)
+                               feasible::Symbol; kwargs...)
     if strategy === :hardcover
         symcover!(a, A; kwargs...)
     elseif strategy === :geomean
@@ -157,8 +160,24 @@ function _initialize_symcover!(a::AbstractVector, A::AbstractMatrix, strategy::S
     else
         throw(ArgumentError("unknown strategy :$strategy; expected one of :hardcover, :geomean, :leaveout, :diagfeasible"))
     end
-    feasible && inflate_feasible!(a, A)
+    _make_feasible!(feasible, a, A)
     return true
+end
+
+# Raise a starting point onto the coverage boundary by the named route, or leave it
+# where it is. The two routes land at different points — `inflate_feasible!` scales
+# every entry by one common factor, `boost_feasible!` raises only the rows touching a
+# violated entry — so which one is used is part of what names a start, not an
+# implementation detail of reaching feasibility.
+function _make_feasible!(feasible::Symbol, scales...)
+    if feasible === :inflate
+        inflate_feasible!(scales...)
+    elseif feasible === :boost
+        boost_feasible!(scales...)
+    elseif feasible !== :none
+        throw(ArgumentError("unknown feasible :$feasible; expected one of :inflate, :boost, :none"))
+    end
+    return nothing
 end
 
 # Strategies with no tunables of their own must reject stray keywords rather than

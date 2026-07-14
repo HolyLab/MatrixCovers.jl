@@ -172,11 +172,19 @@ minimum of this objective."  The package makes that structure explicit rather th
 it behind a default:
 
 - **Initializers** name the starting points.  [`initialize_symcover`](@ref) and
-  [`initialize_cover`](@ref) take a `strategy` — `:hardcover`, `:geomean`, `:leaveout`,
-  `:diagfeasible` — and return that point.  Each is a property of `A` alone; no objective
-  is involved, so an initializer takes no penalty.  By default the result is inflated until
-  it covers `A`, which is what the hard-cover solvers require; `feasible=false` returns the
-  point raw, which is what the soft covers want.
+  [`initialize_cover`](@ref) take a `strategy` — `:geomean`, `:leaveout`, `:diagfeasible`,
+  or `:hardcover` — and return that point.  Each is a property of `A` alone; no objective
+  is involved, so an initializer takes no penalty.  A second keyword, `feasible`, says how
+  the point is brought up to covering `A`: `:inflate` (the default) scales it bodily by one
+  common factor, `:boost` raises only the rows touching a violated entry, and `:none`
+  leaves it as it is.  The hard-cover solvers need a cover, so they take one of the first
+  two; the soft covers want `:none`, since forcing the geometric mean to cover `A` would
+  spoil the very property that makes it the soft `AbsLog{2}` optimum.
+
+  The two feasible routes land on the boundary at different points, hence in different
+  basins — which is why the choice is a named part of the start rather than an internal
+  detail.  The heuristic [`cover`](@ref) is itself a composition of these: the geometric
+  mean, boosted, then tightened.
 - **Refiners** improve a starting point in place.  [`symcover_min!`](@ref) and
   [`cover_min!`](@ref) validate the start, then optimize from it.  Which basin they reach
   is the caller's choice, by construction.

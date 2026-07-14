@@ -211,7 +211,7 @@ function symcover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=SYMCOVER_MIN_
     starts = [similar(Array{T}, ax) for _ in strategies]
     # A strategy for which `A` admits no start forfeits its slot; only a menu that yields
     # no start at all leaves nothing to refine.
-    built = [_initialize_symcover!(a, A, strategy, true) for (a, strategy) in zip(starts, strategies)]
+    built = [_initialize_symcover!(a, A, strategy, :inflate) for (a, strategy) in zip(starts, strategies)]
     covers = [symcover_min!(ϕ, a, A) for (a, ok) in zip(starts, built) if ok]
     isempty(covers) &&
         throw(ArgumentError("symcover_min: no strategy in $strategies yields a starting cover of `A`"))

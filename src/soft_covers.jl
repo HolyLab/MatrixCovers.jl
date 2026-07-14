@@ -134,9 +134,9 @@ Supported penalty functions:
 Rows or columns of `A` that are entirely zero receive scale `0`.
 
 The objective is non-convex, so `starts` starting points are tried and the lowest-objective
-result kept: the geometric-mean init, the tightened hard cover [`cover`](@ref), and — for the
-remaining starts — multiplicative log-normal perturbations `a .* exp.(σ .* ξ)`, with spread
-`σ`, of the geometric-mean point, `ξ` drawn from `rng`. Every start co-varies with an
+result kept: the geometric mean boosted until it covers `A`, the tightened hard cover
+[`cover`](@ref), and — for the remaining starts — multiplicative log-normal perturbations
+`a .* exp.(σ .* ξ)`, with spread `σ`, of that boosted point, `ξ` drawn from `rng`. Every start co-varies with an
 independent row/column rescaling of `A` and the objective is scale-invariant, so the selection
 is scale-covariant. The default `rng` is a fresh `MersenneTwister(0)` per call, making repeated
 calls (and the two frames of a covariance check) agree; pass your own `rng` for reproducibility
@@ -271,22 +271,22 @@ function _soft_symcover_abslinear2_inits(A::AbstractMatrix, starts::Int, σ::Rea
     ax = axes(A, 1)
     T = float(real(eltype(A)))
     # The soft cover imposes no coverage constraint, so the starts are taken raw
-    # (`feasible=false`); "inflate" is the one candidate that is deliberately a cover.
-    ag = initialize_symcover(A; strategy=:geomean, feasible=false)   # also the perturbation base
+    # (`feasible=:none`); "inflate" is the one candidate that is deliberately a cover.
+    ag = initialize_symcover(A; strategy=:geomean, feasible=:none)   # also the perturbation base
     labels = ["geomean"]
     inits = [copy(ag)]
     length(inits) < starts &&
-        (push!(labels, "hardcover"); push!(inits, initialize_symcover(A; strategy=:hardcover, feasible=false)))
+        (push!(labels, "hardcover"); push!(inits, initialize_symcover(A; strategy=:hardcover, feasible=:none)))
     length(inits) < starts &&
-        (push!(labels, "inflate"); push!(inits, initialize_symcover(A; strategy=:geomean, feasible=true)))
+        (push!(labels, "inflate"); push!(inits, initialize_symcover(A; strategy=:geomean, feasible=:inflate)))
     if length(inits) < starts
         # `:leaveout` is unavailable when no entry can be dropped; a multistart forfeits that
         # slot rather than fail, so it takes the start through the gated builder.
         lo = similar(ag)
-        _initialize_symcover!(lo, A, :leaveout, false) && (push!(labels, "leaveout"); push!(inits, lo))
+        _initialize_symcover!(lo, A, :leaveout, :none) && (push!(labels, "leaveout"); push!(inits, lo))
     end
     if length(inits) < starts && any(iszero, A)
-        push!(labels, "feasible"); push!(inits, initialize_symcover(A; strategy=:diagfeasible, feasible=false))
+        push!(labels, "feasible"); push!(inits, initialize_symcover(A; strategy=:diagfeasible, feasible=:none))
     end
     k = 0
     while length(inits) < starts
@@ -540,20 +540,19 @@ function _abslog1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol:
 end
 
 # Labeled `(a, b)` candidate starts for the asymmetric AbsLinear{2} multistart, in selection
-# order. Deterministic starts: the boosted-but-untightened hard cover (also the perturbation
-# base) and the tightened hard cover, obtained by tightening a copy of the former so the shared
-# passes run once. Remaining slots, up to `starts` total, are multiplicative log-normal
-# perturbations `a_g .* exp.(σ .* ξ)`, `b_g .* exp.(σ .* η)` of that base, `ξ`/`η` drawn from
-# `rng` (drawn for every index so the stream is frame-independent).
+# order. Deterministic starts: the boosted geometric mean (also the perturbation base) and the
+# tightened hard cover, obtained by tightening a copy of the former so the shared passes run
+# once. Remaining slots, up to `starts` total, are multiplicative log-normal perturbations
+# `a_g .* exp.(σ .* ξ)`, `b_g .* exp.(σ .* η)` of that base, `ξ`/`η` drawn from `rng` (drawn
+# for every index so the stream is frame-independent).
 function _soft_cover_abslinear2_inits(A::AbstractMatrix, starts::Int, σ::Real, rng)
     T = float(real(eltype(A)))
-    # `maxiter=0` stops the hard cover after its feasibility boost, before any tightening.
-    ag, bg = initialize_cover(A; strategy=:hardcover, feasible=false, maxiter=0)
-    labels = ["geomean"]
+    ag, bg = initialize_cover(A; strategy=:geomean, feasible=:boost)
+    labels = ["boost"]
     inits = [(copy(ag), copy(bg))]
-    # The tightened hard cover `cover(A)` differs from `(ag, bg)` only by its tightening
-    # iterations, so tighten a copy (at `tighten_cover!`'s own default `maxiter`) rather than
-    # recomputing the shared geometric-mean and feasibility passes.
+    # The tightened hard cover `cover(A)` is exactly this point tightened, so tighten a copy
+    # (at `tighten_cover!`'s own default `maxiter`) rather than recomputing the shared
+    # geometric-mean and boost passes.
     length(inits) < starts && (push!(labels, "hardcover"); push!(inits, tighten_cover!(copy(ag), copy(bg), A)))
     k = 0
     while length(inits) < starts

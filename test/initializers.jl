@@ -19,37 +19,59 @@
              Matrix(Symmetric(randn(rng, 5, 5))))
     Aasyms = ([1.0 2.0 3.0; 4.0 5.0 6.0], [1.0 0.0 3.0; 4.0 0.0 6.0])
 
+    FEASIBLE = (:inflate, :boost, :none)
+
     @testset "symmetric postcondition" begin
-        for A in Asyms, strategy in SYM_STRATEGIES, feasible in (true, false)
+        for A in Asyms, strategy in SYM_STRATEGIES, feasible in FEASIBLE
             a = initialize_symcover(A; strategy, feasible)
             supp = rowsupport(A)
             @test all(a[i] > 0 for i in axes(A, 1) if supp[i])
             @test all(a[i] == 0 for i in axes(A, 1) if !supp[i])
-            # `feasible=true` is the coverage promise; `feasible=false` makes none.
-            feasible && @test iscover(a, A; rtol=8eps())
+            # Both feasible routes promise coverage; `:none` promises nothing.
+            feasible === :none || @test iscover(a, A; rtol=8eps())
             @test initialize_symcover(A; strategy, feasible) == a   # deterministic
         end
     end
 
     @testset "asymmetric postcondition" begin
-        for A in Aasyms, strategy in ASYM_STRATEGIES, feasible in (true, false)
+        for A in Aasyms, strategy in ASYM_STRATEGIES, feasible in FEASIBLE
             a, b = initialize_cover(A; strategy, feasible)
             rs, cs = rowsupport(A), colsupport(A)
             @test all(a[i] > 0 for i in axes(A, 1) if rs[i])
             @test all(a[i] == 0 for i in axes(A, 1) if !rs[i])
             @test all(b[j] > 0 for j in axes(A, 2) if cs[j])
             @test all(b[j] == 0 for j in axes(A, 2) if !cs[j])
-            feasible && @test iscover(a, b, A; rtol=8eps())
+            feasible === :none || @test iscover(a, b, A; rtol=8eps())
             @test initialize_cover(A; strategy, feasible) == (a, b)
         end
     end
 
     @testset "`feasible` is what makes a cover" begin
         # The geometric mean is the soft AbsLog{2} optimum, not a cover: for this matrix it
-        # falls short on the off-diagonal, and `feasible=true` inflates it onto the boundary.
+        # falls short on the off-diagonal, and either route lifts it onto the boundary.
         A = [1.0 10.0; 10.0 1.0]
-        @test !iscover(initialize_symcover(A; strategy=:geomean, feasible=false), A)
-        @test iscover(initialize_symcover(A; strategy=:geomean, feasible=true), A; rtol=8eps())
+        @test !iscover(initialize_symcover(A; strategy=:geomean, feasible=:none), A)
+        @test iscover(initialize_symcover(A; strategy=:geomean, feasible=:inflate), A; rtol=8eps())
+        @test iscover(initialize_symcover(A; strategy=:geomean, feasible=:boost), A; rtol=8eps())
+    end
+
+    @testset "the two feasible routes are distinct points" begin
+        # `:inflate` scales the whole point by one factor, so it lifts even the rows that were
+        # already slack; `:boost` raises only the rows touching a violated entry. Rows 1-2 are
+        # the violated block here and row 3 is slack, so only the inflation disturbs row 3.
+        A = [1.0 0.1 0.0; 0.1 1.0 0.0; 0.0 0.0 100.0]
+        ai = initialize_symcover(A; strategy=:geomean, feasible=:inflate)
+        ab = initialize_symcover(A; strategy=:geomean, feasible=:boost)
+        @test ai != ab
+        @test ab[3] < ai[3]
+
+        # `:hardcover` is the boosted geometric mean, tightened — so naming the middle stage
+        # is what lets a caller stop there, and `cover` is that stage plus the tightening.
+        for B in Aasyms
+            ag, bg = initialize_cover(B; strategy=:geomean, feasible=:boost)
+            @test (ag, bg) == cover(B; maxiter=0)
+            @test ScaleInvariantAnalysis.tighten_cover!(copy(ag), copy(bg), B) == cover(B)
+        end
     end
 
     @testset "the strategies are distinct starts" begin
@@ -75,12 +97,12 @@
     @testset ":hardcover reproduces the plain heuristics" begin
         # Without the exactifying inflation, `:hardcover` *is* symcover/cover.
         for A in Asyms
-            @test initialize_symcover(A; strategy=:hardcover, feasible=false) == symcover(A)
-            @test initialize_symcover(A; strategy=:hardcover, feasible=false, maxiter=1) == symcover(A; maxiter=1)
+            @test initialize_symcover(A; strategy=:hardcover, feasible=:none) == symcover(A)
+            @test initialize_symcover(A; strategy=:hardcover, feasible=:none, maxiter=1) == symcover(A; maxiter=1)
         end
         for A in Aasyms
-            @test initialize_cover(A; strategy=:hardcover, feasible=false) == cover(A)
-            @test initialize_cover(A; strategy=:hardcover, feasible=false, maxiter=0) == cover(A; maxiter=0)
+            @test initialize_cover(A; strategy=:hardcover, feasible=:none) == cover(A)
+            @test initialize_cover(A; strategy=:hardcover, feasible=:none, maxiter=0) == cover(A; maxiter=0)
         end
     end
 
@@ -120,6 +142,10 @@
         A, B = Asyms[1], Aasyms[1]
         @test_throws "unknown strategy :bogus" initialize_symcover(A; strategy=:bogus)
         @test_throws "unknown strategy :bogus" initialize_cover(B; strategy=:bogus)
+        @test_throws "unknown feasible :bogus" initialize_symcover(A; feasible=:bogus)
+        @test_throws "unknown feasible :bogus" initialize_cover(B; feasible=:bogus)
+        # The keyword names a route, not a yes/no.
+        @test_throws TypeError initialize_symcover(A; feasible=true)
         # The symmetric-only strategies say so, rather than reporting an unknown name.
         @test_throws "strategy=:leaveout has no asymmetric formulation" initialize_cover(B; strategy=:leaveout)
         @test_throws "strategy=:diagfeasible has no asymmetric formulation" initialize_cover(B; strategy=:diagfeasible)
