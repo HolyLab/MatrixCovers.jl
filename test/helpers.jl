@@ -21,6 +21,27 @@ end
 iscover(a, A; kwargs...) = iscover(a, a, A; kwargs...)
 
 """
+    isbalanced(a, b, A; atol=1e-8)
+
+The balance convention `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` (`nzaᵢ`, `nzbⱼ` = the
+nonzero counts of row `i` and column `j`), which fixes the row/column gauge
+`a → c*a`, `b → b/c`. The gauge leaves every product `a[i]*b[j]` unchanged, so no
+objective and no coverage constraint can see it; without a convention the split
+between `a` and `b` would be an artifact of whichever pass last touched them. Every
+asymmetric cover the package returns satisfies this.
+
+Note it is *not* scale-invariant: rescaling `A` moves the balance point, which is why
+[`covaries`](@ref) compares outer products rather than the vectors themselves.
+"""
+function isbalanced(a, b, A; atol=1e-8)
+    nza = vec(count(!iszero, A, dims=2))
+    nzb = vec(count(!iszero, A, dims=1))
+    La = sum(nza[i] * log(a[i]) for i in axes(A, 1) if nza[i] > 0; init=0.0)
+    Lb = sum(nzb[j] * log(b[j]) for j in axes(A, 2) if nzb[j] > 0; init=0.0)
+    return isapprox(La, Lb; atol=atol * max(1, abs(La), abs(Lb)))
+end
+
+"""
     covaries(coverfn, A, d; kwargs...)
     covaries(coverfn, A, dr, dc; kwargs...)
 

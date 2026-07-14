@@ -306,8 +306,10 @@ end
     dr = exp.(randn(rng, 40)); dc = exp.(randn(rng, 40))
 
     @test covaries_objective(AbsLinear{2}(), soft_cover, A, dr, dc; rtol=1e-12)
-    @test covaries(soft_cover, A, dr, dc; rtol=1e-5)
-    # The cover's agreement is near `sqrt(eps)`, not `eps`: the looser bound is a property
-    # of any converged minimizer, not slack that a better solver could recover.
-    @test !covaries(soft_cover, A, dr, dc; rtol=1e-9)
+    # With the row/column gauge pinned, the two frames converge to the same cover and not
+    # merely to the same objective: the agreement is roundoff, far inside the `sqrt(eps)` a
+    # low-curvature direction would otherwise allow. Leaving the gauge free costs six orders
+    # of magnitude here, which is what makes the balance convention worth enforcing rather
+    # than merely documenting.
+    @test covaries(soft_cover, A, dr, dc; rtol=1e-9)
 end

@@ -27,12 +27,16 @@ const SYM_NOTIONS = (
 )
 
 const GEN_NOTIONS = (
-    (name = "cover",                        f = A -> cover(A),                        hard = true,  rtol = 1e-9),
-    (name = "cover_min(AbsLog{2})",         f = A -> cover_min(AbsLog{2}(), A),       hard = true,  rtol = 1e-5),
-    (name = "cover_min(AbsLog{1})",         f = A -> cover_min(AbsLog{1}(), A),       hard = true,  rtol = 1e-5),
-    (name = "soft_cover(AbsLinear{2})",     f = A -> soft_cover(AbsLinear{2}(), A),   hard = false, rtol = 1e-8),
-    (name = "soft_cover(AbsLinear{1})",     f = A -> soft_cover(AbsLinear{1}(), A),   hard = false, rtol = 1e-8),
-    (name = "soft_cover_min(AbsLog{2})",    f = A -> soft_cover_min(AbsLog{2}(), A),  hard = false, rtol = 1e-9),
+    (name = "cover",                          f = A -> cover(A),                          hard = true,  rtol = 1e-9),
+    (name = "cover_min(AbsLog{2})",           f = A -> cover_min(AbsLog{2}(), A),         hard = true,  rtol = 1e-5),
+    (name = "cover_min(AbsLog{1})",           f = A -> cover_min(AbsLog{1}(), A),         hard = true,  rtol = 1e-5),
+    (name = "cover_min(AbsLinear{1})",        f = A -> cover_min(AbsLinear{1}(), A),      hard = true,  rtol = 1e-5),
+    (name = "cover_min(AbsLinear{2})",        f = A -> cover_min(AbsLinear{2}(), A),      hard = true,  rtol = 1e-5),
+    (name = "soft_cover(AbsLinear{2})",       f = A -> soft_cover(AbsLinear{2}(), A),     hard = false, rtol = 1e-8),
+    (name = "soft_cover(AbsLinear{1})",       f = A -> soft_cover(AbsLinear{1}(), A),     hard = false, rtol = 1e-8),
+    (name = "soft_cover_min(AbsLog{2})",      f = A -> soft_cover_min(AbsLog{2}(), A),    hard = false, rtol = 1e-9),
+    (name = "soft_cover_min(AbsLinear{1})",   f = A -> soft_cover_min(AbsLinear{1}(), A), hard = false, rtol = 1e-5),
+    (name = "soft_cover_min(AbsLinear{2})",   f = A -> soft_cover_min(AbsLinear{2}(), A), hard = false, rtol = 1e-5),
 )
 
 @testset "cross-notion invariants" begin
@@ -81,5 +85,15 @@ const GEN_NOTIONS = (
         @test axes(ao, 1) == axes(Ao, 1)
         @test axes(bo, 1) == axes(Ao, 2)
         @test collect(ao) .* transpose(collect(bo)) ≈ a .* transpose(b) rtol=nt.rtol
+        # The gauge a -> c*a, b -> b/c is invisible to every objective and every coverage
+        # constraint, so nothing in the problem fixes the split between `a` and `b`. The
+        # balance convention does, and every asymmetric cover reports its result in it.
+        @test isbalanced(a, b, Agen)
+        @test isbalanced(az, bz, Azgen)
+    end
+
+    @testset "gen: initialize_cover($strategy, $feasible) is balanced" for
+            strategy in (:hardcover, :geomean), feasible in (:inflate, :boost, :none)
+        @test isbalanced(initialize_cover(Agen; strategy, feasible)..., Agen)
     end
 end

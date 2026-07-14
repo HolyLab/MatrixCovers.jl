@@ -82,6 +82,11 @@ unconstrained minimum (geometric mean of nonzero entries per row/column). It is
 then boosted to feasibility by a greedy max-deficit rule (the most-violated
 entries are covered first), and `maxiter` tightening iterations are applied.
 
+Only the products `a[i] * b[j]` are determined by the problem: `a -> c*a`, `b -> b/c`
+leaves every one of them unchanged. The split is fixed by the balance convention
+`∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` (`nzaᵢ`, `nzbⱼ` = nonzero counts of row `i`,
+column `j`), as it is throughout the package; see [`cover_min`](@ref).
+
 `ϕ` names the penalty the caller would like the cover to do well on. Currently,
 the heuristic covers ignore `ϕ`, although this behavior may change in future versions.
 For a cover that provably minimizes a given `ϕ`, use [`cover_min`](@ref).
@@ -94,7 +99,7 @@ See also: [`cover!`](@ref), [`cover_min`](@ref), [`symcover`](@ref).
 julia> A = [1 2 3; 6 5 4];
 
 julia> a, b = cover(A)
-([1.2544610775677627, 3.4759059767492304], [1.7261686708831454, 1.6217627613074477, 2.3914651906272066])
+([1.1917861235036982, 3.3022439546112836], [1.8169463196750033, 1.707049797767425, 2.5172301815198064])
 
 julia> a * b'
 2×3 Matrix{Float64}:
@@ -141,7 +146,15 @@ function cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs.
     axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
     unconstrained_min!(AbsLog{2}(), a, b, A)
     boost_feasible!(a, b, A)
-    return tighten_cover!(a, b, A; kwargs...)
+    tighten_cover!(a, b, A; kwargs...)
+    # The boost and the tightening raise and shrink rows and columns independently, so they
+    # leave the gauge wherever they happen to land it. Pin it, so the split reported between
+    # `a` and `b` is the package's convention rather than a residue of the passes above.
+    # The shift is exact in the log-scales but rounds in the products, which the tightening
+    # has driven onto the coverage boundary; the uniform inflation restores exact coverage,
+    # and preserves the balance just set because ∑ nzaᵢ = ∑ nzbⱼ.
+    _balance_cover!(a, b, A)
+    return inflate_feasible!(a, b, A)
 end
 
 # Adjoint/Transpose wrappers for cover!.
@@ -157,6 +170,42 @@ end
 # ============================================================
 # Internal helpers
 # ============================================================
+# Shift `(a, b)` along the gauge `a -> c*a`, `b -> b/c`, which leaves every product
+# `a[i]*b[j]` — and hence every objective and every coverage constraint — untouched,
+# onto the balance convention `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` that every asymmetric
+# cover in the package reports its result in. Summing `log a[i]` over the support counts
+# row `i` exactly `nzaᵢ` times, which is those weighted sums. Nothing else pins the gauge:
+# the objective cannot see it, so without a convention the split between `a` and `b` would
+# be an artifact of whichever pass last touched them.
+#
+# Two points differing only by the gauge land on the same point here, so a refiner given
+# either start cannot tell them apart. The uniform inflation to feasibility raises every
+# supported scale of `a` and `b` alike, and `∑ nzaᵢ = ∑ nzbⱼ = nnz`, so it preserves the
+# balance it finds.
+function _balance_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
+    T = float(promote_type(eltype(a), eltype(b)))
+    Lα = Ref(zero(T))
+    Lβ = Ref(zero(T))
+    nnz = Ref(0)
+    foreach_support(A) do i, j, v
+        Lα[] += log(T(a[i]))
+        Lβ[] += log(T(b[j]))
+        nnz[] += 1
+    end
+    iszero(nnz[]) && return a, b
+    s = (Lβ[] - Lα[]) / (2 * nnz[])
+    iszero(s) && return a, b
+    # Grow the log-scales directly: `exp(s)` alone can overflow where the shifted
+    # scale is perfectly representable.
+    for i in eachindex(a)
+        iszero(a[i]) || (a[i] = exp(log(T(a[i])) + s))
+    end
+    for j in eachindex(b)
+        iszero(b[j]) || (b[j] = exp(log(T(b[j])) - s))
+    end
+    return a, b
+end
+
 
 # Compute the analytical minimizer of the unconstrained AbsLog{2} symmetric objective
 #   ∑_{i,j: A[i,j]≠0} (log(a[i]*a[j]) - log|A[i,j]|)²

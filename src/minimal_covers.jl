@@ -299,37 +299,6 @@ function _prepare_cover_start!(a::AbstractVector, b::AbstractVector, A::Abstract
     return inflate_feasible!(a, b, A)
 end
 
-# Shift `(a, b)` along the gauge `a -> c*a`, `b -> b/c`, which leaves every product
-# `a[i]*b[j]` — and hence every objective and every coverage constraint — untouched,
-# onto the balance convention `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` that `cover_min`
-# reports its results in. Summing `log a[i]` over the support counts row `i` exactly
-# `nzaᵢ` times, which is those weighted sums. Two starts differing only by the gauge
-# land on the same point here, so the refiners cannot see the difference. The
-# subsequent uniform inflation to feasibility raises every supported scale of `a` and
-# `b` alike, and `∑ nzaᵢ = ∑ nzbⱼ = nnz`, so it preserves the balance it finds.
-function _balance_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
-    T = float(promote_type(eltype(a), eltype(b)))
-    Lα = Ref(zero(T))
-    Lβ = Ref(zero(T))
-    nnz = Ref(0)
-    foreach_support(A) do i, j, v
-        Lα[] += log(T(a[i]))
-        Lβ[] += log(T(b[j]))
-        nnz[] += 1
-    end
-    iszero(nnz[]) && return a, b
-    s = (Lβ[] - Lα[]) / (2 * nnz[])
-    iszero(s) && return a, b
-    # Grow the log-scales directly: `exp(s)` alone can overflow where the shifted
-    # scale is perfectly representable.
-    for i in eachindex(a)
-        iszero(a[i]) || (a[i] = exp(log(T(a[i])) + s))
-    end
-    for j in eachindex(b)
-        iszero(b[j]) || (b[j] = exp(log(T(b[j])) - s))
-    end
-    return a, b
-end
 
 # Inner linear solve for the AbsLog{2} MCM Newton steps. `:auto` (the default)
 # forms and factorizes the reweighted normal equations densely, which is fastest

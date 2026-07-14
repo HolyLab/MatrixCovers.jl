@@ -103,7 +103,10 @@ formulation and raise an `ArgumentError`, as does any unrecognized `strategy` or
 `feasible`.
 
 Under every `feasible` setting the result is strictly positive on every
-supported row and column and exactly zero on the unsupported ones.
+supported row and column and exactly zero on the unsupported ones, and the split
+between `a` and `b` is fixed by the balance convention
+`∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` that every asymmetric cover in the package
+uses (see [`cover_min`](@ref)).
 
 See also: [`initialize_cover!`](@ref), [`initialize_symcover`](@ref), [`cover`](@ref), [`cover_min`](@ref).
 """
@@ -139,7 +142,10 @@ function initialize_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatr
         throw(ArgumentError("unknown strategy :$strategy; expected one of :hardcover, :geomean"))
     end
     _make_feasible!(feasible, a, b, A)
-    return a, b
+    # `:boost` raises rows and columns independently and so moves the gauge; pin it, as every
+    # asymmetric cover in the package does. This is invisible to the refiners, which read a
+    # start only up to the gauge, but it means a start can be compared against a cover.
+    return _balance_cover!(a, b, A)
 end
 
 # ============================================================

@@ -131,7 +131,9 @@ Supported penalty functions:
   monotone. Its flat basins are broken by a deterministic lower-median tie-break, giving a
   scale-covariant representative.
 
-Rows or columns of `A` that are entirely zero receive scale `0`.
+Rows or columns of `A` that are entirely zero receive scale `0`. As with [`cover`](@ref),
+only the products `a[i] * b[j]` are determined by the problem; the split is fixed by the
+balance convention `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]`.
 
 The objective is non-convex, so `starts` starting points are tried and the lowest-objective
 result kept: the geometric mean boosted until it covers `A`, the tightened hard cover
@@ -174,7 +176,7 @@ function soft_cover(ϕ::AbsLinear{1}, A::AbstractMatrix; maxiter::Int=100, kwarg
     # the AbsLinear{1} weighted-median descent.
     a, b = soft_cover(AbsLinear{2}(), A; maxiter=5, kwargs...)
     _abslinear1_iter_asym!(a, b, A, maxiter)
-    return a, b
+    return _balance_cover!(a, b, A)
 end
 
 """
@@ -732,10 +734,14 @@ end
 # two frames (as the default fresh-seeded RNG does) makes it reproducible.
 function _soft_cover_abslinear2(A::AbstractMatrix, iter::Int, starts::Int, σ::Real, rng;
                                 labels=nothing, objs=nothing)
-    return _multistart_run(_soft_cover_abslinear2_inits,
+    a, b = _multistart_run(_soft_cover_abslinear2_inits,
                             ((a, b), A, iter) -> _mscm_als!(a, b, A, iter),
                             ((a, b), A) -> cover_objective(AbsLinear{2}(), a, b, A),
                             A, iter, starts, σ, rng; labels, objs)
+    # The alternating half-sweeps rescale rows and columns independently, so they leave the
+    # gauge where it falls; pin it to the package's convention. The objective cannot see the
+    # gauge, so this changes no product a[i]*b[j] and no candidate's score.
+    return _balance_cover!(a, b, A)
 end
 
 # Alternating least squares for the AbsLinear{2} soft cover in the inverse-scale variables

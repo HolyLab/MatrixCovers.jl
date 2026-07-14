@@ -67,10 +67,15 @@
 
         # `:hardcover` is the boosted geometric mean, tightened — so naming the middle stage
         # is what lets a caller stop there, and `cover` is that stage plus the tightening.
+        # The decomposition is a statement about the cover, i.e. about the products a[i]*b[j];
+        # the gauge is pinned once, at the end of whichever entry point the caller used.
         for B in Aasyms
             ag, bg = initialize_cover(B; strategy=:geomean, feasible=:boost)
-            @test (ag, bg) == cover(B; maxiter=0)
-            @test ScaleInvariantAnalysis.tighten_cover!(copy(ag), copy(bg), B) == cover(B)
+            a0, b0 = cover(B; maxiter=0)
+            @test ag * bg' ≈ a0 * b0'
+            at, bt = ScaleInvariantAnalysis.tighten_cover!(copy(ag), copy(bg), B)
+            ac, bc = cover(B)
+            @test at * bt' ≈ ac * bc'
         end
     end
 
