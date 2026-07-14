@@ -3,7 +3,7 @@ module SIAIpopt
 using JuMP: JuMP, @variable, @objective, @constraint, @NLobjective, @NLconstraint
 using Ipopt: Ipopt
 using ScaleInvariantAnalysis
-using ScaleInvariantAnalysis: AbsLinear, soft_symcover
+using ScaleInvariantAnalysis: AbsLinear
 
 # The models are built over 1-based positions 1:n; `pr`/`pc` map each position to the
 # corresponding axis index of `A`, and results are scattered back onto vectors
@@ -184,13 +184,15 @@ function ScaleInvariantAnalysis.cover_min!(::AbsLinear{1}, a::AbstractVector, b:
 end
 
 # ============================================================
-# Soft cover: soft_symcover_min(::AbsLinear{p}, A)
-# Same objective, no coverage constraints.
+# Soft cover: soft_symcover_min!(::AbsLinear{p}, a, A)
+# Same objective, no coverage constraints — so the start need not cover `A`, and the
+# raw geometric mean (the exact soft AbsLog{2} optimum) is a natural one. The multistart
+# driver over these kernels is native; see soft_symcover_min.
 # ============================================================
 
-function ScaleInvariantAnalysis.soft_symcover_min(::AbsLinear{2}, A)
+function ScaleInvariantAnalysis.soft_symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
+    ScaleInvariantAnalysis._prepare_soft_symcover_start!(a, A)
     axr = axes(A, 1)
-    axes(A, 2) == axr || throw(ArgumentError("soft_symcover_min requires a square matrix"))
     T = float(real(eltype(A)))
     pr = collect(axr)
     n = length(pr)
@@ -203,20 +205,21 @@ function ScaleInvariantAnalysis.soft_symcover_min(::AbsLinear{2}, A)
 
     model = JuMP.Model(Ipopt.Optimizer)
     JuMP.set_silent(model)
-    @variable(model, α[k=1:n], start = zero(T))
+    start0 = [supported[k] ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
+    @variable(model, α[k=1:n], start = start0[k])
     @NLobjective(model, Min,
         sum((1 - exp(logA[(i,j)] - α[i] - α[j]))^2 for (i,j) in nonzero_idx) + n_zeros)
     JuMP.optimize!(model)
-    a = similar(Array{T}, axr)
+    check_solved(model, "soft_symcover_min!")
     for (i, k) in pairs(pr)
         a[k] = supported[i] ? exp(JuMP.value(α[i])) : zero(T)
     end
     return a
 end
 
-function ScaleInvariantAnalysis.soft_symcover_min(::AbsLinear{1}, A)
+function ScaleInvariantAnalysis.soft_symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
+    ScaleInvariantAnalysis._prepare_soft_symcover_start!(a, A)
     axr = axes(A, 1)
-    axes(A, 2) == axr || throw(ArgumentError("soft_symcover_min requires a square matrix"))
     T = float(real(eltype(A)))
     pr = collect(axr)
     n = length(pr)
@@ -228,8 +231,7 @@ function ScaleInvariantAnalysis.soft_symcover_min(::AbsLinear{1}, A)
 
     model = JuMP.Model(Ipopt.Optimizer)
     JuMP.set_silent(model)
-    a0 = soft_symcover(ScaleInvariantAnalysis.AbsLinear{1}(), A)
-    start0 = [supported[k] && !iszero(a0[pr[k]]) ? log(a0[pr[k]]) : zero(T) for k in 1:n]
+    start0 = [supported[k] ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
     @variable(model, t[eachindex(nonzero_idx)] >= 0)
     for (k, (i, j)) in enumerate(nonzero_idx)
@@ -239,11 +241,90 @@ function ScaleInvariantAnalysis.soft_symcover_min(::AbsLinear{1}, A)
     end
     @objective(model, Min, sum(t) + n_zeros)
     JuMP.optimize!(model)
-    a = similar(Array{T}, axr)
+    check_solved(model, "soft_symcover_min!")
     for (i, k) in pairs(pr)
         a[k] = supported[i] ? exp(JuMP.value(α[i])) : zero(T)
     end
     return a
+end
+
+# ============================================================
+# Soft cover: soft_cover_min!(::AbsLinear{p}, a, b, A)
+# The bipartite analog of soft_symcover_min!, and the unconstrained analog of cover_min!:
+# no coverage constraints, but the same row/column gauge, pinned by the same balance
+# constraint ∑ nzaᵢ αᵢ = ∑ nzbⱼ βⱼ. A zero entry of `A` contributes ϕ(0) = 1 whatever the
+# scales, so the count of zeros enters the objective as a constant, matching cover_objective.
+# ============================================================
+
+function ScaleInvariantAnalysis.soft_cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractVector, A)
+    ScaleInvariantAnalysis._prepare_soft_cover_start!(a, b, A)
+    axr, axc = axes(A, 1), axes(A, 2)
+    T = float(real(eltype(A)))
+    pr, pc = collect(axr), collect(axc)
+    m, n = length(pr), length(pc)
+    Apos = [A[pr[i], pc[j]] for i in 1:m, j in 1:n]
+    nza = vec(count(!iszero, Apos, dims=2))
+    nzb = vec(count(!iszero, Apos, dims=1))
+    idx = [(i, j) for i in 1:m for j in 1:n if Apos[i, j] != 0]
+    logA = Dict((i, j) => log(abs(Apos[i, j])) for (i, j) in idx)
+    n_zeros = m * n - length(idx)
+
+    model = JuMP.Model(Ipopt.Optimizer)
+    JuMP.set_silent(model)
+    α0 = [nza[i] > 0 ? log(T(a[pr[i]])) : zero(T) for i in 1:m]
+    β0 = [nzb[j] > 0 ? log(T(b[pc[j]])) : zero(T) for j in 1:n]
+    @variable(model, α[i=1:m], start = α0[i])
+    @variable(model, β[j=1:n], start = β0[j])
+    @NLobjective(model, Min,
+        sum((1 - exp(logA[(i,j)] - α[i] - β[j]))^2 for (i,j) in idx) + n_zeros)
+    @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
+    JuMP.optimize!(model)
+    check_solved(model, "soft_cover_min!")
+    for (i, k) in pairs(pr)
+        a[k] = nza[i] > 0 ? exp(JuMP.value(α[i])) : zero(T)
+    end
+    for (j, k) in pairs(pc)
+        b[k] = nzb[j] > 0 ? exp(JuMP.value(β[j])) : zero(T)
+    end
+    return a, b
+end
+
+function ScaleInvariantAnalysis.soft_cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractVector, A)
+    ScaleInvariantAnalysis._prepare_soft_cover_start!(a, b, A)
+    axr, axc = axes(A, 1), axes(A, 2)
+    T = float(real(eltype(A)))
+    pr, pc = collect(axr), collect(axc)
+    m, n = length(pr), length(pc)
+    Apos = [A[pr[i], pc[j]] for i in 1:m, j in 1:n]
+    nza = vec(count(!iszero, Apos, dims=2))
+    nzb = vec(count(!iszero, Apos, dims=1))
+    idx = [(i, j) for i in 1:m for j in 1:n if Apos[i, j] != 0]
+    logA = Dict((i, j) => log(abs(Apos[i, j])) for (i, j) in idx)
+    n_zeros = m * n - length(idx)
+
+    model = JuMP.Model(Ipopt.Optimizer)
+    JuMP.set_silent(model)
+    α0 = [nza[i] > 0 ? log(T(a[pr[i]])) : zero(T) for i in 1:m]
+    β0 = [nzb[j] > 0 ? log(T(b[pc[j]])) : zero(T) for j in 1:n]
+    @variable(model, α[i=1:m], start = α0[i])
+    @variable(model, β[j=1:n], start = β0[j])
+    @variable(model, t[eachindex(idx)] >= 0)
+    for (k, (i, j)) in enumerate(idx)
+        lA = logA[(i, j)]
+        @NLconstraint(model,  1 - exp(lA - α[i] - β[j]) <= t[k])
+        @NLconstraint(model, -1 + exp(lA - α[i] - β[j]) <= t[k])
+    end
+    @objective(model, Min, sum(t) + n_zeros)
+    @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
+    JuMP.optimize!(model)
+    check_solved(model, "soft_cover_min!")
+    for (i, k) in pairs(pr)
+        a[k] = nza[i] > 0 ? exp(JuMP.value(α[i])) : zero(T)
+    end
+    for (j, k) in pairs(pc)
+        b[k] = nzb[j] > 0 ? exp(JuMP.value(β[j])) : zero(T)
+    end
+    return a, b
 end
 
 end  # module SIAIpopt

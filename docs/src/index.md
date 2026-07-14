@@ -98,7 +98,7 @@ Both objectives are zero if and only if every constraint is exactly tight.
 | [`soft_symcover`](@ref) | yes | soft (penalized) | `AbsLinear{2}` (or `AbsLog`, `AbsLinear{1}`) | — |
 | [`soft_cover`](@ref) | no | soft (penalized) | `AbsLinear{2}` (or `AbsLinear{1}`) | — |
 | [`soft_symcover_min`](@ref) | yes | soft (penalized) | `AbsLog{2}`, `AbsLinear` | JuMP |
-| [`soft_cover_min`](@ref) | no | soft (penalized) | `AbsLog{2}` only | native |
+| [`soft_cover_min`](@ref) | no | soft (penalized) | `AbsLog{2}`, `AbsLinear` | native for `AbsLog{2}`; else JuMP |
 
 **[`symcover`](@ref), [`cover`](@ref), [`soft_symcover`](@ref), and
 [`soft_cover`](@ref) are recommended for production use.**  The hard-cover
@@ -194,13 +194,21 @@ it behind a default:
   basins — which is why the choice is a named part of the start rather than an internal
   detail.  The heuristic [`cover`](@ref) is itself a composition of these: the geometric
   mean, boosted, then tightened.
-- **Refiners** improve a starting point in place.  [`symcover_min!`](@ref) and
-  [`cover_min!`](@ref) validate the start, then optimize from it.  Which basin they reach
-  is the caller's choice, by construction.
-- **Solvers** bundle the two.  [`symcover_min`](@ref) and [`cover_min`](@ref) refine every
-  start on a menu (the `strategies` keyword) and return the best cover by
-  [`cover_objective`](@ref), so their result depends on `A` and not on an initialization the
-  caller never chose.
+- **Refiners** improve a starting point in place.  [`symcover_min!`](@ref),
+  [`cover_min!`](@ref), and [`soft_symcover_min!`](@ref) validate the start, then optimize
+  from it.  Which basin they reach is the caller's choice, by construction.  The hard
+  refiners require a start that covers `A`; the soft one does not, since its objective
+  constrains nothing.
+- **Solvers** bundle the two.  [`symcover_min`](@ref), [`cover_min`](@ref), and
+  [`soft_symcover_min`](@ref) refine every start on a menu (the `strategies` keyword) and
+  return the best cover by [`cover_objective`](@ref), so their result depends on `A` and not
+  on an initialization the caller never chose.
+
+This is what makes the non-convex solvers **scale-covariant**, and it is not a free
+property: every start on the menu co-varies with a rescaling of `A`, so the basin the
+solver reaches follows the frame.  A start that did *not* co-vary — a fixed point
+independent of `A`, say — could land in a different basin once `A` is rescaled, and the
+returned cover would then depend on the units the caller happened to use.
 
 ```julia
 using JuMP, Ipopt   # Ipopt for the AbsLinear penalties

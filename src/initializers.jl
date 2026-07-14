@@ -4,6 +4,13 @@
 # `heuristic_covers.jl`; nothing here calls a solver, so the dependency runs one
 # way and the start menu has a single definition.
 
+# Starting covers the non-convex AbsLinear solvers refine, in the order they are tried.
+# `:leaveout` and `:diagfeasible` have no asymmetric formulation, so the two menus differ.
+# The hard-cover drivers take these starts as covers (`feasible=:inflate`), the soft-cover
+# driver takes them raw (`feasible=:none`) — the soft objective constrains nothing.
+const SYMCOVER_MIN_STRATEGIES = (:hardcover, :geomean, :leaveout)
+const COVER_MIN_STRATEGIES = (:hardcover, :geomean)
+
 # ============================================================
 # Public interface
 # ============================================================

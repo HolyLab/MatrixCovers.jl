@@ -208,8 +208,18 @@ function _cover_min_abslog1(A, start)
 end
 
 # Soft (unconstrained) symmetric cover: minimize ∑ (log r_ij)² with no constraints.
-# The objective is quadratic in α = log a, solved as a QP.
-function ScaleInvariantAnalysis.soft_symcover_min(::AbsLog{2}, A)
+# The objective is quadratic in α = log a, solved as a QP. Convex with a unique minimizer,
+# so no multistart is needed and the start — when the refiner supplies one — is a hint the
+# result does not record.
+ScaleInvariantAnalysis.soft_symcover_min(::AbsLog{2}, A) = _soft_symcover_min_abslog2(A, nothing)
+
+function ScaleInvariantAnalysis.soft_symcover_min!(::AbsLog{2}, a::AbstractVector, A)
+    ScaleInvariantAnalysis._prepare_soft_symcover_start!(a, A)
+    a .= _soft_symcover_min_abslog2(A, a)
+    return a
+end
+
+function _soft_symcover_min_abslog2(A, start)
     axr = axes(A, 1)
     axes(A, 2) == axr || throw(ArgumentError("soft_symcover_min requires a square matrix"))
     T = float(real(eltype(A)))
@@ -220,7 +230,12 @@ function ScaleInvariantAnalysis.soft_symcover_min(::AbsLog{2}, A)
     supported = [any(!iszero, @view Apos[i, :]) || any(!iszero, @view Apos[:, i]) for i in 1:n]
     model = JuMP.Model(HiGHS.Optimizer)
     JuMP.set_silent(model)
-    @variable(model, α[1:n])
+    if start === nothing
+        @variable(model, α[1:n])
+    else
+        α0 = [supported[k] ? log(T(start[pr[k]])) : zero(T) for k in 1:n]
+        @variable(model, α[k=1:n], start = α0[k])
+    end
     @objective(model, Min, sum(abs2, α[i] + α[j] - logA[i, j] for i in 1:n, j in 1:n if Apos[i, j] != 0))
     JuMP.optimize!(model)
     a = similar(Array{T}, axr)

@@ -2,12 +2,6 @@
 # here; the other penalties are provided by the SIAJuMP and SIAIpopt extensions,
 # whose entry points are declared as stubs below.
 
-# Starting covers the non-convex AbsLinear drivers refine, in the order they are tried.
-# They name points on the `initialize_symcover`/`initialize_cover` menu; `:leaveout` and
-# `:diagfeasible` have no asymmetric formulation, so the two menus differ.
-const SYMCOVER_MIN_STRATEGIES = (:hardcover, :geomean, :leaveout)
-const COVER_MIN_STRATEGIES = (:hardcover, :geomean)
-
 # ============================================================
 # Public interface
 # ============================================================

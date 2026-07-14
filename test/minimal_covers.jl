@@ -228,11 +228,9 @@ end
     # requires JuMP+Ipopt.
     @test soft_symcover_min(A) == soft_symcover_min(AbsLinear{2}(), A)
 
-    # soft_cover_min(A) also defaults to AbsLinear{2}, matching soft_cover(A), but
-    # that penalty isn't implemented yet (only AbsLog{2} is) — the default forward
-    # raises the same MethodError as calling it directly.
-    @test_throws MethodError soft_cover_min(Aasym)
-    @test_throws MethodError soft_cover_min(AbsLinear{2}(), Aasym)
+    # soft_cover_min(A) also defaults to AbsLinear{2}, matching soft_cover(A);
+    # requires JuMP+Ipopt.
+    @test soft_cover_min(Aasym) == soft_cover_min(AbsLinear{2}(), Aasym)
 end
 
 @testset "symcover_min!/cover_min! native AbsLog{2}" begin

@@ -158,6 +158,98 @@ end
     @test collect(ao) ≈ symcover_min!(ϕ, initialize_symcover(A), A)
 end
 
+@testset "soft_symcover_min multistart and refiner (Ipopt)" begin
+    # A start for the soft cover need not cover `A`: the objective imposes no coverage
+    # constraint, and the raw geometric mean — the exact soft AbsLog{2} optimum — does not
+    # cover. The refiner must accept it where symcover_min! would reject it.
+    A = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
+    a0 = initialize_symcover(A; strategy=:geomean, feasible=:none)
+    @test !iscover(a0, A)
+    @test_throws "requires a start that covers `A`" symcover_min!(AbsLinear{2}(), copy(a0), A)
+    @test soft_symcover_min!(AbsLinear{2}(), copy(a0), A) isa AbstractVector
+
+    for ϕ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{2}())
+        a = soft_symcover_min(ϕ, A)
+        @test soft_symcover_min(ϕ, A) == a                       # deterministic
+        # The soft optimum is no worse than the heuristic soft cover.
+        @test cover_objective(ϕ, a, A) <=
+              cover_objective(ϕ, soft_symcover(ϕ, A), A) * (1 + 1e-6) + 1e-8
+    end
+
+    # No start on the menu beats the driver.
+    for ϕ in (AbsLinear{1}(), AbsLinear{2}())
+        a = soft_symcover_min(ϕ, A)
+        for strategy in (:hardcover, :geomean, :leaveout)
+            single = soft_symcover_min!(ϕ, initialize_symcover(A; strategy, feasible=:none), A)
+            @test cover_objective(ϕ, a, A) <= cover_objective(ϕ, single, A) * (1 + 1e-6) + 1e-8
+        end
+    end
+
+    # For a non-convex objective, scale covariance is a property of the *start*: a start that
+    # does not co-vary with `A` can reach a different basin once the frame is rescaled, and
+    # the objective is scale-invariant only within a basin. This matrix and rescaling separate
+    # the basins sharply enough to catch that — an `A`-independent start scores 4.00 in the
+    # rescaled frame where the co-varied answer scores 1.47 — so it pins the menu's covariance.
+    Abasins = [0.020358630644342735 0.53352144014074843 5.8899714528796077 0.23770314779348869 3.0721768720180109;
+              0.53352144014074843 3.5416395788642903 37.199280652497748 49.972622569225109 333.53567816710364;
+              5.8899714528796077 37.199280652497748 0.76014027958709862 2.4189759139690739 0.92571970793600067;
+              0.23770314779348869 49.972622569225109 2.4189759139690739 8.1401049198051822 7.3601096491681046;
+              3.0721768720180109 333.53567816710364 0.92571970793600067 7.3601096491681046 1.0844635712556003]
+    d = [20.451338935482074, 0.69212569803171398, 35.401627522529395, 15.904906661932396, 0.19696509774727827]
+    for ϕ in (AbsLinear{1}(), AbsLinear{2}())
+        @test covaries(A -> soft_symcover_min(ϕ, A), Abasins, d; rtol=1e-5)
+    end
+
+    @test_throws "positive scale on every supported row" soft_symcover_min!(AbsLinear{2}(), [1.0, -1.0, 2.0], A)
+    @test_throws "soft_symcover_min! requires a square matrix" soft_symcover_min!(AbsLinear{2}(), [1.0, 2.0], [1.0 2.0 3.0; 4.0 5.0 6.0])
+    @test_throws "unknown strategy :banana" soft_symcover_min(AbsLinear{2}(), A; strategies=(:banana,))
+end
+
+@testset "soft_cover_min multistart and refiner (Ipopt)" begin
+    A = [1.0 2.0 3.0; 40.0 5.0 0.6]
+    nza = vec(count(!iszero, A, dims=2))
+    nzb = vec(count(!iszero, A, dims=1))
+    balance(a, b) = sum(nza .* log.(a)) - sum(nzb .* log.(b))
+
+    # The soft start need not cover `A`, so cover_min! rejects what soft_cover_min! accepts.
+    a0, b0 = initialize_cover(A; strategy=:geomean, feasible=:none)
+    @test !iscover(a0, b0, A)
+    @test_throws "requires a start that covers `A`" cover_min!(AbsLinear{2}(), copy(a0), copy(b0), A)
+
+    for ϕ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{2}())
+        a, b = soft_cover_min(ϕ, A)
+        @test soft_cover_min(ϕ, A) == (a, b)                      # deterministic
+        # The objective depends on `a`, `b` only through their products, so the split is
+        # fixed by the balance convention rather than left to the solver.
+        @test balance(a, b) ≈ 0 atol=1e-7
+        # Gauge-invariant in the start: (a, b) and (2a, b/2) name the same point.
+        ag, bg = soft_cover_min!(ϕ, 2 .* copy(a0), copy(b0) ./ 2, A)
+        ah, bh = soft_cover_min!(ϕ, copy(a0), copy(b0), A)
+        @test ag ≈ ah && bg ≈ bh
+    end
+
+    # No start on the menu beats the driver, and the driver is no worse than the heuristic.
+    for ϕ in (AbsLinear{1}(), AbsLinear{2}())
+        a, b = soft_cover_min(ϕ, A)
+        for strategy in (:hardcover, :geomean)
+            sa, sb = soft_cover_min!(ϕ, initialize_cover(A; strategy, feasible=:none)..., A)
+            @test cover_objective(ϕ, a, b, A) <= cover_objective(ϕ, sa, sb, A) * (1 + 1e-6) + 1e-8
+        end
+        ha, hb = soft_cover(ϕ, A)
+        @test cover_objective(ϕ, a, b, A) <= cover_objective(ϕ, ha, hb, A) * (1 + 1e-6) + 1e-8
+
+        # The asymmetric soft cover relaxes the symmetric one on a symmetric matrix.
+        As = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
+        aa, ab = soft_cover_min(ϕ, As)
+        @test cover_objective(ϕ, aa, ab, As) <=
+              cover_objective(ϕ, soft_symcover_min(ϕ, As), As) * (1 + 1e-6) + 1e-8
+    end
+
+    @test_throws "positive scale on every supported row" soft_cover_min!(AbsLinear{2}(), [1.0, 0.0], [1.0, 1.0, 1.0], A)
+    @test_throws "positive scale on every supported column" soft_cover_min!(AbsLinear{2}(), [1.0, 1.0], [1.0, -1.0, 1.0], A)
+    @test_throws "at least one starting cover" soft_cover_min(AbsLinear{2}(), A; strategies=())
+end
+
 @testset "AbsLog{1} canonical selection on the optimal face (HiGHS)" begin
     # The AbsLog{1} optimum is a face of the feasible polytope, not a point: its members are
     # different covers scoring the same objective. The solver returns the member that also
@@ -304,19 +396,19 @@ end
     out_noϕ = read(`$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script_noϕ`, String)
     @test occursin("loading JuMP", out_noϕ)
 
-    # soft_cover_min's AbsLinear penalties are simply unimplemented, not gated
-    # behind an extension, so the hint must say so rather than claim a package
-    # load would help.
+    # soft_cover_min's AbsLog{1} is genuinely unimplemented rather than gated behind an
+    # extension, so its hint must say so rather than claim a package load would help — while
+    # still advising the load for the AbsLinear penalties, which Ipopt does provide.
     e3 = try
-        soft_cover_min(AbsLinear{2}(), A)
+        soft_cover_min(AbsLog{1}(), A)
         nothing
     catch err
         err
     end
     @test e3 isa MethodError
     msg3 = sprint(showerror, e3)
-    @test occursin("not yet supported", msg3)
-    @test !occursin("loading JuMP", msg3)
+    @test occursin("AbsLog{1} is not yet supported", msg3)
+    @test occursin("loading JuMP", msg3)
 
     # Every penalty cover_min does not solve natively lives in an extension, whether the
     # call reaches it directly (AbsLog{1}) or through the AbsLinear multistart driver,

@@ -186,19 +186,84 @@ with no coverage constraints. The no-ϕ form defaults to `AbsLinear{2}()`, match
 [`soft_symcover`](@ref).
 
 Supported ϕ values and required extensions:
-- `AbsLog{2}()`: requires JuMP and HiGHS.
-- `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt.
+- `AbsLog{2}()`: requires JuMP and HiGHS. Convex, so the minimizer is unique.
+- `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt. These objectives are
+  non-convex, so the solver returns the minimum of the basin it starts in. Rather than
+  commit to one start, these methods refine each of `strategies` — the
+  [`initialize_symcover`](@ref) menu, by default `$(SYMCOVER_MIN_STRATEGIES)`, without
+  forcing feasibility — and return the best cover found, at a cost of one solve per start.
 - `AbsLog{1}()`: not yet implemented.
 
-!!! warning
-    The `AbsLinear` objectives are non-convex, and these methods commit to a single start,
-    so what they return is a *local* minimum — despite the name, not necessarily the
-    smallest value of the objective. Both [`soft_symcover`](@ref) and [`symcover_min`](@ref)
-    hedge against that by trying several starting points and keeping the best; these methods
-    do not, and have no `strategies` keyword.
+See also: [`soft_symcover_min!`](@ref), [`soft_symcover`](@ref), [`symcover_min`](@ref).
 """
 function soft_symcover_min end
 soft_symcover_min(A::AbstractMatrix; kwargs...) = soft_symcover_min(AbsLinear{2}(), A; kwargs...)
+
+# Multistart driver for the non-convex soft AbsLinear covers, the unconstrained counterpart
+# of `symcover_min(::AbsLinear)`. The kernels (`soft_symcover_min!`) live in SIAIpopt; the
+# menu and the selection are native. Starts are taken raw: a soft cover is under no
+# obligation to cover `A`, and the raw geometric mean is the exact soft AbsLog{2} optimum.
+function soft_symcover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=SYMCOVER_MIN_STRATEGIES)
+    ax = axes(A, 1)
+    axes(A, 2) == ax || throw(ArgumentError("soft_symcover_min requires a square matrix"))
+    T = float(real(eltype(A)))
+    starts = [similar(Array{T}, ax) for _ in strategies]
+    built = [_initialize_symcover!(a, A, strategy, :none) for (a, strategy) in zip(starts, strategies)]
+    covers = [soft_symcover_min!(ϕ, a, A) for (a, ok) in zip(starts, built) if ok]
+    isempty(covers) &&
+        throw(ArgumentError("soft_symcover_min: no strategy in $strategies yields a starting cover of `A`"))
+    return covers[_multistart_select([cover_objective(ϕ, a, A) for a in covers])]
+end
+
+"""
+    a = soft_symcover_min!(ϕ, a, A)
+    a = soft_symcover_min!(a, A)
+
+Refine the starting point `a` into the ϕ-minimal symmetric soft cover of `A`, in place.
+This is the soft counterpart of [`symcover_min!`](@ref), and the second half of the
+initialize/refine pair whose first half is [`initialize_symcover`](@ref). The no-ϕ form
+defaults to `AbsLinear{2}()`, matching [`soft_symcover_min`](@ref), whose supported ϕ
+values these methods share.
+
+`a` must be strictly positive on every row of `A` that carries support; scales on rows
+carrying no support are inert, and are zero on output. Unlike [`symcover_min!`](@ref), `a`
+need *not* cover `A` — the soft objective imposes no coverage constraint, and the natural
+starts do not satisfy one. Pass `feasible=:none` when building a start with
+[`initialize_symcover`](@ref).
+
+The `AbsLinear` penalties are non-convex, so the start selects the local minimum the solver
+descends into; that is why [`soft_symcover_min`](@ref) tries several rather than committing
+to one. Under `AbsLog{2}` the objective is convex with a unique minimizer, so the start is
+honored but not visible in the result.
+
+See also: [`initialize_symcover`](@ref), [`soft_symcover_min`](@ref), [`symcover_min!`](@ref).
+"""
+function soft_symcover_min! end
+soft_symcover_min!(a::AbstractVector, A::AbstractMatrix; kwargs...) =
+    soft_symcover_min!(AbsLinear{2}(), a, A; kwargs...)
+
+# Shared prologue of the `soft_symcover_min!` kernels. The soft objective constrains
+# nothing, so — unlike `_prepare_symcover_start!` — this checks positivity only, and moves
+# the start nowhere.
+function _prepare_soft_symcover_start!(a::AbstractVector, A::AbstractMatrix)
+    ax = axes(A, 1)
+    axes(A, 2) == ax || throw(ArgumentError("soft_symcover_min! requires a square matrix"))
+    eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$ax"))
+    supp = fill!(similar(a, Bool), false)
+    foreach_support_sym(A) do i, j, v
+        supp[i] = true
+        supp[j] = true
+    end
+    for i in ax
+        supp[i] || (a[i] = zero(eltype(a)))
+    end
+    for i in ax
+        supp[i] || continue
+        (isfinite(a[i]) && a[i] > zero(a[i])) ||
+            throw(ArgumentError("soft_symcover_min! requires a start with finite positive scale on every supported row, got a[$i] = $(a[i])"))
+    end
+    return a
+end
 
 """
     a, b = soft_cover_min(ϕ, A)
@@ -209,12 +274,28 @@ Return the ϕ-minimal asymmetric soft cover of `A`: minimizes
 analog of [`soft_symcover_min`](@ref). The no-ϕ form defaults to `AbsLinear{2}()`,
 matching [`soft_cover`](@ref).
 
+The row/column scales are pinned to the balance convention
+`∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` (`nzaᵢ`, `nzbⱼ` = nonzero counts of row `i`, column
+`j`), as in [`cover_min`](@ref): the objective depends on `a` and `b` only through the
+products `a[i]*b[j]`, so without a convention the split between them would be arbitrary.
+
 Supported ϕ values and required extensions:
 - `AbsLog{2}()`: solved natively (no external solver) — the same analytic geometric-mean
-  minimum [`cover`](@ref) computes as its initial point.
-- `AbsLinear{1}()`, `AbsLinear{2}()`: not yet implemented.
+  minimum [`cover`](@ref) computes as its initial point. Convex, so the minimizer is unique.
+- `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt. These objectives are
+  non-convex, so the solver returns the minimum of the basin it starts in. Rather than
+  commit to one start, these methods refine each of `strategies` — the
+  [`initialize_cover`](@ref) menu, by default `$(COVER_MIN_STRATEGIES)`, taken raw
+  (`feasible=:none`, since the soft objective constrains nothing) — and return the best
+  cover found, at a cost of one solve per start. The result is the best *local* minimum on
+  that menu: the multistart is a hedge against a poor basin, not a certificate of global
+  optimality.
+- `AbsLog{1}()`: not yet implemented.
 
-See also: [`soft_symcover_min`](@ref), [`soft_cover`](@ref).
+Every start on the menu co-varies with a rescaling of `A` and the objective is
+scale-invariant, so the selection — and hence the result — is scale-covariant.
+
+See also: [`soft_cover_min!`](@ref), [`soft_symcover_min`](@ref), [`soft_cover`](@ref).
 """
 function soft_cover_min end
 soft_cover_min(A::AbstractMatrix; kwargs...) = soft_cover_min(AbsLinear{2}(), A; kwargs...)
@@ -225,6 +306,79 @@ function soft_cover_min(::AbsLog{2}, A::AbstractMatrix)
     b = similar(Array{T}, axes(A, 2))
     unconstrained_min!(AbsLog{2}(), a, b, A)
     return a, b
+end
+
+# Multistart driver for the non-convex asymmetric soft covers, the unconstrained
+# counterpart of `cover_min(::AbsLinear)`. The kernels (`soft_cover_min!`) live in SIAIpopt.
+function soft_cover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=COVER_MIN_STRATEGIES)
+    isempty(strategies) &&
+        throw(ArgumentError("soft_cover_min: `strategies` must name at least one starting cover"))
+    covers = [initialize_cover(A; strategy, feasible=:none) for strategy in strategies]
+    for (a, b) in covers
+        soft_cover_min!(ϕ, a, b, A)
+    end
+    return covers[_multistart_select([cover_objective(ϕ, a, b, A) for (a, b) in covers])]
+end
+
+"""
+    a, b = soft_cover_min!(ϕ, a, b, A)
+    a, b = soft_cover_min!(a, b, A)
+
+Refine the starting point `(a, b)` into the ϕ-minimal asymmetric soft cover of `A`, in
+place. This is the asymmetric counterpart of [`soft_symcover_min!`](@ref). The no-ϕ form
+defaults to `AbsLinear{2}()`, matching [`soft_cover_min`](@ref), whose supported ϕ values
+these methods share.
+
+`a` and `b` must be strictly positive on every supported row and column; scales on
+unsupported rows and columns are inert, and are zero on output. As with
+[`soft_symcover_min!`](@ref) — and unlike [`cover_min!`](@ref) — the start need *not* cover
+`A`. Build one with `feasible=:none`.
+
+The product `a[i]*b[j]` is unchanged by `a -> c*a`, `b -> b/c`, so the start is read only
+up to that gauge, and the result is pinned to the balance convention of
+[`soft_cover_min`](@ref).
+
+See also: [`initialize_cover`](@ref), [`soft_cover_min`](@ref), [`soft_symcover_min!`](@ref).
+"""
+function soft_cover_min! end
+soft_cover_min!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
+    soft_cover_min!(AbsLinear{2}(), a, b, A; kwargs...)
+
+function soft_cover_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
+    _prepare_soft_cover_start!(a, b, A)
+    unconstrained_min!(AbsLog{2}(), a, b, A)   # analytic minimum; the start is not needed
+    return a, b
+end
+
+# Shared prologue of the `soft_cover_min!` kernels; the asymmetric counterpart of
+# `_prepare_soft_symcover_start!`. Positivity only — the soft objective constrains nothing —
+# plus the balance pin, so the refiners read the start only up to the row/column gauge.
+function _prepare_soft_cover_start!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
+    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$(axes(A, 1))"))
+    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
+    suppa = fill!(similar(a, Bool), false)
+    suppb = fill!(similar(b, Bool), false)
+    foreach_support(A) do i, j, v
+        suppa[i] = true
+        suppb[j] = true
+    end
+    for i in eachindex(a)
+        suppa[i] || (a[i] = zero(eltype(a)))
+    end
+    for j in eachindex(b)
+        suppb[j] || (b[j] = zero(eltype(b)))
+    end
+    for i in eachindex(a)
+        suppa[i] || continue
+        (isfinite(a[i]) && a[i] > zero(a[i])) ||
+            throw(ArgumentError("soft_cover_min! requires a start with finite positive scale on every supported row, got a[$i] = $(a[i])"))
+    end
+    for j in eachindex(b)
+        suppb[j] || continue
+        (isfinite(b[j]) && b[j] > zero(b[j])) ||
+            throw(ArgumentError("soft_cover_min! requires a start with finite positive scale on every supported column, got b[$j] = $(b[j])"))
+    end
+    return _balance_cover!(a, b, A)
 end
 
 # ============================================================

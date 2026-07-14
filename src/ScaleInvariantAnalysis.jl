@@ -8,7 +8,8 @@ export AbsLog, AbsLinear
 export cover_objective
 export cover, cover!, symcover, symcover!, soft_symcover, soft_cover
 export initialize_cover, initialize_cover!, initialize_symcover, initialize_symcover!
-export symcover_min, symcover_min!, cover_min, cover_min!, soft_symcover_min, soft_cover_min
+export symcover_min, symcover_min!, cover_min, cover_min!
+export soft_symcover_min, soft_symcover_min!, soft_cover_min, soft_cover_min!
 export dotabs, divmag
 
 include("penalties.jl")
@@ -74,12 +75,12 @@ function __init__()
             printstyled(io, "\nAbsLog{2} is solved natively; other penalties require loading JuMP plus HiGHS (for AbsLog{1}) or Ipopt (for AbsLinear)."; color=:yellow)
             return true
         end
-        if exc.f === soft_symcover_min
+        if exc.f === soft_symcover_min || exc.f === soft_symcover_min!
             printstyled(io, "\nThis method requires loading JuMP plus HiGHS (for AbsLog{2}) or Ipopt (for AbsLinear)."; color=:yellow)
             return true
         end
-        if exc.f === soft_cover_min
-            printstyled(io, "\nOnly AbsLog{2}() is currently implemented (solved natively); AbsLinear penalties are not yet supported."; color=:yellow)
+        if exc.f === soft_cover_min || exc.f === soft_cover_min!
+            printstyled(io, "\nAbsLog{2} is solved natively; AbsLinear penalties require loading JuMP plus Ipopt. AbsLog{1} is not yet supported."; color=:yellow)
             return true
         end
     end
