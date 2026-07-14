@@ -41,8 +41,10 @@ Supported ϕ values:
   is a hedge against a poor basin, not a certificate of global optimality.
 
 The `AbsLog` penalties are convex in the log-scales, so for them the minimum value is
-unique and no such hedge is needed. `AbsLog{2}` has a unique minimizer too; `AbsLog{1}`
-generally admits a whole flat family of equally-good optima, of which one is returned.
+unique and no such hedge is needed. `AbsLog{2}` has a unique minimizer too. `AbsLog{1}`
+does not: its optimum is a whole face of the feasible polytope, whose members are
+genuinely different covers that happen to score alike. The one returned is the member
+of that face minimizing the `AbsLog{2}` objective.
 
 !!! note
     Even the native solver is more expensive than the [`symcover`](@ref) heuristic.
@@ -83,8 +85,10 @@ Supported ϕ values:
   of global optimality.
 
 The `AbsLog` penalties are convex in the log-scales, so for them the minimum value is
-unique and no such hedge is needed. `AbsLog{2}` has a unique minimizer too; `AbsLog{1}`
-generally admits a whole flat family of equally-good optima, of which one is returned.
+unique and no such hedge is needed. `AbsLog{2}` has a unique minimizer too. `AbsLog{1}`
+does not: its optimum is a whole face of the feasible polytope, whose members are
+genuinely different covers that happen to score alike. The one returned is the member
+of that face minimizing the `AbsLog{2}` objective.
 
 !!! note
     Even the native solver is more expensive than the [`cover`](@ref) heuristic.
@@ -110,14 +114,12 @@ cover `A` — `a[i]*a[j] >= abs(A[i,j])` — to within the roundoff of the log-d
 arithmetic; otherwise an `ArgumentError` is raised. Scales on rows carrying no
 support are inert: whatever they hold on input, they are zero on output.
 
-How much the start matters depends on ϕ. The `AbsLog` penalties are convex in the
-log-scales, so the minimum *value* is reached from any start; `AbsLog{2}` also has
-a unique minimizer, so its result is start-independent, while `AbsLog{1}` generally
-admits a whole flat family of equally-good optima and which one comes back may
-depend on the start. The `AbsLinear` penalties are non-convex, so there the start
-selects the local minimum the solver descends into — that is the point of naming
-the starts, and it is why [`symcover_min`](@ref) tries several rather than
-committing to one.
+How much the start matters depends on ϕ. Under the `AbsLog` penalties the result is
+start-independent: they are convex in the log-scales, `AbsLog{2}` has a unique
+minimizer, and `AbsLog{1}` — whose optimum is a whole face of equally-scoring covers
+— is pinned to the member of that face minimizing the `AbsLog{2}` objective. The
+`AbsLinear` penalties are non-convex, and the identified local minima depend on
+the start(s).
 
 See also: [`initialize_symcover`](@ref), [`symcover_min`](@ref), [`cover_min!`](@ref).
 """

@@ -124,11 +124,18 @@ end
         @test ga ≈ ab && gb ≈ bb
     end
 
-    # AbsLog{1}'s optimum is a flat family rather than a point, so the start can pick
-    # out a different member of it; the objective attained is the same either way.
+    # AbsLog{1}'s optimum is a whole face of equally-scoring covers, but the solver pins the
+    # member minimizing the AbsLog{2} objective over it, so the start cannot be read off the
+    # result — the same point comes back from any of them.
     a_cold = symcover_min(AbsLog{1}(), A)
-    a_hot = symcover_min!(AbsLog{1}(), initialize_symcover(A), A)
-    @test cover_objective(AbsLog{1}(), a_hot, A) ≈ cover_objective(AbsLog{1}(), a_cold, A)
+    for strategy in (:hardcover, :geomean, :diagfeasible)
+        @test symcover_min!(AbsLog{1}(), initialize_symcover(A; strategy), A) ≈ a_cold
+    end
+    ab_cold, bb_cold = cover_min(AbsLog{1}(), Aasym)
+    for strategy in (:hardcover, :geomean)
+        ah, bh = cover_min!(AbsLog{1}(), initialize_cover(Aasym; strategy)..., Aasym)
+        @test ah ≈ ab_cold && bh ≈ bb_cold
+    end
 
     # The AbsLinear objectives are non-convex: on this matrix the :hardcover and
     # :geomean starts descend into genuinely different local minima, which is what
@@ -149,6 +156,52 @@ end
     ao = symcover_min!(ϕ, initialize_symcover(Ao), Ao)
     @test axes(ao, 1) == axes(Ao, 1)
     @test collect(ao) ≈ symcover_min!(ϕ, initialize_symcover(A), A)
+end
+
+@testset "AbsLog{1} canonical selection on the optimal face (HiGHS)" begin
+    # The AbsLog{1} optimum is a face of the feasible polytope, not a point: its members are
+    # different covers scoring the same objective. The solver returns the member that also
+    # minimizes the AbsLog{2} objective — L1-optimal still, but the tightest such cover
+    # rather than whichever vertex the LP happened to reach.
+    ϕ1, ϕ2 = AbsLog{1}(), AbsLog{2}()
+    rng = StableRNG(17)
+    for n in (3, 5, 8)
+        B = exp.(3 .* randn(rng, n, n)) .* (rand(rng, n, n) .> 0.25)
+        A = (B + B') / 2
+        all(iszero, A) && continue
+        a = symcover_min(ϕ1, A)
+        @test iscover(a, A; rtol=1e-7)
+
+        # No cover beats it on AbsLog{1}: the canonical selection does not cost optimality.
+        # Any feasible cover is a witness; use the AbsLog{2}-minimal one, and the heuristic.
+        for other in (symcover_min(ϕ2, A), symcover(A))
+            @test cover_objective(ϕ1, a, A) <= cover_objective(ϕ1, other, A) * (1 + 1e-6) + 1e-8
+        end
+
+        # Start-independent in the *result*, not merely in the objective value.
+        for strategy in (:hardcover, :geomean, :diagfeasible)
+            @test symcover_min!(ϕ1, initialize_symcover(A; strategy), A) ≈ a
+        end
+
+        # Scale-covariant: both objectives see `A` only through the residuals, which a
+        # rescaling leaves invariant, so the selected member co-varies with the frame.
+        D = Diagonal(exp.(randn(rng, n)))
+        @test symcover_min(ϕ1, D * A * D) ≈ D * a
+    end
+
+    # Asymmetric: the balance convention pins the gauge `a -> c*a, b -> b/c`, which leaves
+    # every product a[i]*b[j] untouched; the canonical selection resolves the L1 face, whose
+    # members have genuinely different products. The two rules are independent and both hold.
+    Aasym = [3.0 1.0 7.0; 2.0 5.0 1.0; 8.0 1.0 4.0]
+    a, b = cover_min(ϕ1, Aasym)
+    nza = vec(count(!iszero, Aasym, dims=2))
+    nzb = vec(count(!iszero, Aasym, dims=1))
+    @test sum(nza .* log.(a)) ≈ sum(nzb .* log.(b)) atol=1e-8
+    @test iscover(a, b, Aasym; rtol=1e-7)
+    # Gauge-invariant in the start, and start-independent in the result.
+    a0, b0 = initialize_cover(Aasym; strategy=:geomean)
+    ag, bg = cover_min!(ϕ1, 4 .* a0, b0 ./ 4, Aasym)
+    @test ag ≈ a && bg ≈ b
 end
 
 @testset "AbsLinear multistart drivers (Ipopt)" begin

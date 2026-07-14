@@ -158,10 +158,19 @@ exact **linear program** — minimize `∑ (α_i + α_j)` subject to
 `α_i + α_j ≥ log|A_{ij}|`.  The penalty-continuation Newton scheme that makes the
 `AbsLog{2}` quadratic near-exact does not transfer to a linear objective; a native
 path would mean reimplementing a robust LP solver, which HiGHS already provides
-cheaply.  The L1 optimum is also non-unique (a whole face of the feasible
-polytope rather than an isolated point), so a native solver would additionally
-need a canonical selection rule to be deterministic and scale-covariant.  For
-these reasons the `AbsLog{1}` hard covers require `JuMP` + `HiGHS`.
+cheaply.  For these reasons the `AbsLog{1}` hard covers require `JuMP` + `HiGHS`.
+
+The L1 optimum is not unique: it is a whole face of the feasible polytope rather
+than an isolated point, and its members are genuinely different covers — the
+products `a[i]*b[j]` differ — that merely happen to score the same objective. To
+make the result deterministic, we select the one that additionally minimizes the
+`AbsLog{2}` objective.
+
+Degeneracy in the overall row/column gauge `a → c*a`, `b → b/c`, which affects
+all scale-invariant objectives, is pinned separately by the balance convention
+`∑ n_i log a[i] = ∑ m_j log b[j]`, where `n_i`, `m_j` are the the nonzero counts
+of row `i` and column `j`, respectively. This convention is not scale-invariant
+but has no impact on the cover itself.
 
 ### Starting points: initialize and refine
 
