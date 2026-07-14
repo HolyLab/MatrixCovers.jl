@@ -32,9 +32,11 @@
     @test_throws "symcover! requires a square matrix" symcover!(zeros(3), [1.0 2.0; 3.0 4.0; 5.0 6.0])
 end
 
-@testset "symcover ignores ϕ" begin
-    # The initialization is the geometric mean plus the greedy max-deficit boost for
-    # every penalty, so `ϕ` (and `p`) cannot change the result.
+@testset "symcover does not currently consult ϕ" begin
+    # A regression check on the heuristic as it stands, not an API guarantee: the docstring
+    # says the heuristic covers ignore `ϕ` *currently*, and that this may change. Should a
+    # penalty-tuned heuristic land, this test records what changes — update it; do not read a
+    # failure here as a broken promise to callers.
     rng = StableRNG(1)
     for n in (2, 5, 40)
         B = randn(rng, n, n); A = (B + B') / 2
@@ -113,6 +115,12 @@ end
     r = cover!(abuf2, bbuf2, B)
     @test r === (abuf2, bbuf2)
     @test abuf2 == aB && bbuf2 == bB
+
+    # The bang forms take the same ϕ as the allocating ones, and likewise ignore it.
+    for ϕ in PENALTIES
+        @test symcover!(ϕ, similar(a), A) == a
+        @test cover!(ϕ, similar(aB), similar(bB), B) == (aB, bB)
+    end
 
     # Adjoint/Transpose wrappers match the allocating forms.
     aT, bT = cover(B')

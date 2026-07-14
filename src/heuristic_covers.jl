@@ -19,8 +19,9 @@ max-deficit rule (the most-violated entries are covered first), and `maxiter`
 iterations of the tightening algorithm (Algorithm 1 of the manuscript) are
 applied.
 
-The result is independent of `ϕ`; the `ϕ` form is provided for interface
-consistency with the other cover methods.
+`ϕ` names the penalty the caller would like the cover to do well on.  Currently,
+the heuristic covers ignore `ϕ`, although this behavior may change in future versions.
+For a cover that provably minimizes a given `ϕ`, use [`symcover_min`](@ref).
 
 See also: [`symcover!`](@ref), [`symcover_min`](@ref), [`soft_symcover`](@ref), [`cover`](@ref).
 
@@ -50,14 +51,18 @@ function symcover(A::AbstractMatrix; kwargs...)
 end
 
 """
+    a = symcover!(ϕ, a, A; maxiter=3)
     a = symcover!(a, A; maxiter=3)
 
 Mutating counterpart of [`symcover`](@ref): writes the symmetric hard cover
 into `a` and returns it, rather than allocating a new vector. `eachindex(a)`
-must match `axes(A, 1)` (and `A` must be square).
+must match `axes(A, 1)` (and `A` must be square). `ϕ` has the same meaning as in
+[`symcover`](@ref), and is likewise ignored by the current heuristic covers.
 
 See also: [`symcover`](@ref).
 """
+symcover!(ϕ, a::AbstractVector, A::AbstractMatrix; kwargs...) = symcover!(a, A; kwargs...)
+
 function symcover!(a::AbstractVector, A::AbstractMatrix; kwargs...)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("symcover! requires a square matrix"))
@@ -77,8 +82,9 @@ unconstrained minimum (geometric mean of nonzero entries per row/column). It is
 then boosted to feasibility by a greedy max-deficit rule (the most-violated
 entries are covered first), and `maxiter` tightening iterations are applied.
 
-The result is independent of `ϕ`; the `ϕ` form is provided for interface
-consistency with the other cover methods.
+`ϕ` names the penalty the caller would like the cover to do well on. Currently,
+the heuristic covers ignore `ϕ`, although this behavior may change in future versions.
+For a cover that provably minimizes a given `ϕ`, use [`cover_min`](@ref).
 
 See also: [`cover!`](@ref), [`cover_min`](@ref), [`symcover`](@ref).
 
@@ -116,14 +122,20 @@ function cover(A::Transpose; kwargs...)
 end
 
 """
+    a, b = cover!(ϕ, a, b, A; maxiter=3)
     a, b = cover!(a, b, A; maxiter=3)
 
 Mutating counterpart of [`cover`](@ref): writes the hard cover into `a` and
 `b` and returns them, rather than allocating new vectors. `eachindex(a)` must
-match `axes(A, 1)` and `eachindex(b)` must match `axes(A, 2)`.
+match `axes(A, 1)` and `eachindex(b)` must match `axes(A, 2)`. `ϕ` has the same
+meaning as in [`cover`](@ref), and is likewise ignored by the current heuristic
+covers.
 
 See also: [`cover`](@ref).
 """
+cover!(ϕ, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
+    cover!(a, b, A; kwargs...)
+
 function cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
     axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$(axes(A, 1))"))
     axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
