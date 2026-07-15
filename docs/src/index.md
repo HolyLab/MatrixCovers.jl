@@ -71,18 +71,18 @@ which the solvers minimize.  Two penalty families are provided:
 ```jldoctest quality; filter = r"(\d+\.\d{6})\d+" => s"\1"
 julia> using ScaleInvariantAnalysis
 
-julia> A = [4.0 2.0; 2.0 9.0];
+julia> A = [4.0 2.0; 2.0 16.0];
 
 julia> a = symcover(A)
 2-element Vector{Float64}:
  2.0
- 3.0
+ 4.0
 
 julia> cover_objective(AbsLog{1}(), a, A)   # sum of log-excesses (L1)
-2.1972245773362196
+2.772588722239781
 
 julia> cover_objective(AbsLog{2}(), a, A)   # sum of squared log-excesses (L2)
-2.413897921625164
+3.843624111345611
 ```
 
 Both objectives are zero if and only if every constraint is exactly tight.
@@ -94,10 +94,11 @@ Both objectives are zero if and only if every constraint is exactly tight.
 | [`symcover`](@ref) | yes | hard (`r ≤ 1`) | heuristic | — |
 | [`cover`](@ref) | no | hard (`r ≤ 1`) | heuristic | — |
 | [`symcover_min`](@ref) | yes | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
-| [`cover_min`](@ref) | no | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`) | native for `AbsLog{2}`; else JuMP |
+| [`cover_min`](@ref) | no | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
 | [`soft_symcover`](@ref) | yes | soft (penalized) | `AbsLinear{2}` (or `AbsLog`, `AbsLinear{1}`) | — |
 | [`soft_cover`](@ref) | no | soft (penalized) | `AbsLinear{2}` (or `AbsLinear{1}`) | — |
 | [`soft_symcover_min`](@ref) | yes | soft (penalized) | `AbsLog{2}`, `AbsLinear` | JuMP |
+| [`soft_cover_min`](@ref) | no | soft (penalized) | `AbsLog{2}`, `AbsLinear` | native for `AbsLog{2}`; else JuMP |
 
 **[`symcover`](@ref), [`cover`](@ref), [`soft_symcover`](@ref), and
 [`soft_cover`](@ref) are recommended for production use.**  The hard-cover
@@ -124,8 +125,8 @@ julia> aq, bq = cover_min(AbsLog{2}(), A);   # AbsLog{2}-minimal, native
 
 julia> a * b'
 2×3 Matrix{Float64}:
- 2.1878  2.0423   3.0
- 6.0     5.60097  8.22745
+ 2.16541  2.03444  3.0
+ 6.0      5.63709  8.31251
 
 julia> aq * bq'
 2×3 Matrix{Float64}:
@@ -157,10 +158,78 @@ exact **linear program** — minimize `∑ (α_i + α_j)` subject to
 `α_i + α_j ≥ log|A_{ij}|`.  The penalty-continuation Newton scheme that makes the
 `AbsLog{2}` quadratic near-exact does not transfer to a linear objective; a native
 path would mean reimplementing a robust LP solver, which HiGHS already provides
-cheaply.  The L1 optimum is also non-unique (a whole face of the feasible
-polytope rather than an isolated point), so a native solver would additionally
-need a canonical selection rule to be deterministic and scale-covariant.  For
-these reasons the `AbsLog{1}` hard covers require `JuMP` + `HiGHS`.
+cheaply.  For these reasons the `AbsLog{1}` hard covers require `JuMP` + `HiGHS`.
+
+The L1 optimum is not unique: it is a whole face of the feasible polytope rather
+than an isolated point, and its members are genuinely different covers — the
+products `a[i]*b[j]` differ — that merely happen to score the same objective. To
+make the result deterministic, we select the one that additionally minimizes the
+`AbsLog{2}` objective.
+
+Degeneracy in the overall row/column gauge `a → c*a`, `b → b/c`, which affects
+all scale-invariant objectives, is pinned separately by the balance convention
+`∑ n_i log a[i] = ∑ m_j log b[j]`, where `n_i`, `m_j` are the the nonzero counts
+of row `i` and column `j`, respectively. This convention is not scale-invariant
+but has no impact on the cover itself.
+
+### Starting points: initialize and refine
+
+The `AbsLinear` penalties are **non-convex**.  A solver handed one of them descends into
+whichever local minimum lies below its starting point, so the start is a genuine input,
+not a hint — two starts can return two different covers, both correct answers to "a local
+minimum of this objective."  The package makes that structure explicit rather than hiding
+it behind a default:
+
+- **Initializers** name the starting points.  [`initialize_symcover`](@ref) and
+  [`initialize_cover`](@ref) take a `strategy` — `:geomean`, `:leaveout`, `:diagfeasible`,
+  or `:hardcover` — and return that point.  Each is a property of `A` alone; no objective
+  is involved, so an initializer takes no penalty.  A second keyword, `feasible`, says how
+  the point is brought up to covering `A`: `:inflate` (the default) scales it bodily by one
+  common factor, `:boost` raises only the rows touching a violated entry, and `:none`
+  leaves it as it is.  The hard-cover solvers need a cover, so they take one of the first
+  two; the soft covers want `:none`, since forcing the geometric mean to cover `A` would
+  spoil the very property that makes it the soft `AbsLog{2}` optimum.
+
+  The two feasible routes land on the boundary at different points, hence in different
+  basins — which is why the choice is a named part of the start rather than an internal
+  detail.  The heuristic [`cover`](@ref) is itself a composition of these: the geometric
+  mean, boosted, then tightened.
+- **Refiners** improve a starting point in place.  [`symcover_min!`](@ref),
+  [`cover_min!`](@ref), and [`soft_symcover_min!`](@ref) validate the start, then optimize
+  from it.  Which basin they reach is the caller's choice, by construction.  The hard
+  refiners require a start that covers `A`; the soft one does not, since its objective
+  constrains nothing.
+- **Solvers** bundle the two.  [`symcover_min`](@ref), [`cover_min`](@ref), and
+  [`soft_symcover_min`](@ref) refine every start on a menu (the `strategies` keyword) and
+  return the best cover by [`cover_objective`](@ref), so their result depends on `A` and not
+  on an initialization the caller never chose.
+
+This is what makes the non-convex solvers **scale-covariant**, and it is not a free
+property: every start on the menu co-varies with a rescaling of `A`, so the basin the
+solver reaches follows the frame.  A start that did *not* co-vary — a fixed point
+independent of `A`, say — could land in a different basin once `A` is rescaled, and the
+returned cover would then depend on the units the caller happened to use.
+
+```julia
+using JuMP, Ipopt   # Ipopt for the AbsLinear penalties
+using ScaleInvariantAnalysis
+
+a = symcover_min(AbsLinear{2}(), A)                      # multistart over the whole menu
+a = symcover_min(AbsLinear{2}(), A; strategies=(:geomean,))   # or commit to one start
+
+a0 = initialize_symcover(A; strategy=:geomean)           # or drive it yourself
+symcover_min!(AbsLinear{2}(), a0, A)
+```
+
+The same menu supplies the starting points of the [`soft_symcover`](@ref) and
+[`soft_cover`](@ref) multistarts, so it is worth meeting once.  Those add randomized
+perturbations of a base point to fill out their `starts` budget, which is multistart policy
+rather than a named point, and so is not part of the menu.
+
+For the convex `AbsLog` penalties the start cannot change the minimum *value*, and the
+refiners accept one only so that the two families share an interface.  `AbsLog{2}` has a
+unique minimizer, so its result is start-independent outright; `AbsLog{1}` has a flat face
+of equally-good optima, so the start may select which member of that family comes back.
 
 ## Index of available tools
 

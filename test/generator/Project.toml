@@ -1,0 +1,18 @@
+[deps]
+Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
+HiGHS = "87dc4568-4c63-4d18-b0c0-bb2238e4078b"
+JuMP = "4076af6c-e467-56ae-b986-b466b2749572"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+NautyGraphs = "7509a0a4-015a-4167-b44b-0799a1a2605e"
+ParametricOptInterface = "0ce4ce61-57bf-432b-a095-efac525d185e"
+ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+
+[compat]
+Graphs = "1"
+HiGHS = "1"
+JuMP = "1"
+NautyGraphs = "0.7"
+ParametricOptInterface = "0.15"
+ProgressMeter = "1"
+julia = "1.10.10"

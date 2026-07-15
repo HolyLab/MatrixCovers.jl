@@ -2,6 +2,8 @@
 # φ types
 # ============================================================
 
+abstract type AbstractCoverPenalty<:Function end
+
 """
     AbsLog{p}
 
@@ -20,7 +22,7 @@ unique minimum.
 
 See also: [`AbsLinear`](@ref).
 """
-struct AbsLog{p} end
+struct AbsLog{p} <: AbstractCoverPenalty end
 
 """
     AbsLinear{p}
@@ -32,10 +34,10 @@ constant penalty.
 The resulting optimization problems are non-convex and may have multiple local
 minima.
 """
-struct AbsLinear{p} end
+struct AbsLinear{p} <: AbstractCoverPenalty end
 
 (::AbsLog{p})(r::Real) where p = iszero(r) ? zero(float(r)) : abs(log(r))^p
-(::AbsLinear{p})(r::Real) where p = abs(one(r) - r)^p
+(::AbsLinear{p})(r::Real) where p = abs(oneunit(r) - r)^p
 
 # ============================================================
 # cover_objective
@@ -58,13 +60,13 @@ See also:
 - Solvers: [`symcover`](@ref), [`cover`](@ref), [`soft_symcover`](@ref), [`soft_cover`](@ref).
 """
 function cover_objective(ϕ, a, b, A)
-    T = float(promote_type(eltype(a), eltype(b), eltype(A)))
+    T = float(promote_type(eltype(a), eltype(b), real(eltype(A))))
     s = zero(T)
     for j in eachindex(b)
         bj = T(b[j])
         for i in eachindex(a)
             ai = T(a[i])
-            Aij = abs(T(A[i, j]))
+            Aij = T(abs(A[i, j]))
             ab = ai * bj
             # 0/0 → 0 (no cover constraint); nonzero/0 → Inf (violated cover)
             r = iszero(ab) ? (iszero(Aij) ? zero(T) : typemax(T)) : Aij / ab
