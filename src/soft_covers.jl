@@ -17,7 +17,9 @@ Unlike [`symcover`](@ref), there is no hard coverage constraint: `a[i]*a[j]` may
 less than `|A[i,j]|`, with violations penalized by `ϕ`.
 
 Supported penalty functions:
-- `AbsLog{2}()`: returns the analytical unconstrained minimum (no iterations needed).
+- `AbsLog{2}()`: convex, and returns its exact unconstrained minimum from a single linear
+  solve. Identical to [`soft_symcover_min`](@ref)`(AbsLog{2}(), A)` — with one minimizer
+  there is nothing for a heuristic and a minimizer to disagree about.
 - `AbsLog{1}()`: initializes from the AbsLog{2} minimum, then refines by coordinate descent
   with a log-space weighted-median step. The AbsLog{1} objective has a flat basin of equally
   good minima; this returns the deterministic, scale-covariant representative reached by
@@ -64,23 +66,12 @@ julia> round.(soft_symcover([0 1; 1 0]); digits=4)
 """
 soft_symcover(A::AbstractMatrix; kwargs...) = soft_symcover(AbsLinear{2}(), A; kwargs...)
 
-function soft_symcover(ϕ::AbsLog{2}, A::AbstractMatrix)
-    ax = axes(A, 1)
-    axes(A, 2) == ax || throw(ArgumentError("soft_symcover requires a square matrix"))
-    T = float(real(eltype(A)))
-    # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
-    a = similar(Array{T}, ax)
-    unconstrained_min!(ϕ, a, A)   # analytical minimum; no iterations needed
-    return a
-end
+# The soft AbsLog{2} objective is convex with one minimizer, so the heuristic and the
+# minimizer coincide: both are this solve.
+soft_symcover(::AbsLog{2}, A::AbstractMatrix; kwargs...) = soft_symcover_min(AbsLog{2}(), A; kwargs...)
 
 function soft_symcover(::AbsLog{1}, A::AbstractMatrix; maxiter::Int=20)
-    ax = axes(A, 1)
-    axes(A, 2) == ax || throw(ArgumentError("soft_symcover requires a square matrix"))
-    T = float(real(eltype(A)))
-    # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
-    a = similar(Array{T}, ax)
-    unconstrained_min!(AbsLog{2}(), a, A)   # convex AbsLog{2} minimum: a good start
+    a = soft_symcover_min(AbsLog{2}(), A)   # convex AbsLog{2} minimum: a good start
     _abslog1_iter!(a, A, maxiter)
     return a
 end
@@ -118,6 +109,9 @@ Unlike [`cover`](@ref), there is no hard coverage constraint: `a[i]*b[j]` may be
 `|A[i,j]|`, with violations penalized by `ϕ`.
 
 Supported penalty functions:
+- `AbsLog{2}()`: convex, and returns its exact unconstrained minimum from a single linear
+  solve. Identical to [`soft_cover_min`](@ref)`(AbsLog{2}(), A)` — with one minimizer
+  there is nothing for a heuristic and a minimizer to disagree about.
 - `AbsLinear{2}()` (default): in the inverse-scale variables `u = 1 ./ a`, `v = 1 ./ b`, the
   objective `∑_{i,j∈S} (1 - |A[i,j]| u[i] v[j])²` (sum over the nonzero support `S`) is
   biconvex, so alternating least squares with the closed-form half-sweeps
@@ -162,6 +156,10 @@ julia> a * b'
 """
 soft_cover(A::AbstractMatrix; kwargs...) = soft_cover(AbsLinear{2}(), A; kwargs...)
 
+# The soft AbsLog{2} objective is convex with one minimizer, so the heuristic and the
+# minimizer coincide: both are this solve.
+soft_cover(::AbsLog{2}, A::AbstractMatrix; kwargs...) = soft_cover_min(AbsLog{2}(), A; kwargs...)
+
 # Sole owner of the starts/σ/rng defaults for the AbsLinear{2} soft-cover family;
 # every other method in that family (the no-ϕ wrapper, the AbsLinear{1} method)
 # forwards them via `kwargs...` rather than restating the default.
@@ -188,7 +186,10 @@ with no coverage constraints. The no-ϕ form defaults to `AbsLinear{2}()`, match
 [`soft_symcover`](@ref).
 
 Supported ϕ values and required extensions:
-- `AbsLog{2}()`: requires JuMP and HiGHS. Convex, so the minimizer is unique.
+- `AbsLog{2}()`: solved natively (no external solver). In log space the objective is a
+  linear least-squares, so one solve settles it, and being convex it has a unique
+  minimizer that no start can influence. `linsolve` selects the inner solve, exactly as
+  in [`symcover_min`](@ref).
 - `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt. These objectives are
   non-convex, so the solver returns the minimum of the basin it starts in. Rather than
   commit to one start, these methods refine each of `strategies` — the
@@ -201,10 +202,17 @@ See also: [`soft_symcover_min!`](@ref), [`soft_symcover`](@ref), [`symcover_min`
 function soft_symcover_min end
 soft_symcover_min(A::AbstractMatrix; kwargs...) = soft_symcover_min(AbsLinear{2}(), A; kwargs...)
 
+function soft_symcover_min(::AbsLog{2}, A::AbstractMatrix; kwargs...)
+    ax = axes(A, 1)
+    axes(A, 2) == ax || throw(ArgumentError("soft_symcover_min requires a square matrix"))
+    a, _ = _soft_symcover_min_abslog2(A; kwargs...)
+    return a
+end
+
 # Multistart driver for the non-convex soft AbsLinear covers, the unconstrained counterpart
 # of `symcover_min(::AbsLinear)`. The kernels (`soft_symcover_min!`) live in SIAIpopt; the
 # menu and the selection are native. Starts are taken raw: a soft cover is under no
-# obligation to cover `A`, and the raw geometric mean is the exact soft AbsLog{2} optimum.
+# obligation to cover `A`.
 function soft_symcover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=SYMCOVER_MIN_STRATEGIES)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("soft_symcover_min requires a square matrix"))
@@ -243,6 +251,12 @@ See also: [`initialize_symcover`](@ref), [`soft_symcover_min`](@ref), [`symcover
 function soft_symcover_min! end
 soft_symcover_min!(a::AbstractVector, A::AbstractMatrix; kwargs...) =
     soft_symcover_min!(AbsLinear{2}(), a, A; kwargs...)
+
+function soft_symcover_min!(::AbsLog{2}, a::AbstractVector, A::AbstractMatrix; kwargs...)
+    _prepare_soft_symcover_start!(a, A)
+    a .= soft_symcover_min(AbsLog{2}(), A; kwargs...)   # convex: the start is not read
+    return a
+end
 
 # Shared prologue of the `soft_symcover_min!` kernels. The soft objective constrains
 # nothing, so — unlike `_prepare_symcover_start!` — this checks positivity only, and moves
@@ -302,11 +316,8 @@ See also: [`soft_cover_min!`](@ref), [`soft_symcover_min`](@ref), [`soft_cover`]
 function soft_cover_min end
 soft_cover_min(A::AbstractMatrix; kwargs...) = soft_cover_min(AbsLinear{2}(), A; kwargs...)
 
-function soft_cover_min(::AbsLog{2}, A::AbstractMatrix)
-    T = float(real(eltype(A)))
-    a = similar(Array{T}, axes(A, 1))
-    b = similar(Array{T}, axes(A, 2))
-    unconstrained_min!(AbsLog{2}(), a, b, A)
+function soft_cover_min(::AbsLog{2}, A::AbstractMatrix; kwargs...)
+    a, b, _ = _soft_cover_min_abslog2(A; kwargs...)
     return a, b
 end
 
@@ -346,9 +357,11 @@ function soft_cover_min! end
 soft_cover_min!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
     soft_cover_min!(AbsLinear{2}(), a, b, A; kwargs...)
 
-function soft_cover_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
+function soft_cover_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
     _prepare_soft_cover_start!(a, b, A)
-    unconstrained_min!(AbsLog{2}(), a, b, A)   # analytic minimum; the start is not needed
+    anew, bnew = soft_cover_min(AbsLog{2}(), A; kwargs...)   # convex: the start is not read
+    a .= anew
+    b .= bnew
     return a, b
 end
 

@@ -140,10 +140,15 @@ You can override the default penalty by supplying it as an argument to the solve
 | [`cover`](@ref) | no | hard (`r ≤ 1`) | heuristic | — |
 | [`symcover_min`](@ref) | yes | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
 | [`cover_min`](@ref) | no | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
-| [`soft_symcover`](@ref) | yes | soft (penalized) | `AbsLinear{2}` (or `AbsLog`, `AbsLinear{1}`) | — |
-| [`soft_cover`](@ref) | no | soft (penalized) | `AbsLinear{2}` (or `AbsLinear{1}`) | — |
-| [`soft_symcover_min`](@ref) | yes | soft (penalized) | `AbsLog{2}`, `AbsLinear` | JuMP |
+| [`soft_symcover`](@ref) | yes | soft (penalized) | `AbsLinear{2}` (or `AbsLog`, `AbsLinear{1}`) | native for `AbsLog`; else — |
+| [`soft_cover`](@ref) | no | soft (penalized) | `AbsLinear{2}` (or `AbsLog{2}`, `AbsLinear{1}`) | native for `AbsLog{2}`; else — |
+| [`soft_symcover_min`](@ref) | yes | soft (penalized) | `AbsLog{2}`, `AbsLinear` | native for `AbsLog{2}`; else JuMP |
 | [`soft_cover_min`](@ref) | no | soft (penalized) | `AbsLog{2}`, `AbsLinear` | native for `AbsLog{2}`; else JuMP |
+
+Under `AbsLog{2}` the soft objective is convex with a single minimizer, so
+[`soft_symcover`](@ref) and [`soft_symcover_min`](@ref) are the same function, as are
+[`soft_cover`](@ref) and [`soft_cover_min`](@ref): there is nothing for a heuristic and a
+minimizer to disagree about. `AbsLog{1}` remains symmetric-only.
 
 **[`symcover`](@ref), [`cover`](@ref), and any native implementation can be recommended for production use,**
 possibly with relaxed convergence bounds.

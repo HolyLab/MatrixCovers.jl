@@ -26,9 +26,10 @@ starting point does not depend on the objective it will be refined against.
 
 `strategy` names the point:
 
-- `:geomean` — the AbsLog{2} unconstrained minimum, the geometric mean of the
-  nonzero entries of each row. This is the minimizer of the soft AbsLog{2}
-  objective, and is *not* a cover.
+- `:geomean` — the geometric mean of the nonzero entries of each row, and *not* a
+  cover. It minimizes the soft AbsLog{2} objective exactly when every entry of `A`
+  is nonzero; on a sparse support it approximates that minimum, which
+  [`soft_symcover_min`](@ref)`(AbsLog{2}(), A)` returns exactly.
 - `:leaveout` — the geometric mean recomputed with the most-underweighted
   support entry dropped, which lands in the basin that treats that entry as
   effectively zero. Raises an `ArgumentError` when no entry can be dropped
