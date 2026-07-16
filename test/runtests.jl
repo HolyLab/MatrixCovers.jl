@@ -2,6 +2,7 @@ using ScaleInvariantAnalysis
 using ScaleInvariantAnalysis: divmag, dotabs, foreach_support, foreach_support_sym, unconstrained_min!, tighten_cover!
 using JuMP, HiGHS, Ipopt   # triggers SIAJuMP and SIAIpopt extensions
 using SparseArrays  # triggers SIASparseArrays extension
+using Unitful       # triggers SIAUnitful extension
 using LinearAlgebra
 using OffsetArrays
 using Statistics: median
@@ -21,11 +22,12 @@ include("helpers.jl")               # iscover, covaries, PENALTIES
     include("minimal_covers.jl")    # the *_min family (native solvers)
     include("storage_types.jl")     # sparse/structured/wrapped storage vs dense reference
     include("extensions.jl")        # JuMP/HiGHS and Ipopt solvers, missing-extension hints
+    include("unitful.jl")           # dimensional covers via the Unitful extension
     include("invariants.jl")        # shared conventions checked across every notion
 
     @testset "method ambiguities" begin
         @test isempty(detect_ambiguities(ScaleInvariantAnalysis; recursive=true))
-        for extname in (:SIASparseArrays, :SIAJuMP, :SIAIpopt)
+        for extname in (:SIASparseArrays, :SIAJuMP, :SIAIpopt, :SIAUnitful, :SIASparseArraysUnitful)
             ext = Base.get_extension(ScaleInvariantAnalysis, extname)
             @test ext !== nothing
             @test isempty(detect_ambiguities(ScaleInvariantAnalysis, ext; recursive=true))
