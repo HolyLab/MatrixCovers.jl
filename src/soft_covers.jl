@@ -21,9 +21,12 @@ Supported penalty functions:
   solve. Identical to [`soft_symcover_min`](@ref)`(AbsLog{2}(), A)` — with one minimizer
   there is nothing for a heuristic and a minimizer to disagree about.
 - `AbsLog{1}()`: initializes from the AbsLog{2} minimum, then refines by coordinate descent
-  with a log-space weighted-median step. The AbsLog{1} objective has a flat basin of equally
-  good minima; this returns the deterministic, scale-covariant representative reached by
-  coordinate descent from the AbsLog{2} minimum.
+  with a log-space weighted-median step, reaching a deterministic and scale-covariant fixed
+  point. That point is not in general a minimizer: each step minimizes exactly over one
+  coordinate, but the objective's nonsmoothness couples `a[i]` with `a[j]`, so the descent
+  can settle where no single-coordinate move improves and the objective still sits
+  materially above its minimum. [`soft_symcover_min`](@ref) does not yet offer an exact
+  `AbsLog{1}` alternative.
 - `AbsLinear{2}()` (default): non-convex; refined by coordinate descent from `starts`
   scale-covariant starting points, keeping the lowest-objective result (see below).
 - `AbsLinear{1}()`: initializes from the `AbsLinear{2}()` result, coordinate descent uses a
@@ -112,6 +115,13 @@ Supported penalty functions:
 - `AbsLog{2}()`: convex, and returns its exact unconstrained minimum from a single linear
   solve. Identical to [`soft_cover_min`](@ref)`(AbsLog{2}(), A)` — with one minimizer
   there is nothing for a heuristic and a minimizer to disagree about.
+- `AbsLog{1}()`: initializes from the `AbsLog{2}()` minimum, then refines by alternating
+  weighted-median row and column updates, reaching a deterministic and scale-covariant fixed
+  point. As in [`soft_symcover`](@ref), that point is not in general a minimizer: each
+  half-sweep minimizes exactly, but the objective's nonsmoothness couples `a[i]` with `b[j]`,
+  so the descent can settle where no such sweep improves and the objective still sits
+  materially above its minimum. [`soft_cover_min`](@ref) does not yet offer an exact
+  `AbsLog{1}` alternative.
 - `AbsLinear{2}()` (default): in the inverse-scale variables `u = 1 ./ a`, `v = 1 ./ b`, the
   objective `∑_{i,j∈S} (1 - |A[i,j]| u[i] v[j])²` (sum over the nonzero support `S`) is
   biconvex, so alternating least squares with the closed-form half-sweeps
@@ -160,6 +170,12 @@ soft_cover(A::AbstractMatrix; kwargs...) = soft_cover(AbsLinear{2}(), A; kwargs.
 # minimizer coincide: both are this solve.
 soft_cover(::AbsLog{2}, A::AbstractMatrix; kwargs...) = soft_cover_min(AbsLog{2}(), A; kwargs...)
 
+function soft_cover(::AbsLog{1}, A::AbstractMatrix; maxiter::Int=20)
+    a, b = soft_cover_min(AbsLog{2}(), A)   # convex AbsLog{2} minimum: a good start
+    _abslog1_iter_asym!(a, b, A, maxiter)
+    return _balance_cover!(a, b, A)
+end
+
 # Sole owner of the starts/σ/rng defaults for the AbsLinear{2} soft-cover family;
 # every other method in that family (the no-ϕ wrapper, the AbsLinear{1} method)
 # forwards them via `kwargs...` rather than restating the default.
@@ -195,7 +211,12 @@ Supported ϕ values and required extensions:
   commit to one start, these methods refine each of `strategies` — the
   [`initialize_symcover`](@ref) menu, by default `$(SYMCOVER_MIN_STRATEGIES)`, without
   forcing feasibility — and return the best cover found, at a cost of one solve per start.
-- `AbsLog{1}()`: not yet implemented.
+- `AbsLog{1}()`: not yet implemented. The objective is an LP in log space, but its optimum
+  is a face, and the lexicographic AbsLog{2} selection that [`symcover_min`](@ref) uses to
+  pin one member of the corresponding hard face does not carry over: the hard face is bounded
+  by the coverage constraints, while this one is a level set of an unconstrained piecewise-
+  linear objective, across which the quadratic pulls far enough to cost most of the exactly
+  tight residuals that make `AbsLog{1}` worth choosing.
 
 See also: [`soft_symcover_min!`](@ref), [`soft_symcover`](@ref), [`symcover_min`](@ref).
 """
@@ -306,7 +327,12 @@ Supported ϕ values and required extensions:
   cover found, at a cost of one solve per start. The result is the best *local* minimum on
   that menu: the multistart is a hedge against a poor basin, not a certificate of global
   optimality.
-- `AbsLog{1}()`: not yet implemented.
+- `AbsLog{1}()`: not yet implemented. The objective is an LP in log space, but its optimum
+  is a face, and the lexicographic AbsLog{2} selection that [`symcover_min`](@ref) uses to
+  pin one member of the corresponding hard face does not carry over: the hard face is bounded
+  by the coverage constraints, while this one is a level set of an unconstrained piecewise-
+  linear objective, across which the quadratic pulls far enough to cost most of the exactly
+  tight residuals that make `AbsLog{1}` worth choosing.
 
 Every start on the menu co-varies with a rescaling of `A` and the objective is
 scale-invariant, so the selection — and hence the result — is scale-covariant.
@@ -706,6 +732,73 @@ function _abslog1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol:
         maxrel <= T(tol) && break
     end
     return a
+end
+
+# Alternating weighted-median descent for the asymmetric AbsLog{1} soft cover, working in
+# log space (α = log a, β = log b). Updating α[i] with β fixed minimizes
+# ∑_{j: A[i,j]≠0} |α[i] + β[j] - log|A[i,j]||, whose minimizer is the median of the points
+# log|A[i,j]| - β[j], one per nonzero entry of row i; the β-update is dual. Row and column
+# scales are distinct variables, so no term is self-coupled — the symmetric solver's
+# double-weighted diagonal has no counterpart here — and each half-sweep is an exact block
+# minimization. The AbsLog{1} minimum is a flat basin; the lower median is chosen for a
+# deterministic, scale-covariant result.
+#
+# Each half-sweep minimizes exactly, but the objective's nonsmoothness couples α[i] with
+# β[j], so a fixed point of the sweeps need not minimize it. See `soft_cover`.
+#
+# `iter` bounds the sweeps; the descent exits early once the largest relative coordinate
+# movement in a sweep drops to `tol` (scale-invariant, so covariant restarts of a rescaled
+# problem exit on the same sweep). Rows/columns with empty support keep scale 0.
+function _abslog1_iter_asym!(a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix,
+                             iter::Int; tol::Real=1e-12) where T
+    axr, axc = axes(A, 1), axes(A, 2)
+    eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axr) vs $(eachindex(a))"))
+    eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(axc) vs $(eachindex(b))"))
+    bufc = Vector{T}(undef, length(axc))   # log-points for an a-row update
+    bufr = Vector{T}(undef, length(axr))   # log-points for a b-column update
+    for _ in 1:iter
+        maxrel = zero(T)
+        for i in axr
+            iszero(a[i]) && continue       # unsupported rows/columns stay at zero
+            nc = 0
+            for j in axc
+                Aij = T(abs(A[i, j]))
+                iszero(Aij) && continue
+                bj = b[j]
+                iszero(bj) && continue
+                bufc[nc += 1] = log(Aij) - log(bj)
+            end
+            nc == 0 && continue
+            c = view(bufc, 1:nc)
+            sort!(c)
+            x   = exp(c[(nc + 1) ÷ 2])     # lower median
+            ai  = a[i]
+            den = max(abs(x), abs(ai))
+            iszero(den) || (maxrel = max(maxrel, abs(x - ai) / den))
+            a[i] = x
+        end
+        for j in axc
+            iszero(b[j]) && continue
+            nr = 0
+            for i in axr
+                Aij = T(abs(A[i, j]))
+                iszero(Aij) && continue
+                ai = a[i]
+                iszero(ai) && continue
+                bufr[nr += 1] = log(Aij) - log(ai)
+            end
+            nr == 0 && continue
+            c = view(bufr, 1:nr)
+            sort!(c)
+            x   = exp(c[(nr + 1) ÷ 2])
+            bj  = b[j]
+            den = max(abs(x), abs(bj))
+            iszero(den) || (maxrel = max(maxrel, abs(x - bj) / den))
+            b[j] = x
+        end
+        maxrel <= T(tol) && break
+    end
+    return a, b
 end
 
 # Labeled `(a, b)` candidate starts for the asymmetric AbsLinear{2} multistart, in selection

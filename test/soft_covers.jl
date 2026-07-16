@@ -167,10 +167,51 @@ end
         @test isfinite(cover_objective(AbsLinear{1}(), az, bz, Az1))
     end
 
-    # AbsLog{2} is the convex soft cover, and identical to its minimizer; AbsLog{1}
-    # has no asymmetric implementation.
+    # AbsLog{2} is the convex soft cover, and identical to its minimizer.
     @test soft_cover(AbsLog{2}(), A) == soft_cover_min(AbsLog{2}(), A)
-    @test_throws MethodError soft_cover(AbsLog{1}(), A)
+end
+
+@testset "soft_cover AbsLog{1}" begin
+    # Each half-sweep is an exact block minimization, so the descent never worsens the
+    # AbsLog{2} start it refines.
+    for M in ([1.0 2.0 3.0; 6.0 5.0 4.0],
+              [2.0 1.0 0.5; 0.1 4.0 3.0; 1.0 2.0 0.2; 5.0 0.3 1.0],
+              [1.0 2.0 0.0 4.0; 0.0 5.0 6.0 1.0; 3.0 0.0 2.0 8.0])
+        a0, b0 = soft_cover_min(AbsLog{2}(), M)
+        a, b = soft_cover(AbsLog{1}(), M)
+        @test cover_objective(AbsLog{1}(), a, b, M) <= cover_objective(AbsLog{1}(), a0, b0, M) + 1e-12
+        @test isbalanced(a, b, M)
+        @test a isa Vector{Float64} && b isa Vector{Float64}
+    end
+
+    # A rank-1 matrix is exactly coverable, so the L1 objective reaches 0.
+    A1 = [2.0, 0.5, 3.0] * [1.0, 4.0, 0.25, 2.0]'
+    a, b = soft_cover(AbsLog{1}(), A1)
+    @test cover_objective(AbsLog{1}(), a, b, A1) ≈ 0 atol=1e-10
+
+    # Deterministic, and scale-covariant in the product under row/column rescaling.
+    @test soft_cover(AbsLog{1}(), A1) == soft_cover(AbsLog{1}(), A1)
+    Ac = [2.0 1.0 0.5; 0.1 4.0 3.0; 1.0 2.0 0.2; 5.0 0.3 1.0]
+    dr = [3.0, 0.5, 2.0, 0.25]; dc = [4.0, 0.1, 1.5]
+    @test covaries(A -> soft_cover(AbsLog{1}(), A), Ac, dr, dc; rtol=1e-8)
+
+    # An entirely-zero row keeps scale 0 and the rest stays finite.
+    Az = [0.0 0.0 0.0; 1.0 2.0 3.0; 4.0 0.0 5.0]
+    az, bz = soft_cover(AbsLog{1}(), Az)
+    @test az[1] == 0
+    @test all(isfinite, az) && all(isfinite, bz)
+
+    # On a symmetric matrix this does not reduce to `soft_symcover`: freeing `a` from `b`
+    # relaxes the problem, so the two descents are minimizing over different sets and their
+    # fixed points differ. Only exact coverability forces them to agree.
+    S = [4.0 1.0 2.0; 1.0 9.0 3.0; 2.0 3.0 16.0]
+    S1 = (v = [2.0, 0.5, 3.0]; v * v')
+    a, b = soft_cover(AbsLog{1}(), S1)
+    @test a .* b' ≈ soft_symcover(AbsLog{1}(), S1) .* soft_symcover(AbsLog{1}(), S1)' rtol=1e-8
+
+    # The minimizers stay unimplemented; the heuristic is not a stand-in for one.
+    @test_throws MethodError soft_cover_min(AbsLog{1}(), A1)
+    @test_throws MethodError soft_symcover_min(AbsLog{1}(), S)
 end
 
 @testset "AbsLinear soft-cover multistart" begin
