@@ -13,11 +13,18 @@ scales with entry magnitude (the log-domain arithmetic used by the heuristics);
 `atol` absorbs the convergence tolerance of iterative solvers. Heuristic covers
 are feasible by construction and should pass with `rtol` a few multiples of
 `eps` and `atol=0`; the `*_min` solvers need the `atol` they converge to.
+
+Only `rtol` applies to a dimensional `A`, whose entries need not share units:
+no one scalar `atol` is commensurate with every entry.
 """
 function iscover(a, b, A; rtol=0, atol=0)
-    return all(a[i] * b[j] >= abs(A[i, j]) * (1 - rtol) - atol
+    return all(_iscovered(a[i] * b[j], abs(A[i, j]), rtol, atol)
                for i in axes(A, 1), j in axes(A, 2))
 end
+
+# `atol` is subtracted only when it is nonzero, so that an `rtol`-only check never
+# forms `abs(A[i,j]) - atol` -- undefined when the two carry different units.
+_iscovered(p, v, rtol, atol) = iszero(atol) ? p >= v * (1 - rtol) : p >= v * (1 - rtol) - atol
 iscover(a, A; kwargs...) = iscover(a, a, A; kwargs...)
 
 """

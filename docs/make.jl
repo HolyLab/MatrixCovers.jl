@@ -1,6 +1,7 @@
 using ScaleInvariantAnalysis
 using Documenter
 using JuMP, HiGHS
+using Unitful   # loaded here so the doctests' own `using` cannot emit precompilation output
 
 DocMeta.setdocmeta!(ScaleInvariantAnalysis, :DocTestSetup, :(using ScaleInvariantAnalysis); recursive=true)
 
