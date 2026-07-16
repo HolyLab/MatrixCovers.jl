@@ -71,27 +71,24 @@ end
 # is the intended path when nnz ≪ n²; pass `linsolve=:auto`/`:dense` to force the
 # dense factorization. Only AbsLog{2} is native; other penalties dispatch to the
 # JuMP extension.
-# The worker allocates its scale vectors with `similar(A, ...)`, which is a
-# `SparseVector` for a sparse `A`; the scales are dense objects, so return plain
-# `Vector`s, matching `cover`/`symcover` on the same input.
 function ScaleInvariantAnalysis.symcover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
     a, _ = _symcover_min_abslog2(A; linsolve, kwargs...)
-    return Vector(a)
+    return a
 end
 
 function ScaleInvariantAnalysis.cover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
     a, b, _ = _cover_min_abslog2(A; linsolve, kwargs...)
-    return Vector(a), Vector(b)
+    return a, b
 end
 
 function ScaleInvariantAnalysis.symcover_min(ϕ::AbsLog{2}, S::Symmetric{<:Any, <:SparseMatrixCSC}; linsolve::Symbol=:lsqr, kwargs...)
     a, _ = _symcover_min_abslog2(S; linsolve, kwargs...)
-    return Vector(a)
+    return a
 end
 
 function ScaleInvariantAnalysis.symcover_min(ϕ::AbsLog{2}, H::Hermitian{<:Any, <:SparseMatrixCSC}; linsolve::Symbol=:lsqr, kwargs...)
     a, _ = _symcover_min_abslog2(H; linsolve, kwargs...)
-    return Vector(a)
+    return a
 end
 
 # The refiners take the same sparse `linsolve` default as the solvers above.

@@ -167,8 +167,51 @@ end
         @test isfinite(cover_objective(AbsLinear{1}(), az, bz, Az1))
     end
 
-    # AbsLog penalties are unsupported for soft_cover.
-    @test_throws MethodError soft_cover(AbsLog{2}(), A)
+    # AbsLog{2} is the convex soft cover, and identical to its minimizer.
+    @test soft_cover(AbsLog{2}(), A) == soft_cover_min(AbsLog{2}(), A)
+end
+
+@testset "soft_cover AbsLog{1}" begin
+    # Each half-sweep is an exact block minimization, so the descent never worsens the
+    # AbsLog{2} start it refines.
+    for M in ([1.0 2.0 3.0; 6.0 5.0 4.0],
+              [2.0 1.0 0.5; 0.1 4.0 3.0; 1.0 2.0 0.2; 5.0 0.3 1.0],
+              [1.0 2.0 0.0 4.0; 0.0 5.0 6.0 1.0; 3.0 0.0 2.0 8.0])
+        a0, b0 = soft_cover_min(AbsLog{2}(), M)
+        a, b = soft_cover(AbsLog{1}(), M)
+        @test cover_objective(AbsLog{1}(), a, b, M) <= cover_objective(AbsLog{1}(), a0, b0, M) + 1e-12
+        @test isbalanced(a, b, M)
+        @test a isa Vector{Float64} && b isa Vector{Float64}
+    end
+
+    # A rank-1 matrix is exactly coverable, so the L1 objective reaches 0.
+    A1 = [2.0, 0.5, 3.0] * [1.0, 4.0, 0.25, 2.0]'
+    a, b = soft_cover(AbsLog{1}(), A1)
+    @test cover_objective(AbsLog{1}(), a, b, A1) ≈ 0 atol=1e-10
+
+    # Deterministic, and scale-covariant in the product under row/column rescaling.
+    @test soft_cover(AbsLog{1}(), A1) == soft_cover(AbsLog{1}(), A1)
+    Ac = [2.0 1.0 0.5; 0.1 4.0 3.0; 1.0 2.0 0.2; 5.0 0.3 1.0]
+    dr = [3.0, 0.5, 2.0, 0.25]; dc = [4.0, 0.1, 1.5]
+    @test covaries(A -> soft_cover(AbsLog{1}(), A), Ac, dr, dc; rtol=1e-8)
+
+    # An entirely-zero row keeps scale 0 and the rest stays finite.
+    Az = [0.0 0.0 0.0; 1.0 2.0 3.0; 4.0 0.0 5.0]
+    az, bz = soft_cover(AbsLog{1}(), Az)
+    @test az[1] == 0
+    @test all(isfinite, az) && all(isfinite, bz)
+
+    # On a symmetric matrix this does not reduce to `soft_symcover`: freeing `a` from `b`
+    # relaxes the problem, so the two descents are minimizing over different sets and their
+    # fixed points differ. Only exact coverability forces them to agree.
+    S = [4.0 1.0 2.0; 1.0 9.0 3.0; 2.0 3.0 16.0]
+    S1 = (v = [2.0, 0.5, 3.0]; v * v')
+    a, b = soft_cover(AbsLog{1}(), S1)
+    @test a .* b' ≈ soft_symcover(AbsLog{1}(), S1) .* soft_symcover(AbsLog{1}(), S1)' rtol=1e-8
+
+    # The minimizers stay unimplemented; the heuristic is not a stand-in for one.
+    @test_throws MethodError soft_cover_min(AbsLog{1}(), A1)
+    @test_throws MethodError soft_symcover_min(AbsLog{1}(), S)
 end
 
 @testset "AbsLinear soft-cover multistart" begin
@@ -312,4 +355,88 @@ end
     # of magnitude here, which is what makes the balance convention worth enforcing rather
     # than merely documenting.
     @test covaries(soft_cover, A, dr, dc; rtol=1e-9)
+end
+
+@testset "soft AbsLog{2} is the exact unconstrained minimum" begin
+    # The soft AbsLog{2} objective is a linear least-squares in log space, so an
+    # oracle needs no solver: `pinv(M) * z` settles it directly. `M` always carries
+    # the (e; −e) gauge null direction in the asymmetric case and can be singular in
+    # the symmetric one (bipartite support), so compare objectives — which the gauge
+    # cannot move — rather than the scale vectors.
+    function exact_sym(A)
+        n = size(A, 1)
+        S = [(i, j) for i in 1:n, j in 1:n if !iszero(A[i, j])]
+        M = zeros(length(S), n)
+        z = zeros(length(S))
+        for (k, (i, j)) in enumerate(S)
+            M[k, i] += 1
+            M[k, j] += 1
+            z[k] = log(abs(A[i, j]))
+        end
+        return exp.(pinv(M) * z)
+    end
+    function exact_asym(A)
+        m, n = size(A)
+        S = [(i, j) for i in 1:m, j in 1:n if !iszero(A[i, j])]
+        M = zeros(length(S), m + n)
+        z = zeros(length(S))
+        for (k, (i, j)) in enumerate(S)
+            M[k, i] = 1
+            M[k, m+j] = 1
+            z[k] = log(abs(A[i, j]))
+        end
+        x = pinv(M) * z
+        return exp.(x[1:m]), exp.(x[m+1:end])
+    end
+
+    # A zero entry is what separates the exact minimum from the geometric mean; a
+    # fully supported `A` cannot tell them apart.
+    sym_zeros = [4.0 1.0 0.0 2.0; 1.0 9.0 3.0 0.0; 0.0 3.0 1.0 5.0; 2.0 0.0 5.0 16.0]
+    asym_zeros = [1.0 2.0 0.0 4.0; 0.0 5.0 6.0 1.0; 3.0 0.0 2.0 8.0]
+    rng = StableRNG(11)
+    sym_dense = (M = rand(rng, 5, 5); (M + M') ./ 2)
+    asym_dense = rand(rng, 4, 6)
+
+    for A in (sym_zeros, sym_dense, float.(last(symmetric_matrices[1])))
+        a = soft_symcover_min(AbsLog{2}(), A)
+        @test cover_objective(AbsLog{2}(), a, A) ≈ cover_objective(AbsLog{2}(), exact_sym(A), A) rtol=1e-8
+        # Stationarity of the convex objective: ∂/∂α_k ∑ (α_i + α_j − log|A_ij|)² = 0.
+        α = log.(a)
+        g = [sum(2 * (α[i] + α[j] - log(abs(A[i, j]))) * ((i == k) + (j == k))
+                 for i in axes(A, 1), j in axes(A, 2) if !iszero(A[i, j])) for k in axes(A, 1)]
+        @test maximum(abs, g) < 1e-8 * max(1, maximum(abs, α))
+    end
+    for A in (asym_zeros, asym_dense, float.(last(general_matrices[1])))
+        a, b = soft_cover_min(AbsLog{2}(), A)
+        ae, be = exact_asym(A)
+        @test cover_objective(AbsLog{2}(), a, b, A) ≈ cover_objective(AbsLog{2}(), ae, be, A) rtol=1e-8
+        @test isbalanced(a, b, A)
+    end
+
+    # The geometric mean is the minimum only on a full support. Were the solvers to
+    # fall back to it, the sparse cases above would silently regress.
+    @test cover_objective(AbsLog{2}(), initialize_symcover(sym_dense; strategy=:geomean, feasible=:none), sym_dense) ≈
+          cover_objective(AbsLog{2}(), soft_symcover_min(AbsLog{2}(), sym_dense), sym_dense) rtol=1e-8
+    @test cover_objective(AbsLog{2}(), initialize_symcover(sym_zeros; strategy=:geomean, feasible=:none), sym_zeros) >
+          cover_objective(AbsLog{2}(), soft_symcover_min(AbsLog{2}(), sym_zeros), sym_zeros) * (1 + 1e-6)
+
+    # Convex with one minimizer, so the heuristic and the minimizer are the same
+    # function, and a refiner cannot be steered by its start.
+    @test soft_symcover(AbsLog{2}(), sym_zeros) == soft_symcover_min(AbsLog{2}(), sym_zeros)
+    @test soft_cover(AbsLog{2}(), asym_zeros) == soft_cover_min(AbsLog{2}(), asym_zeros)
+    for strategy in (:geomean, :leaveout, :diagfeasible, :hardcover)
+        a0 = initialize_symcover(sym_zeros; strategy, feasible=:none)
+        @test soft_symcover_min!(AbsLog{2}(), a0, sym_zeros) ≈ soft_symcover_min(AbsLog{2}(), sym_zeros)
+    end
+    a0, b0 = initialize_cover(asym_zeros; strategy=:geomean, feasible=:none)
+    ar, br = soft_cover_min!(AbsLog{2}(), a0, b0, asym_zeros)
+    @test (ar, br) == soft_cover_min(AbsLog{2}(), asym_zeros)
+
+    # A bipartite support graph makes the signless Laplacian singular; the balanced
+    # representative is the one reported.
+    @test soft_symcover_min(AbsLog{2}(), [0 1; 1 0]) ≈ [1.0, 1.0]
+
+    # The `:lsqr` and dense paths solve the same problem.
+    @test soft_symcover_min(AbsLog{2}(), sym_zeros; linsolve=:lsqr) ≈
+          soft_symcover_min(AbsLog{2}(), sym_zeros; linsolve=:dense) rtol=1e-6
 end

@@ -192,12 +192,14 @@ end
 end
 
 @testset "soft_cover_min native AbsLog{2}" begin
-    # Matches the analytic asymmetric minimizer directly.
+    # `A` has no zero entry, the case in which the geometric mean coincides with the
+    # minimum; the two compute it differently, so they agree to roundoff, not bitwise.
+    # On a sparse support they part company -- see the oracle in `test/soft_covers.jl`.
     A = [1.0 2.0 3.0; 6.0 5.0 4.0]
     a, b = soft_cover_min(AbsLog{2}(), A)
     a_ref, b_ref = similar(a), similar(b)
     ScaleInvariantAnalysis.unconstrained_min!(AbsLog{2}(), a_ref, b_ref, A)
-    @test a == a_ref && b == b_ref
+    @test a ≈ a_ref && b ≈ b_ref
 
     # It's the unconstrained minimum: any perturbation can only raise the objective.
     obj0 = cover_objective(AbsLog{2}(), a, b, A)

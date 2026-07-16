@@ -380,7 +380,8 @@ end
 # indexed like `axes(A, 1)` and supplies the first iterate in place of the cold
 # unweighted solve; the objective is convex, so it changes the path but not the result.
 function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
-                               maxiter::Int=40, linsolve::Symbol=:auto, start=nothing)
+                               maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
+                               boost::Bool=true)
     linsolve in (:auto, :dense, :lsqr) ||
         throw(ArgumentError("linsolve must be :auto, :dense, or :lsqr; got :$linsolve"))
     ax = axes(A, 1)
@@ -503,12 +504,17 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         end
     end
     # Uniform boost to exact feasibility: α_i + α_j ≥ log|A_ij| for all support.
+    # `boost=false` leaves the iterate untouched, for the soft objective, which
+    # imposes no coverage constraint and whose optimum the boost would move off.
     γ = zero(T)
-    for jp in 1:n, ip in 1:n
-        S[ip, jp] || continue
-        γ = max(γ, (C[ip, jp] - α[ip] - α[jp]) / 2)
+    if boost
+        for jp in 1:n, ip in 1:n
+            S[ip, jp] || continue
+            γ = max(γ, (C[ip, jp] - α[ip] - α[jp]) / 2)
+        end
     end
-    a = similar(A, T, ax)
+    # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
+    a = similar(Array{T}, ax)
     for (ip, i) in enumerate(ax)
         a[i] = hassupp[ip] ? exp(α[ip] + γ) : zero(T)
     end
@@ -520,7 +526,8 @@ end
 # `start`, when given, is a positive cover `(a, b)` indexed like the rows and columns
 # of `A`, supplying the first iterate in place of the cold unweighted solve.
 function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
-                            maxiter::Int=40, linsolve::Symbol=:auto, start=nothing)
+                            maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
+                            boost::Bool=true)
     linsolve in (:auto, :dense, :lsqr) ||
         throw(ArgumentError("linsolve must be :auto, :dense, or :lsqr; got :$linsolve"))
     axr = axes(A, 1)
@@ -684,13 +691,19 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         end
     end
     # Uniform boost to exact feasibility: α_i + β_j ≥ log|A_ij| on the support.
-    γ = zero(T)
-    for jp in 1:n, ip in 1:m
-        S[ip, jp] || continue
-        γ = max(γ, (C[ip, jp] - x[ip] - x[m+jp]) / 2)
-    end
-    for p in 1:N
-        x[p] += γ
+    # `boost=false` leaves the iterate untouched, for the soft objective, which
+    # imposes no coverage constraint and whose optimum the boost would move off.
+    # The balance shift below still applies: the gauge is a convention, not a
+    # constraint, and every cover this package returns satisfies it.
+    if boost
+        γ = zero(T)
+        for jp in 1:n, ip in 1:m
+            S[ip, jp] || continue
+            γ = max(γ, (C[ip, jp] - x[ip] - x[m+jp]) / 2)
+        end
+        for p in 1:N
+            x[p] += γ
+        end
     end
     # Shift along the (e; -e) gauge to the balance convention ∑ nzaᵢ αᵢ = ∑ nzbⱼ βⱼ.
     nnz = count(S)
@@ -703,8 +716,9 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         Lβ += count(@view S[:, jp]) * x[m+jp]
     end
     s = nnz > 0 ? (Lβ - Lα) / (2 * nnz) : zero(T)
-    a = similar(A, T, axr)
-    b = similar(A, T, axc)
+    # Dense scale vectors matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
+    a = similar(Array{T}, axr)
+    b = similar(Array{T}, axc)
     for (ip, i) in enumerate(axr)
         a[i] = hasrow[ip] ? exp(x[ip] + s) : zero(T)
     end
@@ -713,6 +727,21 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     end
     return a, b, (; nsolves=nsolves[], lsqriters=nlsqr[], linsolve=(use_lsqr ? :lsqr : :dense))
 end
+
+# Workers for the soft (unconstrained) AbsLog{2} covers. The soft objective
+# `∑_{i,j∈S} (log a_i + log a_j - log|A_ij|)²` is the hard workers' reweighted
+# least-squares problem with every weight held at 1, which is the cold solve they
+# already take as their first iterate: `κs=()` runs no penalty continuation, and
+# `boost=false` keeps the unconstrained minimizer where it is. It is convex, so one
+# linear solve settles it — no iteration and no multistart, unlike the non-convex
+# `AbsLinear` soft covers.
+#
+# Both paths inherit the hard workers' handling of a singular signless Laplacian (the
+# `[0 1; 1 0]` support graph among them) and of support-free rows and columns.
+_soft_symcover_min_abslog2(A::AbstractMatrix; kwargs...) =
+    _symcover_min_abslog2(A; κs=(), boost=false, kwargs...)
+_soft_cover_min_abslog2(A::AbstractMatrix; kwargs...) =
+    _cover_min_abslog2(A; κs=(), boost=false, kwargs...)
 
 # Internal exact reference implemented by the SIAJuMP extension; used only to
 # cross-check the native `symcover_min(::AbsLog{2})` in the test suite.
