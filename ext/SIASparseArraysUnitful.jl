@@ -5,10 +5,10 @@ module SIASparseArraysUnitful
 # are ambiguous there. These methods resolve that pair. They are the only overlap --
 # every other sparse method leaves its matrix slot untyped.
 
-using LinearAlgebra
+using LinearAlgebra: LinearAlgebra, Hermitian, Symmetric
 using ScaleInvariantAnalysis
 using ScaleInvariantAnalysis: AbsLog
-using SparseArrays
+using SparseArrays: SparseArrays, SparseMatrixCSC
 using Unitful: Quantity
 
 const SIA = ScaleInvariantAnalysis

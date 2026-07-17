@@ -1,9 +1,9 @@
 module SIASparseArrays
 
-using LinearAlgebra
-using SparseArrays
+using LinearAlgebra: LinearAlgebra, Hermitian, Symmetric
+using SparseArrays: SparseArrays, SparseMatrixCSC, nonzeros, nzrange, rowvals
 using ScaleInvariantAnalysis
-using ScaleInvariantAnalysis: AbsLog, AbsLinear, _abslinear2_iter!, _abslinear1_iter!, _symcover_min_abslog2, _cover_min_abslog2
+using ScaleInvariantAnalysis: AbsLog, _symcover_min_abslog2, _cover_min_abslog2
 
 # ============================================================
 # Support traversal

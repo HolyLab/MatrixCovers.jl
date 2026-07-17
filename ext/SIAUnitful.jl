@@ -1,10 +1,9 @@
 module SIAUnitful
 
-using LinearAlgebra
+using LinearAlgebra: LinearAlgebra
 using ScaleInvariantAnalysis
 using ScaleInvariantAnalysis: AbsLog, AbsLinear
-using Unitful
-using Unitful: FreeUnits, Quantity, Unit
+using Unitful: Unitful, FreeUnits, Quantity, Unit, unit, ustrip
 
 const SIA = ScaleInvariantAnalysis
 
