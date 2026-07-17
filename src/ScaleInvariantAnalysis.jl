@@ -1,8 +1,9 @@
 module ScaleInvariantAnalysis
 
-using LinearAlgebra
-using PrecompileTools
-using Random
+using LinearAlgebra: LinearAlgebra, Adjoint, Bidiagonal, Diagonal, SymTridiagonal,
+                     Symmetric, Transpose, Tridiagonal, dot, norm
+using PrecompileTools: PrecompileTools, @compile_workload
+using Random: Random, AbstractRNG, MersenneTwister
 
 export AbsLog, AbsLinear
 export cover_objective
