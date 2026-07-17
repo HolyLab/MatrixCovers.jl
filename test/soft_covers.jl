@@ -440,3 +440,89 @@ end
     @test soft_symcover_min(AbsLog{2}(), sym_zeros; linsolve=:lsqr) ≈
           soft_symcover_min(AbsLog{2}(), sym_zeros; linsolve=:dense) rtol=1e-6
 end
+
+@testset "soft_symcover!/soft_cover! refiners" begin
+    Asym = [4.0 1.0 0.5; 1.0 3.0 1.0; 0.5 1.0 2.5]
+    Agen = [1.0 2.0 0.5; 0.25 3.0 1.0]
+
+    @testset "refining the multistart's own start reproduces it: $ϕ" for ϕ in PENALTIES
+        a = initialize_symcover(Asym; strategy=:geomean, feasible=:none)
+        soft_symcover!(ϕ, a, Asym)
+        @test cover_objective(ϕ, a, Asym) ≈ cover_objective(ϕ, soft_symcover(ϕ, Asym), Asym) rtol=1e-6
+    end
+
+    @testset "no-ϕ form defaults to AbsLinear{2}" begin
+        a1, a2 = initialize_symcover(Asym; strategy=:geomean, feasible=:none), initialize_symcover(Asym; strategy=:geomean, feasible=:none)
+        @test soft_symcover!(a1, Asym) == soft_symcover!(AbsLinear{2}(), a2, Asym)
+        b1, c1 = initialize_cover(Agen; strategy=:geomean, feasible=:none)
+        b2, c2 = initialize_cover(Agen; strategy=:geomean, feasible=:none)
+        @test soft_cover!(b1, c1, Agen) == soft_cover!(AbsLinear{2}(), b2, c2, Agen)
+    end
+
+    # The refiner descends from the start it is handed; the multistart owns a menu.
+    # Under the convex AbsLog{2} the start is honored but cannot be seen in the result,
+    # while a non-convex AbsLinear{2} objective with two basins reports whichever the
+    # start lies in.
+    @testset "start-dependence" begin
+        Abasins = [0.021778451276962405 1.5690256886348526
+                   1.5690256886348526  0.20473123461805692]
+        starts() = (initialize_symcover(Abasins; strategy=:geomean, feasible=:none),
+                    initialize_symcover(Abasins; strategy=:hardcover))
+        o(ϕ, a) = cover_objective(ϕ, a, Abasins)
+
+        s1, s2 = starts()
+        @test o(AbsLog{2}(), soft_symcover!(AbsLog{2}(), s1, Abasins)) ≈
+              o(AbsLog{2}(), soft_symcover!(AbsLog{2}(), s2, Abasins))
+
+        s1, s2 = starts()
+        @test !isapprox(o(AbsLinear{2}(), soft_symcover!(AbsLinear{2}(), s1, Abasins)),
+                        o(AbsLinear{2}(), soft_symcover!(AbsLinear{2}(), s2, Abasins)); rtol=1e-6)
+    end
+
+    # Unlike symcover_min!, a soft refiner imposes no coverage constraint on its start.
+    @testset "start need not cover A: $ϕ" for ϕ in PENALTIES
+        a = fill(0.01, 3)
+        @test !iscover(a, Asym)
+        @test soft_symcover!(ϕ, a, Asym) === a
+        b, c = fill(0.01, 2), fill(0.01, 3)
+        @test !iscover(b, c, Agen)
+        @test soft_cover!(ϕ, b, c, Agen) === (b, c)
+    end
+
+    @testset "invalid starts throw, naming the function called" begin
+        @test_throws "soft_symcover! requires a start with finite positive scale" soft_symcover!([1.0, -1.0, 1.0], Asym)
+        @test_throws "soft_symcover! requires a start with finite positive scale" soft_symcover!([1.0, 0.0, 1.0], Asym)
+        @test_throws "soft_symcover! requires a start with finite positive scale" soft_symcover!([1.0, Inf, 1.0], Asym)
+        @test_throws "soft_symcover! requires a square matrix" soft_symcover!([1.0, 1.0], Agen)
+        @test_throws DimensionMismatch soft_symcover!([1.0, 1.0], Asym)
+        @test_throws "soft_cover! requires a start with finite positive scale" soft_cover!([1.0, -1.0], fill(1.0, 3), Agen)
+        @test_throws "soft_cover! requires a start with finite positive scale" soft_cover!(fill(1.0, 2), [1.0, -1.0, 1.0], Agen)
+        @test_throws DimensionMismatch soft_cover!(fill(1.0, 3), fill(1.0, 3), Agen)
+    end
+
+    # Scales on unsupported rows are inert and come back zero, matching every other
+    # cover in the package.
+    @testset "unsupported rows are zeroed: $ϕ" for ϕ in PENALTIES
+        Az = [1.0 0.0 2.0; 0.0 0.0 0.0; 2.0 0.0 3.0]
+        a = initialize_symcover(Az; strategy=:geomean, feasible=:none)
+        @test soft_symcover!(ϕ, a, Az)[2] == 0
+    end
+
+    @testset "asymmetric refiners pin the balance convention: $ϕ" for ϕ in PENALTIES
+        a, b = initialize_cover(Agen; strategy=:geomean, feasible=:none)
+        a .*= 7           # move the gauge; the objective cannot see it
+        b ./= 7
+        soft_cover!(ϕ, a, b, Agen)
+        @test isbalanced(a, b, Agen)
+    end
+
+    @testset "offset axes propagate: $ϕ" for ϕ in PENALTIES
+        Ao = OffsetArray(Asym, -1:1, -1:1)
+        ao = initialize_symcover(Ao; strategy=:geomean, feasible=:none)
+        soft_symcover!(ϕ, ao, Ao)
+        @test axes(ao, 1) == axes(Ao, 1)
+        aref = initialize_symcover(Asym; strategy=:geomean, feasible=:none)
+        soft_symcover!(ϕ, aref, Asym)
+        @test collect(ao) ≈ aref rtol=1e-6
+    end
+end

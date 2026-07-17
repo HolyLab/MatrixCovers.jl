@@ -7,7 +7,8 @@ using Random: Random, AbstractRNG, MersenneTwister
 
 export AbsLog, AbsLinear
 export cover_objective
-export cover, cover!, symcover, symcover!, soft_symcover, soft_cover
+export cover, cover!, symcover, symcover!
+export soft_symcover, soft_symcover!, soft_cover, soft_cover!
 export initialize_cover, initialize_cover!, initialize_symcover, initialize_symcover!
 export symcover_min, symcover_min!, cover_min, cover_min!
 export soft_symcover_min, soft_symcover_min!, soft_cover_min, soft_cover_min!
