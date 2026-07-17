@@ -11,7 +11,6 @@ export cover, cover!, symcover, symcover!, soft_symcover, soft_cover
 export initialize_cover, initialize_cover!, initialize_symcover, initialize_symcover!
 export symcover_min, symcover_min!, cover_min, cover_min!
 export soft_symcover_min, soft_symcover_min!, soft_cover_min, soft_cover_min!
-export dotabs, divmag
 
 include("penalties.jl")
 include("support.jl")
@@ -19,42 +18,6 @@ include("heuristic_covers.jl")
 include("initializers.jl")   # the start menu; consumed by both solver families below
 include("soft_covers.jl")
 include("minimal_covers.jl")
-
-
-"""
-    dotabs(x, y)
-
-Compute the sum of absolute values of elementwise products of `x` and `y`:
-
-    ∑_i |x[i] * y[i]|
-"""
-function dotabs(x::AbstractVector, y::AbstractVector)
-    s = zero(eltype(x)) * zero(eltype(y))
-    for i in eachindex(x, y)
-        s += abs(x[i] * y[i])
-    end
-    return s
-end
-
-"""
-    a, mag = divmag(A, b; use_cond::Bool=false)
-
-Given a symmetric matrix `A` and vector `b`, for `x = A \\ b` return a pair
-where `mag` is a naive estimate of the magnitude of `sum(abs.(x .* a))`. `a` and
-`mag` are scale-covariant in circumstances where `A \\ b` is contravariant. With
-`use_cond=false`, the estimate is based only on the magnitudes of the numbers
-in `A` and `b`, and does not account for the conditioning of `A` or
-cancellation in the solution process.
-
-This can be used to form scale-invariant estimates of roundoff errors in
-computations involving `A`, `b`, and `x`.
-"""
-function divmag(A, b; use_cond::Bool=false)
-    a = symcover(A)
-    κ = use_cond ? LinearAlgebra.cond(A ./ (a .* a')) : 1
-    return a, κ * sum(abs ∘ splat(ratio_nz), zip(b, a))
-end
-ratio_nz(n, d) = iszero(d) ? zero(n) / oneunit(d) : n / d
 
 
 # True only when a MethodError's argument types are consistent with the calling

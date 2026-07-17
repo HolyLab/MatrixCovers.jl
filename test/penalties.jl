@@ -1,4 +1,4 @@
-# Penalty objectives (cover_objective) and the scalar utilities dotabs/divmag.
+# Penalty objectives (cover_objective).
 
 @testset "cover_objective" begin
     A = [4.0 1.5; 1.5 1.0]
@@ -35,34 +35,3 @@ end
     end
 end
 
-@testset "dotabs" begin
-    @test dotabs([1.0, -2.0, 3.0], [4.0, 5.0, -6.0]) ≈ 4.0 + 10.0 + 18.0
-    @test dotabs([0.0, 1.0], [1.0, 0.0]) == 0.0
-    @test dotabs(big.([1.0, 2.0]), big.([3.0, 4.0])) ≈ 3.0 + 8.0
-    @test dotabs([1.0 + 2.0im, -1.0im], [3.0, 1.0 + 1.0im]) ≈ abs((1.0 + 2.0im) * 3.0) + abs(-1.0im * (1.0 + 1.0im))
-end
-
-@testset "divmag" begin
-    A = [1.0 -0.2; -0.2 0]
-    b = [0.75, 7.0]
-    a, mag = divmag(A, b)
-    @test abs(dotabs(A \ b, a) - dotabs(big.(A) \ big.(b), a)) <= 2 * eps(mag)
-    # Uniform scaling covariance
-    asc, magsc = divmag(1000 * A, 1000 * b)
-    @test asc ≈ sqrt(1000) .* a
-    @test magsc ≈ sqrt(1000) * mag
-    # Diagonal scaling covariance, from mild to strong anisotropy
-    for d in ([1.0, 1.0], [0.5, 2.0], [0.05, 3.0], [10.0, 0.01])
-        Ad = A .* d .* d'
-        bd = b .* d
-        a_d, mag_d = divmag(Ad, bd)
-        @test abs(dotabs(Ad \ bd, a_d) - dotabs(big.(Ad) \ big.(bd), a_d)) <= 100 * eps(mag_d)
-    end
-    # Ill-conditioned matrix
-    A_ill = [1.0 -0.9999; -0.9999 1]
-    a_ill, mag_ill = divmag(A_ill, b)
-    @test abs(dotabs(A_ill \ b, a_ill) - dotabs(big.(A_ill) \ big.(b), a_ill)) > 10^6 * eps(mag_ill)
-    # With use_cond=true, accuracy is recovered
-    a_ill2, mag_ill2 = divmag(A_ill, b; use_cond=true)
-    @test abs(dotabs(A_ill \ b, a_ill2) - dotabs(big.(A_ill) \ big.(b), a_ill2)) <= 10^3 * eps(mag_ill2)
-end

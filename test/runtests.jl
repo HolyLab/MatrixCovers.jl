@@ -1,5 +1,5 @@
 using ScaleInvariantAnalysis
-using ScaleInvariantAnalysis: divmag, dotabs, foreach_support, foreach_support_sym, unconstrained_min!, tighten_cover!
+using ScaleInvariantAnalysis: foreach_support, foreach_support_sym, unconstrained_min!, tighten_cover!
 using JuMP, HiGHS, Ipopt   # triggers SIAJuMP and SIAIpopt extensions
 using SparseArrays  # triggers SIASparseArrays extension
 using Unitful       # triggers SIAUnitful extension
@@ -16,7 +16,7 @@ include("helpers.jl")               # iscover, covaries, PENALTIES
 
 @testset "ScaleInvariantAnalysis.jl" begin
 
-    include("penalties.jl")         # cover_objective, dotabs, divmag
+    include("penalties.jl")         # cover_objective
     include("support.jl")           # foreach_support(_sym) traversal
     include("heuristic_covers.jl")  # symcover/cover and their internals
     include("soft_covers.jl")       # soft_symcover/soft_cover multistart descent
