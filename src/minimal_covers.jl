@@ -374,8 +374,8 @@ end
 
 # Worker for `symcover_min(::AbsLog{2})`. Returns `(a, stats)` where `stats` is a
 # NamedTuple `(; nsolves, lsqriters, linsolve)` recording the number of inner linear
-# solves, the total LSQR iterations (0 on the dense path), and which path ran — used
-# by the benchmarks. `linsolve` is `:auto`/`:dense` (dense factorization) or `:lsqr`
+# solves, the total LSQR iterations (0 on the dense path), and which path ran.
+# `linsolve` is `:auto`/`:dense` (dense factorization) or `:lsqr`
 # (matrix-free, for sparse supports). `start`, when given, is a positive cover of `A`
 # indexed like `axes(A, 1)` and supplies the first iterate in place of the cold
 # unweighted solve; the objective is convex, so it changes the path but not the result.
