@@ -12,12 +12,13 @@ using Aqua
 using ExplicitImports
 using Test
 
-include("helpers.jl")               # iscover, covaries, PENALTIES
+include("helpers.jl")               # isbalanced, covaries, PENALTIES
 
 @testset "ScaleInvariantAnalysis.jl" begin
 
     include("penalties.jl")         # cover_objective
     include("support.jl")           # foreach_support(_sym) traversal
+    include("iscover.jl")           # the cover predicate
     include("heuristic_covers.jl")  # symcover/cover and their internals
     include("soft_covers.jl")       # soft_symcover/soft_cover multistart descent
     include("initializers.jl")      # initialize_symcover/initialize_cover strategies

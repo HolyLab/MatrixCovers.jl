@@ -6,7 +6,7 @@ using PrecompileTools: PrecompileTools, @compile_workload
 using Random: Random, AbstractRNG, MersenneTwister
 
 export AbsLog, AbsLinear
-export cover_objective
+export cover_objective, iscover
 export cover, cover!, symcover, symcover!
 export soft_symcover, soft_symcover!, soft_cover, soft_cover!
 export initialize_cover, initialize_cover!, initialize_symcover, initialize_symcover!
@@ -20,6 +20,7 @@ end
 
 include("penalties.jl")
 include("support.jl")
+include("iscover.jl")
 include("heuristic_covers.jl")
 include("initializers.jl")   # the start menu; consumed by both solver families below
 include("soft_covers.jl")
