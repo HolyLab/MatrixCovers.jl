@@ -4,6 +4,7 @@
 [![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://HolyLab.github.io/ScaleInvariantAnalysis.jl/dev/)
 [![Build Status](https://github.com/HolyLab/ScaleInvariantAnalysis.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/HolyLab/ScaleInvariantAnalysis.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![Coverage](https://codecov.io/gh/HolyLab/ScaleInvariantAnalysis.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/HolyLab/ScaleInvariantAnalysis.jl)
+[![Aqua QA](https://juliatesting.github.io/Aqua.jl/dev/assets/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
 
 This package computes **covers** of matrices: non-negative vectors `a` (and `b`)
 such that `a[i] * b[j] >= abs(A[i, j])` for all `i`, `j`.  Covers are the

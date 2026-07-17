@@ -8,6 +8,7 @@ using OffsetArrays
 using Statistics: median
 using Random: MersenneTwister
 using StableRNGs: StableRNG
+using Aqua
 using Test
 
 include("helpers.jl")               # iscover, covaries, PENALTIES
@@ -25,6 +26,9 @@ include("helpers.jl")               # iscover, covaries, PENALTIES
     include("unitful.jl")           # dimensional covers via the Unitful extension
     include("invariants.jl")        # shared conventions checked across every notion
 
+    Aqua.test_all(ScaleInvariantAnalysis)
+
+    # Aqua checks the package alone; the extensions need their own sweep.
     @testset "method ambiguities" begin
         @test isempty(detect_ambiguities(ScaleInvariantAnalysis; recursive=true))
         for extname in (:SIASparseArrays, :SIAJuMP, :SIAIpopt, :SIAUnitful, :SIASparseArraysUnitful)
