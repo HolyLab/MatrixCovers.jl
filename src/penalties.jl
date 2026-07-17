@@ -2,6 +2,36 @@
 # φ types
 # ============================================================
 
+"""
+    AbstractCoverPenalty <: Function
+
+Supertype of the penalty functions `ϕ` that score a cover, and the type of the
+first argument of most of this package's API. The built-in subtypes are
+[`AbsLog`](@ref) and [`AbsLinear`](@ref).
+
+A penalty is a function of the single ratio `r = |A[i,j]| / (a[i]*b[j])`, and
+[`cover_objective`](@ref) sums it over the entries of `A`. Because `ϕ` sees only
+that ratio, and every diagonal rescaling of `A` leaves it fixed, any objective
+built from a penalty is automatically scale-invariant.
+
+# Extending
+
+A subtype must be callable on a nonnegative real:
+
+    (::MyPenalty)(r::Real)
+
+`r` ranges over `[0, Inf]`. Both endpoints occur and neither may error: `r = 0`
+whenever `A[i,j]` is zero, and `cover_objective` passes `typemax` for an entry
+left uncovered by a zero scale. Penalties are conventionally singleton structs.
+
+That call is the whole contract, and it buys exactly one thing:
+[`cover_objective`](@ref) works for any subtype. **The solvers do not.** Every
+solver in this package dispatches on a concrete built-in penalty — `AbsLog{2}`
+is solved natively, the `AbsLinear` penalties through JuMP — so a custom subtype
+passed to [`symcover_min`](@ref), [`soft_symcover`](@ref), or any other solver
+raises a `MethodError`. Scoring covers with your own penalty is supported;
+minimizing it is not.
+"""
 abstract type AbstractCoverPenalty<:Function end
 
 """
