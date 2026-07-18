@@ -280,6 +280,104 @@ perturbations of a base point up to a user-controllable number of `starts`.
 For the convex `AbsLog` penalties the start cannot change the result, and the refiners
 accept one only so that the two families share an interface.
 
+## Worked example: roundoff in `A \ b`
+
+Because a cover names each variable's natural scale, it also says how to measure a
+solution in units that do not depend on how the problem was parameterized.
+
+Solving `x = A \ b` is *contravariant*: rescaling `A → D*A*D` and `b → D*b` sends
+`x → x ./ d`, while the cover is covariant, `a → d .* a`.  The products `x .* a` are
+therefore unchanged, and `∑ᵢ |xᵢ * aᵢ|` is a measure of the solution's size that is the
+same in every frame.
+
+That quantity can be estimated from the magnitudes of `A` and `b` alone, without
+forming `x` at all:
+
+```jldoctest roundoff
+julia> using ScaleInvariantAnalysis, LinearAlgebra
+
+julia> A = [1e6 1e3; 1e3 4.0];
+
+julia> b = [1.5e3, 6.0];
+
+julia> a = symcover(A);
+
+julia> round.(a; digits=6)
+2-element Vector{Float64}:
+ 1000.0
+    2.0
+
+julia> mag = sum(abs(bi / ai) for (bi, ai) in zip(b, a))
+4.5
+```
+
+The cover reports natural scales of 1000 and 2, and `mag` estimates the size of the
+solution measured against them — here within a factor of 1.5 of the truth:
+
+```jldoctest roundoff
+julia> x = A \ b;
+
+julia> sum(abs.(x .* a))
+3.0
+```
+
+Both numbers are scale-invariant, so the estimate is unchanged by any diagonal
+rescaling of the problem:
+
+```jldoctest roundoff
+julia> d = [0.05, 3.0];
+
+julia> Ad, bd = d .* A .* d', d .* b;
+
+julia> ad = symcover(Ad);
+
+julia> sum(abs(bi / ai) for (bi, ai) in zip(bd, ad))
+4.5
+```
+
+This makes `eps(mag)` a scale-invariant estimate of the roundoff floor of the sum.
+For a well-conditioned `A`, the error of the `Float64` solve meets that floor:
+
+```jldoctest roundoff
+julia> xbig = big.(A) \ big.(b);
+
+julia> abs(sum(abs.(x .* a)) - sum(abs.(Float64.(xbig) .* a))) <= 2 * eps(mag)
+true
+```
+
+The estimate is built from magnitudes only, so it knows nothing about the conditioning
+of `A` or about cancellation during the solve.  When `A` is ill-conditioned the true
+error sits far above the floor:
+
+```jldoctest roundoff
+julia> Aill = [1.0 -0.9999; -0.9999 1.0];
+
+julia> bill = [0.75, 7.0];
+
+julia> aill = symcover(Aill);
+
+julia> magill = sum(abs(bi / ai) for (bi, ai) in zip(bill, aill));
+
+julia> xill = Aill \ bill;
+
+julia> xbigill = big.(Aill) \ big.(bill);
+
+julia> err = abs(sum(abs.(xill .* aill)) - sum(abs.(Float64.(xbigill) .* aill)));
+
+julia> err > 1e6 * eps(magill)
+true
+```
+
+Folding in the condition number of the *normalized* matrix `A ./ (a .* a')` — itself
+scale-invariant, since normalizing cancels the frame — restores a usable bound:
+
+```jldoctest roundoff
+julia> κ = cond(Aill ./ (aill .* aill'));
+
+julia> err <= 1e3 * eps(κ * magill)
+true
+```
+
 ## Index of available tools
 
 ```@index
