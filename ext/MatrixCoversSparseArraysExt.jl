@@ -36,9 +36,11 @@ function MatrixCovers.foreach_support_sym(f, A::SparseMatrixCSC)
 end
 
 # Emitted pairs are canonical (row <= col) regardless of uplo: for uplo='L'
-# the stored (i, j) with i >= j is reported as (j, i).
+# the stored (i, j) with i >= j is reported as (j, i). Complex `Hermitian` is
+# admitted alongside the real case because only `abs` of a stored value is ever
+# read, and `abs(A[i,j]) == abs(conj(A[j,i]))`.
 function MatrixCovers.foreach_support_sym(f,
-        S::Union{Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Real,<:SparseMatrixCSC}})
+        S::Union{Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}})
     P = parent(S)
     ax = axes(P, 1)
     axes(P, 2) == ax || throw(DimensionMismatch("foreach_support_sym requires a square matrix, got axes $(axes(P))"))

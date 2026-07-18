@@ -1,6 +1,28 @@
 # Storage-type equivalence: sparse, structured, and wrapped inputs must match the
 # dense reference.
 
+@testset "complex Hermitian sparse" begin
+    # Only `abs` of a stored value is read, so a complex `Hermitian` gets the
+    # sparse traversal rather than falling back to the generic O(n^2) getindex.
+    P = sparse([1, 2, 1, 3], [1, 2, 2, 3], ComplexF64[4.0, 1.0, 0.5+0.5im, 2.0], 3, 3)
+    for uplo in (:U, :L)
+        H = Hermitian(P, uplo)
+        @test which(MatrixCovers.foreach_support_sym, Tuple{Function,typeof(H)}).file ==
+              which(MatrixCovers.foreach_support_sym,
+                    Tuple{Function,Symmetric{Float64,SparseMatrixCSC{Float64,Int}}}).file
+
+        got = Tuple{Int,Int,Float64}[]
+        MatrixCovers.foreach_support_sym((i, j, v) -> push!(got, (i, j, v)), H)
+        ref = Tuple{Int,Int,Float64}[]
+        MatrixCovers.foreach_support_sym((i, j, v) -> push!(ref, (i, j, v)), Matrix(H))
+        @test sort(got) == sort(ref)
+
+        a = symcover_min(AbsLog{2}(), H)
+        @test iscover(a, Matrix(H); rtol=1e-8)
+        @test symcover(AbsLog{2}(), H) ≈ symcover(AbsLog{2}(), Matrix(H)) rtol = 1e-12
+    end
+end
+
 @testset "SparseMatrixCSC" begin
     for Adense in ([2.0 1.0; 1.0 3.0], [1.0 -0.2; -0.2 0.0], [0.0 12.0 9.0; 12.0 7.0 12.0; 9.0 12.0 0.0],
                    [100.0 1.0; 1.0 0.01])
