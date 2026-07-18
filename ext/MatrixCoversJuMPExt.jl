@@ -1,9 +1,9 @@
-module SIAJuMP
+module MatrixCoversJuMPExt
 
 using JuMP: JuMP, @variable, @objective, @constraint
 using HiGHS: HiGHS
-using ScaleInvariantAnalysis
-using ScaleInvariantAnalysis: AbsLog
+using MatrixCovers
+using MatrixCovers: AbsLog
 using LinearAlgebra: dot
 
 # The models are built over 1-based positions 1:n; `pr`/`pc` map each position to
@@ -14,7 +14,7 @@ using LinearAlgebra: dot
 
 # Exact reference for the native `symcover_min(::AbsLog{2})`: same QP, solved by
 # HiGHS. Not exported; used by the test suite to cross-check the native solver.
-function ScaleInvariantAnalysis.symcover_min_jump(::AbsLog{2}, A)
+function MatrixCovers.symcover_min_jump(::AbsLog{2}, A)
     axr = axes(A, 1)
     axes(A, 2) == axr || throw(ArgumentError("symcover_min_jump requires a square matrix"))
     T = float(real(eltype(A)))
@@ -38,10 +38,10 @@ function ScaleInvariantAnalysis.symcover_min_jump(::AbsLog{2}, A)
     return a
 end
 
-ScaleInvariantAnalysis.symcover_min(::AbsLog{1}, A) = _symcover_min_abslog1(A, nothing)
+MatrixCovers.symcover_min(::AbsLog{1}, A) = _symcover_min_abslog1(A, nothing)
 
-function ScaleInvariantAnalysis.symcover_min!(::AbsLog{1}, a::AbstractVector, A)
-    ScaleInvariantAnalysis._prepare_symcover_start!(a, A)
+function MatrixCovers.symcover_min!(::AbsLog{1}, a::AbstractVector, A)
+    MatrixCovers._prepare_symcover_start!(a, A)
     a .= _symcover_min_abslog1(A, a)
     return a
 end
@@ -114,7 +114,7 @@ function _symcover_min_abslog1(A, start)
     return a
 end
 
-function ScaleInvariantAnalysis.cover_min_jump(::AbsLog{2}, A)
+function MatrixCovers.cover_min_jump(::AbsLog{2}, A)
     axr = axes(A, 1)
     axc = axes(A, 2)
     T = float(real(eltype(A)))
@@ -146,10 +146,10 @@ function ScaleInvariantAnalysis.cover_min_jump(::AbsLog{2}, A)
     return a, b
 end
 
-ScaleInvariantAnalysis.cover_min(::AbsLog{1}, A) = _cover_min_abslog1(A, nothing)
+MatrixCovers.cover_min(::AbsLog{1}, A) = _cover_min_abslog1(A, nothing)
 
-function ScaleInvariantAnalysis.cover_min!(::AbsLog{1}, a::AbstractVector, b::AbstractVector, A)
-    ScaleInvariantAnalysis._prepare_cover_start!(a, b, A)
+function MatrixCovers.cover_min!(::AbsLog{1}, a::AbstractVector, b::AbstractVector, A)
+    MatrixCovers._prepare_cover_start!(a, b, A)
     anew, bnew = _cover_min_abslog1(A, (a, b))
     a .= anew
     b .= bnew

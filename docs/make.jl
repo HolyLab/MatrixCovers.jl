@@ -1,16 +1,16 @@
-using ScaleInvariantAnalysis
+using MatrixCovers
 using Documenter
 using JuMP, HiGHS
 using Unitful   # loaded here so the doctests' own `using` cannot emit precompilation output
 
-DocMeta.setdocmeta!(ScaleInvariantAnalysis, :DocTestSetup, :(using ScaleInvariantAnalysis); recursive=true)
+DocMeta.setdocmeta!(MatrixCovers, :DocTestSetup, :(using MatrixCovers); recursive=true)
 
 makedocs(;
-    modules=[ScaleInvariantAnalysis],
+    modules=[MatrixCovers],
     authors="Tim Holy <tim.holy@gmail.com> and contributors",
-    sitename="ScaleInvariantAnalysis.jl",
+    sitename="MatrixCovers.jl",
     format=Documenter.HTML(;
-        canonical="https://HolyLab.github.io/ScaleInvariantAnalysis.jl",
+        canonical="https://HolyLab.github.io/MatrixCovers.jl",
         edit_link="main",
         assets=String[],
     ),
@@ -21,6 +21,6 @@ makedocs(;
 )
 
 deploydocs(;
-    repo="github.com/HolyLab/ScaleInvariantAnalysis.jl",
+    repo="github.com/HolyLab/MatrixCovers.jl",
     devbranch="main",
 )

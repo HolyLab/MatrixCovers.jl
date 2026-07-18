@@ -1,15 +1,15 @@
-module SIASparseArrays
+module MatrixCoversSparseArraysExt
 
 using LinearAlgebra: LinearAlgebra, Hermitian, Symmetric
 using SparseArrays: SparseArrays, SparseMatrixCSC, nonzeros, nzrange, rowvals
-using ScaleInvariantAnalysis
-using ScaleInvariantAnalysis: AbsLog, _symcover_min_abslog2, _cover_min_abslog2
+using MatrixCovers
+using MatrixCovers: AbsLog, _symcover_min_abslog2, _cover_min_abslog2
 
 # ============================================================
 # Support traversal
 # ============================================================
 
-function ScaleInvariantAnalysis.foreach_support(f, A::SparseMatrixCSC)
+function MatrixCovers.foreach_support(f, A::SparseMatrixCSC)
     rv, nzs = rowvals(A), nonzeros(A)
     for j in axes(A, 2)
         for k in nzrange(A, j)
@@ -20,7 +20,7 @@ function ScaleInvariantAnalysis.foreach_support(f, A::SparseMatrixCSC)
     return nothing
 end
 
-function ScaleInvariantAnalysis.foreach_support_sym(f, A::SparseMatrixCSC)
+function MatrixCovers.foreach_support_sym(f, A::SparseMatrixCSC)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(DimensionMismatch("foreach_support_sym requires a square matrix, got axes $(axes(A))"))
     rv, nzs = rowvals(A), nonzeros(A)
@@ -37,7 +37,7 @@ end
 
 # Emitted pairs are canonical (row <= col) regardless of uplo: for uplo='L'
 # the stored (i, j) with i >= j is reported as (j, i).
-function ScaleInvariantAnalysis.foreach_support_sym(f,
+function MatrixCovers.foreach_support_sym(f,
         S::Union{Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Real,<:SparseMatrixCSC}})
     P = parent(S)
     ax = axes(P, 1)
@@ -71,43 +71,43 @@ end
 # is the intended path when nnz ≪ n²; pass `linsolve=:auto`/`:dense` to force the
 # dense factorization. Only AbsLog{2} is native; other penalties dispatch to the
 # JuMP extension.
-function ScaleInvariantAnalysis.symcover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
+function MatrixCovers.symcover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
     a, _ = _symcover_min_abslog2(A; linsolve, kwargs...)
     return a
 end
 
-function ScaleInvariantAnalysis.cover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
+function MatrixCovers.cover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
     a, b, _ = _cover_min_abslog2(A; linsolve, kwargs...)
     return a, b
 end
 
-function ScaleInvariantAnalysis.symcover_min(ϕ::AbsLog{2}, S::Symmetric{<:Any, <:SparseMatrixCSC}; linsolve::Symbol=:lsqr, kwargs...)
+function MatrixCovers.symcover_min(ϕ::AbsLog{2}, S::Symmetric{<:Any, <:SparseMatrixCSC}; linsolve::Symbol=:lsqr, kwargs...)
     a, _ = _symcover_min_abslog2(S; linsolve, kwargs...)
     return a
 end
 
-function ScaleInvariantAnalysis.symcover_min(ϕ::AbsLog{2}, H::Hermitian{<:Any, <:SparseMatrixCSC}; linsolve::Symbol=:lsqr, kwargs...)
+function MatrixCovers.symcover_min(ϕ::AbsLog{2}, H::Hermitian{<:Any, <:SparseMatrixCSC}; linsolve::Symbol=:lsqr, kwargs...)
     a, _ = _symcover_min_abslog2(H; linsolve, kwargs...)
     return a
 end
 
 # The refiners take the same sparse `linsolve` default as the solvers above.
-function ScaleInvariantAnalysis.symcover_min!(ϕ::AbsLog{2}, a::AbstractVector,
+function MatrixCovers.symcover_min!(ϕ::AbsLog{2}, a::AbstractVector,
         S::Union{SparseMatrixCSC,Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}};
         linsolve::Symbol=:lsqr, kwargs...)
-    ScaleInvariantAnalysis._prepare_symcover_start!(a, S)
+    MatrixCovers._prepare_symcover_start!(a, S)
     anew, _ = _symcover_min_abslog2(S; start=a, linsolve, kwargs...)
     a .= anew
     return a
 end
 
-function ScaleInvariantAnalysis.cover_min!(ϕ::AbsLog{2}, a::AbstractVector, b::AbstractVector,
+function MatrixCovers.cover_min!(ϕ::AbsLog{2}, a::AbstractVector, b::AbstractVector,
                                            A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
-    ScaleInvariantAnalysis._prepare_cover_start!(a, b, A)
+    MatrixCovers._prepare_cover_start!(a, b, A)
     anew, bnew, _ = _cover_min_abslog2(A; start=(a, b), linsolve, kwargs...)
     a .= anew
     b .= bnew
     return a, b
 end
 
-end  # module SIASparseArrays
+end  # module MatrixCoversSparseArraysExt

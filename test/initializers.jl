@@ -73,7 +73,7 @@
             ag, bg = initialize_cover(B; strategy=:geomean, feasible=:boost)
             a0, b0 = cover(B; maxiter=0)
             @test ag * bg' ≈ a0 * b0'
-            at, bt = ScaleInvariantAnalysis.tighten_cover!(copy(ag), copy(bg), B)
+            at, bt = MatrixCovers.tighten_cover!(copy(ag), copy(bg), B)
             ac, bc = cover(B)
             @test at * bt' ≈ ac * bc'
         end
@@ -169,7 +169,7 @@
 
     @testset "inflate_feasible! rejects a zero scale on a supported row" begin
         A = [2.0 1.0; 1.0 3.0]
-        @test_throws "positive scale on every supported row" ScaleInvariantAnalysis.inflate_feasible!([0.0, 1.0], A)
-        @test_throws "positive scale on every supported row/column" ScaleInvariantAnalysis.inflate_feasible!([0.0, 1.0], [1.0, 1.0], A)
+        @test_throws "positive scale on every supported row" MatrixCovers.inflate_feasible!([0.0, 1.0], A)
+        @test_throws "positive scale on every supported row/column" MatrixCovers.inflate_feasible!([0.0, 1.0], [1.0, 1.0], A)
     end
 end

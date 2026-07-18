@@ -332,7 +332,7 @@ function soft_symcover_min(::AbsLog{2}, A::AbstractMatrix; kwargs...)
 end
 
 # Multistart driver for the non-convex soft AbsLinear covers, the unconstrained counterpart
-# of `symcover_min(::AbsLinear)`. The kernels (`soft_symcover_min!`) live in SIAIpopt; the
+# of `symcover_min(::AbsLinear)`. The kernels (`soft_symcover_min!`) live in MatrixCoversIpoptExt; the
 # menu and the selection are native. Starts are taken raw: a soft cover is under no
 # obligation to cover `A`.
 function soft_symcover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=SYMCOVER_MIN_STRATEGIES)
@@ -450,7 +450,7 @@ function soft_cover_min(::AbsLog{2}, A::AbstractMatrix; kwargs...)
 end
 
 # Multistart driver for the non-convex asymmetric soft covers, the unconstrained
-# counterpart of `cover_min(::AbsLinear)`. The kernels (`soft_cover_min!`) live in SIAIpopt.
+# counterpart of `cover_min(::AbsLinear)`. The kernels (`soft_cover_min!`) live in MatrixCoversIpoptExt.
 function soft_cover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=COVER_MIN_STRATEGIES)
     isempty(strategies) &&
         throw(ArgumentError("soft_cover_min: `strategies` must name at least one starting cover"))

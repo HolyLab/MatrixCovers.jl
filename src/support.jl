@@ -24,7 +24,7 @@ walk `nzrange` instead of the full grid, are the model.
 
 To support a new matrix type, define
 
-    ScaleInvariantAnalysis.foreach_support(f, A::MyMatrix)
+    MatrixCovers.foreach_support(f, A::MyMatrix)
 
 which must call `f(i, j, abs(A[i, j]))` exactly once for each `(i, j)` with
 `abs(A[i, j]) != 0`, must not call `f` for any other entry (a stored zero is
@@ -70,7 +70,7 @@ robustness, not a promise.)
 
 To support a new matrix type, define
 
-    ScaleInvariantAnalysis.foreach_support_sym(f, A::MyMatrix)
+    MatrixCovers.foreach_support_sym(f, A::MyMatrix)
 
 which must call `f(i, j, v)` exactly once for each pair `i <= j` with
 `v = abs(A[i, j]) != 0`, must not call `f` for zero pairs, and must return

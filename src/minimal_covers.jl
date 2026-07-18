@@ -1,5 +1,5 @@
 # Objective-minimal hard covers. The default AbsLog{2} penalty is solved natively
-# here; the other penalties are provided by the SIAJuMP and SIAIpopt extensions,
+# here; the other penalties are provided by the MatrixCoversJuMPExt and MatrixCoversIpoptExt extensions,
 # whose entry points are declared as stubs below.
 
 # ============================================================
@@ -194,7 +194,7 @@ end
 # basin its start lies in. The drivers below therefore refine every start on a menu and keep
 # the best, which is what makes the result of the non-mutating entry point a property of `A`
 # rather than of an initialization the caller never chose. The kernels they call — the
-# `*_min!` refiners for the AbsLinear penalties — live in the SIAIpopt extension, but the
+# `*_min!` refiners for the AbsLinear penalties — live in the MatrixCoversIpoptExt extension, but the
 # menu and the selection are native, so the two families need only one description.
 #
 # The winner is picked by `_multistart_select`, the same scale-covariant rule the soft-cover
@@ -743,10 +743,10 @@ _soft_symcover_min_abslog2(A::AbstractMatrix; kwargs...) =
 _soft_cover_min_abslog2(A::AbstractMatrix; kwargs...) =
     _cover_min_abslog2(A; κs=(), boost=false, kwargs...)
 
-# Internal exact reference implemented by the SIAJuMP extension; used only to
+# Internal exact reference implemented by the MatrixCoversJuMPExt extension; used only to
 # cross-check the native `symcover_min(::AbsLog{2})` in the test suite.
 function symcover_min_jump end
 
-# Internal exact reference implemented by the SIAJuMP extension; used only to
+# Internal exact reference implemented by the MatrixCoversJuMPExt extension; used only to
 # cross-check the native `cover_min(::AbsLog{2})` in the test suite.
 function cover_min_jump end

@@ -1,8 +1,8 @@
-using ScaleInvariantAnalysis
-using ScaleInvariantAnalysis: foreach_support, foreach_support_sym, unconstrained_min!, tighten_cover!
-using JuMP, HiGHS, Ipopt   # triggers SIAJuMP and SIAIpopt extensions
-using SparseArrays  # triggers SIASparseArrays extension
-using Unitful       # triggers SIAUnitful extension
+using MatrixCovers
+using MatrixCovers: foreach_support, foreach_support_sym, unconstrained_min!, tighten_cover!
+using JuMP, HiGHS, Ipopt   # triggers MatrixCoversJuMPExt and MatrixCoversIpoptExt extensions
+using SparseArrays  # triggers MatrixCoversSparseArraysExt extension
+using Unitful       # triggers MatrixCoversUnitfulExt extension
 using LinearAlgebra
 using OffsetArrays
 using Statistics: median
@@ -14,7 +14,7 @@ using Test
 
 include("helpers.jl")               # isbalanced, covaries, PENALTIES
 
-@testset "ScaleInvariantAnalysis.jl" begin
+@testset "MatrixCovers.jl" begin
 
     include("penalties.jl")         # cover_objective
     include("support.jl")           # foreach_support(_sym) traversal
@@ -28,7 +28,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
     include("unitful.jl")           # dimensional covers via the Unitful extension
     include("invariants.jl")        # shared conventions checked across every notion
 
-    Aqua.test_all(ScaleInvariantAnalysis)
+    Aqua.test_all(MatrixCovers)
 
     @testset "ExplicitImports" begin
         # The public-ness checks consult `Base.ispublic` only on 1.11+; before that they
@@ -49,7 +49,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
         # names, and `register_error_hint` is Base-internal.
         foreign = (:FreeUnits, :Unit, :Optimizer, :Experimental, :register_error_hint)
         test_explicit_imports(
-            ScaleInvariantAnalysis;
+            MatrixCovers;
             all_explicit_imports_are_public = VERSION >= v"1.11" ?
                 (; ignore = (internals..., foreign...)) : false,
             all_qualified_accesses_are_public = VERSION >= v"1.11" ?
@@ -59,11 +59,11 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
 
     # Aqua checks the package alone; the extensions need their own sweep.
     @testset "method ambiguities" begin
-        @test isempty(detect_ambiguities(ScaleInvariantAnalysis; recursive=true))
-        for extname in (:SIASparseArrays, :SIAJuMP, :SIAIpopt, :SIAUnitful, :SIASparseArraysUnitful)
-            ext = Base.get_extension(ScaleInvariantAnalysis, extname)
+        @test isempty(detect_ambiguities(MatrixCovers; recursive=true))
+        for extname in (:MatrixCoversSparseArraysExt, :MatrixCoversJuMPExt, :MatrixCoversIpoptExt, :MatrixCoversUnitfulExt, :MatrixCoversSparseArraysUnitfulExt)
+            ext = Base.get_extension(MatrixCovers, extname)
             @test ext !== nothing
-            @test isempty(detect_ambiguities(ScaleInvariantAnalysis, ext; recursive=true))
+            @test isempty(detect_ambiguities(MatrixCovers, ext; recursive=true))
         end
     end
 

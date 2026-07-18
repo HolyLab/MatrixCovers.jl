@@ -7,8 +7,8 @@
 #     julia --project=bench bench/sizesweep.jl
 # First use (creates bench/Manifest*.toml, which is gitignored):
 #     julia --project=bench -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
-using ScaleInvariantAnalysis, SparseArrays
-using JuMP, HiGHS, Ipopt   # triggers the SIAJuMP and SIAIpopt solver extensions
+using MatrixCovers, SparseArrays
+using JuMP, HiGHS, Ipopt   # triggers the MatrixCoversJuMPExt and MatrixCoversIpoptExt solver extensions
 using StableRNGs: StableRNG
 using Statistics: median
 using Printf
