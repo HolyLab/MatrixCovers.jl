@@ -30,7 +30,8 @@ which must call `f(i, j, abs(A[i, j]))` exactly once for each `(i, j)` with
 `abs(A[i, j]) != 0`, must not call `f` for any other entry (a stored zero is
 still a zero), and must return `nothing`. Emitting an entry twice double-counts
 it in the objective; omitting one silently drops a constraint, yielding a
-"cover" that does not cover.
+"cover" that does not cover. Whatever `f` returns is ignored, so a traversal
+runs to completion and must not be stopped early on the strength of it.
 
 See also: [`foreach_support_sym`](@ref).
 """
@@ -74,7 +75,9 @@ To support a new matrix type, define
 
 which must call `f(i, j, v)` exactly once for each pair `i <= j` with
 `v = abs(A[i, j]) != 0`, must not call `f` for zero pairs, and must return
-`nothing`. Reporting the same pair in both orientations double-counts it. A
+`nothing`. Whatever `f` returns is ignored, so a traversal runs to completion
+and must not be stopped early on the strength of it.
+Reporting the same pair in both orientations double-counts it. A
 type whose storage is triangular (`Symmetric{<:Any,<:SparseMatrixCSC}` in this
 package's own extension) must map stored `(i, j)` with `i > j` back to `(j, i)`
 rather than emit it as found.
