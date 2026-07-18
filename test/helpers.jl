@@ -4,30 +4,6 @@
 const PENALTIES = (AbsLog{1}(), AbsLog{2}(), AbsLinear{1}(), AbsLinear{2}())
 
 """
-    iscover(a, b, A; rtol=0, atol=0)
-    iscover(a, A; rtol=0, atol=0)
-
-Cover feasibility: `a[i]*b[j] >= abs(A[i,j])` for every entry, with slack for
-the accuracy the producing algorithm warrants. `rtol` absorbs roundoff that
-scales with entry magnitude (the log-domain arithmetic used by the heuristics);
-`atol` absorbs the convergence tolerance of iterative solvers. Heuristic covers
-are feasible by construction and should pass with `rtol` a few multiples of
-`eps` and `atol=0`; the `*_min` solvers need the `atol` they converge to.
-
-Only `rtol` applies to a dimensional `A`, whose entries need not share units:
-no one scalar `atol` is commensurate with every entry.
-"""
-function iscover(a, b, A; rtol=0, atol=0)
-    return all(_iscovered(a[i] * b[j], abs(A[i, j]), rtol, atol)
-               for i in axes(A, 1), j in axes(A, 2))
-end
-
-# `atol` is subtracted only when it is nonzero, so that an `rtol`-only check never
-# forms `abs(A[i,j]) - atol` -- undefined when the two carry different units.
-_iscovered(p, v, rtol, atol) = iszero(atol) ? p >= v * (1 - rtol) : p >= v * (1 - rtol) - atol
-iscover(a, A; kwargs...) = iscover(a, a, A; kwargs...)
-
-"""
     isbalanced(a, b, A; atol=1e-8)
 
 The balance convention `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` (`nzaᵢ`, `nzbⱼ` = the
