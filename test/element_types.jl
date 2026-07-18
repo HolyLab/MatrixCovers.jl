@@ -32,6 +32,31 @@
         @test iscover(symcover(A), A; rtol=8eps(BigFloat))
     end
 
+    @testset "row and column scales may differ in element type" begin
+        # The public entry points take plain `AbstractVector`s, so a mismatch must
+        # not surface as a MethodError from an unexported internal. Each vector
+        # keeps its own element type; the arithmetic promotes.
+        A = [4.0 1.5 0.5; 1.5 1.0 2.0]
+        a0, b0 = Float64[3.0, 3.0], Float32[3.0, 3.0, 3.0]
+
+        a, b = cover!(copy(a0), copy(b0), A)
+        @test eltype(a) === Float64
+        @test eltype(b) === Float32
+        @test iscover(a, b, A; rtol=1e-6)
+
+        for ϕ in (AbsLog{1}(), AbsLinear{1}(), AbsLinear{2}())
+            x, y = soft_cover!(ϕ, copy(a0), copy(b0), A)
+            @test eltype(x) === Float64
+            @test eltype(y) === Float32
+            @test all(isfinite, x) && all(isfinite, y)
+        end
+
+        # The internals the public path routes through, reached directly.
+        @test MatrixCovers.tighten_cover!(copy(a0), copy(b0), A) isa Tuple
+        @test MatrixCovers.tighten_cover!(copy(b0), copy(a0), A') isa Tuple
+        @test MatrixCovers.unconstrained_min!(AbsLog{2}(), copy(a0), copy(b0), A) isa Tuple
+    end
+
     @testset "tolerances follow the element type" begin
         # Each convergence threshold must sit above the type's resolution, or the
         # test it guards can never fire.

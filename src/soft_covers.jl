@@ -857,8 +857,10 @@ end
 # `iter` bounds the sweeps; the descent exits early once the largest relative coordinate
 # movement in a sweep drops to `tol` (scale-invariant, so covariant restarts of a rescaled
 # problem exit on the same sweep). Rows/columns with empty support keep scale 0.
-function _abslog1_iter_asym!(a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix,
-                             iter::Int; tol::Real=5000 * eps(T)) where T
+function _abslog1_iter_asym!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
+                             iter::Int; tol=nothing)
+    T = float(promote_type(eltype(a), eltype(b)))
+    rtol = tol === nothing ? 5000 * eps(T) : T(tol)
     axr, axc = axes(A, 1), axes(A, 2)
     eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axr) vs $(eachindex(a))"))
     eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(axc) vs $(eachindex(b))"))
@@ -904,7 +906,7 @@ function _abslog1_iter_asym!(a::AbstractVector{T}, b::AbstractVector{T}, A::Abst
             iszero(den) || (maxrel = max(maxrel, abs(x - bj) / den))
             b[j] = x
         end
-        maxrel <= T(tol) && break
+        maxrel <= rtol && break
     end
     return a, b
 end
@@ -1061,8 +1063,10 @@ end
 # place from their incoming values; exits early once the largest relative coordinate movement
 # in a sweep drops to `tol` (scale-invariant, so covariant restarts of a rescaled problem exit
 # on the same sweep). Rows/columns with empty support keep scale 0.
-function _abslinear1_iter_asym!(a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix,
-                                iter::Int; tol::Real=5000 * eps(T)) where T
+function _abslinear1_iter_asym!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
+                                iter::Int; tol=nothing)
+    T = float(promote_type(eltype(a), eltype(b)))
+    rtol = tol === nothing ? 5000 * eps(T) : T(tol)
     axr, axc = axes(A, 1), axes(A, 2)
     eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axr) vs $(eachindex(a))"))
     eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(axc) vs $(eachindex(b))"))
@@ -1102,7 +1106,7 @@ function _abslinear1_iter_asym!(a::AbstractVector{T}, b::AbstractVector{T}, A::A
             iszero(den) || (maxrel = max(maxrel, abs(x - bj) / den))
             b[j] = x
         end
-        maxrel <= T(tol) && break
+        maxrel <= rtol && break
     end
     return a, b
 end
