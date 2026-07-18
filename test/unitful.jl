@@ -271,6 +271,26 @@
         @test_throws Unitful.DimensionError symcover_min!(AbsLog{2}(), a3, A)
     end
 
+    @testset "unit types the cover cannot use" begin
+        # An affine unit measures from a shifted origin, so no product a[i]*b[j]
+        # scales it: refuse it rather than silently reducing it to its atom.
+        Aaff = [1.0 2.0; 2.0 3.0]u"°C"
+        @test_throws "affine units are not supported" symcover(Aaff)
+        @test_throws "°C" symcover(Aaff)
+        @test_throws "affine units are not supported" cover(Aaff)
+
+        # ContextUnits/FixedUnits carry a conversion context this code does not
+        # read; they are named, not left to fail inside an unexported internal.
+        for U in (Unitful.ContextUnits(u"m", u"m"), Unitful.FixedUnits(u"m"))
+            Actx = [1.0 2.0; 2.0 3.0] .* U^2
+            @test_throws "unsupported unit type" symcover(Actx)
+            @test_throws "FreeUnits" symcover(Actx)
+        end
+
+        # The ordinary case is untouched.
+        @test unit.(symcover([4.0 1.5; 1.5 1.0]u"m^2")) == [u"m", u"m"]
+    end
+
     @testset "scoring a dimensional cover" begin
         # `unit(A[i,j]) == unit(a[i])*unit(b[j])` makes every ratio the objective
         # forms dimensionless, so the score is a plain number and is identical to

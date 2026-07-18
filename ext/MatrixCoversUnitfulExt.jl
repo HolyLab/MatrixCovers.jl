@@ -35,15 +35,31 @@ const QVector = AbstractVector{<:Quantity}
 # are distinct -- so a coordinate named in `mm` keeps `mm` in its cover.
 atomic(x::Unit{N,D}) where {N,D} = FreeUnits{(Unit{N,D}(x.tens, 1//1),), D, nothing}()
 
-function exps(u::FreeUnits)
+# The third parameter of `FreeUnits` is the affine offset, `nothing` for an
+# ordinary unit. An affine unit measures from a shifted origin, so `a[i]*b[j]`
+# does not scale it and there is no cover to find; Unitful likewise refuses to
+# multiply affine units.
+function exps(u::FreeUnits{N,D,A}) where {N,D,A}
+    A === nothing || throw(ArgumentError("""
+    affine units are not supported: `$u` measures from a shifted origin, so no \
+    product `a[i]*b[j]` covers an entry in it. Convert to a unit with a true zero \
+    first (`u"K"` for `u"°C"`, `u"Ra"` for `u"°F"`)."""))
     d = UnitExps()
-    for x in typeof(u).parameters[1]
+    for x in N
         a = atomic(x)
         p = get(d, a, 0//1) + x.power
         iszero(p) ? delete!(d, a) : (d[a] = p)
     end
     return d
 end
+
+# `ContextUnits` and `FixedUnits` carry a conversion context this code does not
+# read, so they are refused by name rather than reaching `atomic` as a
+# `MethodError` on an unexported internal.
+exps(u::Unitful.Units) = throw(ArgumentError(
+    "unsupported unit type $(nameof(typeof(u))) for `$u`: MatrixCovers reads `FreeUnits`. " *
+    "Convert with `uconvert(FreeUnits(u), x)`."))
+
 exps(q::Quantity) = exps(unit(q))
 
 # Zero exponents are pruned throughout so that `==` on a `UnitExps` compares

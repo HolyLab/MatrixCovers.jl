@@ -45,10 +45,12 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
                      :foreach_support, :foreach_support_sym,
                      :cover_min_jump, :symcover_min_jump, :check_solved)
         # Non-public names owned by other packages, each with no public equivalent:
-        # `FreeUnits`/`Unit` are Unitful's unit representation, `Optimizer` is the
-        # solver handle JuMP's own documented `Model(HiGHS.Optimizer)` entry point
-        # names, and `register_error_hint` is Base-internal.
-        foreign = (:FreeUnits, :Unit, :Optimizer, :Experimental, :register_error_hint)
+        # `FreeUnits`/`Unit` are Unitful's unit representation and `Units` their
+        # abstract supertype, needed to reject the unit types this package cannot
+        # read; `Optimizer` is the solver handle JuMP's own documented
+        # `Model(HiGHS.Optimizer)` entry point names; and `register_error_hint` is
+        # Base-internal.
+        foreign = (:FreeUnits, :Unit, :Units, :Optimizer, :Experimental, :register_error_hint)
         test_explicit_imports(
             MatrixCovers;
             all_explicit_imports_are_public = VERSION >= v"1.11" ?
