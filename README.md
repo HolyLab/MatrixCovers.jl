@@ -1,9 +1,9 @@
-# ScaleInvariantAnalysis
+# MatrixCovers
 
-<!--- [![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://HolyLab.github.io/ScaleInvariantAnalysis.jl/stable/) --->
-[![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://HolyLab.github.io/ScaleInvariantAnalysis.jl/dev/)
-[![Build Status](https://github.com/HolyLab/ScaleInvariantAnalysis.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/HolyLab/ScaleInvariantAnalysis.jl/actions/workflows/CI.yml?query=branch%3Amain)
-[![Coverage](https://codecov.io/gh/HolyLab/ScaleInvariantAnalysis.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/HolyLab/ScaleInvariantAnalysis.jl)
+<!--- [![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://HolyLab.github.io/MatrixCovers.jl/stable/) --->
+[![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://HolyLab.github.io/MatrixCovers.jl/dev/)
+[![Build Status](https://github.com/HolyLab/MatrixCovers.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/HolyLab/MatrixCovers.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Coverage](https://codecov.io/gh/HolyLab/MatrixCovers.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/HolyLab/MatrixCovers.jl)
 [![Aqua QA](https://juliatesting.github.io/Aqua.jl/dev/assets/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
 
 This package computes **covers** of matrices: non-negative vectors `a` (and `b`)
@@ -19,5 +19,5 @@ rather than forbid it.  Objective-minimal hard covers (`symcover_min`,
 squared-log-excess penalty is solved natively, with no external solver, while
 the other penalties are available when JuMP and HiGHS (or Ipopt) are loaded.
 
-See the [documentation](https://HolyLab.github.io/ScaleInvariantAnalysis.jl/dev/)
+See the [documentation](https://HolyLab.github.io/MatrixCovers.jl/dev/)
 for motivation, examples, and a full API reference.

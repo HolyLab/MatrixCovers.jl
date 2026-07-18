@@ -1,9 +1,9 @@
-module SIAIpopt
+module MatrixCoversIpoptExt
 
 using JuMP: JuMP, @variable, @objective, @constraint, @NLobjective, @NLconstraint
 using Ipopt: Ipopt
-using ScaleInvariantAnalysis
-using ScaleInvariantAnalysis: AbsLinear
+using MatrixCovers
+using MatrixCovers: AbsLinear
 
 # The models are built over 1-based positions 1:n; `pr`/`pc` map each position to the
 # corresponding axis index of `A`, and results are scattered back onto vectors
@@ -34,8 +34,8 @@ end
 # Variables: α[i] = log(a[i]); constraint: α[i]+α[j] ≥ log|A[i,j]|.
 # ============================================================
 
-function ScaleInvariantAnalysis.symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
-    ScaleInvariantAnalysis._prepare_symcover_start!(a, A)
+function MatrixCovers.symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
+    MatrixCovers._prepare_symcover_start!(a, A)
     axr = axes(A, 1)
     T = float(real(eltype(A)))
     pr = collect(axr)
@@ -63,8 +63,8 @@ function ScaleInvariantAnalysis.symcover_min!(::AbsLinear{2}, a::AbstractVector,
     return a
 end
 
-function ScaleInvariantAnalysis.symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
-    ScaleInvariantAnalysis._prepare_symcover_start!(a, A)
+function MatrixCovers.symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
+    MatrixCovers._prepare_symcover_start!(a, A)
     axr = axes(A, 1)
     T = float(real(eltype(A)))
     pr = collect(axr)
@@ -108,8 +108,8 @@ end
 # would be arbitrary.
 # ============================================================
 
-function ScaleInvariantAnalysis.cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractVector, A)
-    ScaleInvariantAnalysis._prepare_cover_start!(a, b, A)
+function MatrixCovers.cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractVector, A)
+    MatrixCovers._prepare_cover_start!(a, b, A)
     axr, axc = axes(A, 1), axes(A, 2)
     T = float(real(eltype(A)))
     pr, pc = collect(axr), collect(axc)
@@ -143,8 +143,8 @@ function ScaleInvariantAnalysis.cover_min!(::AbsLinear{2}, a::AbstractVector, b:
     return a, b
 end
 
-function ScaleInvariantAnalysis.cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractVector, A)
-    ScaleInvariantAnalysis._prepare_cover_start!(a, b, A)
+function MatrixCovers.cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractVector, A)
+    MatrixCovers._prepare_cover_start!(a, b, A)
     axr, axc = axes(A, 1), axes(A, 2)
     T = float(real(eltype(A)))
     pr, pc = collect(axr), collect(axc)
@@ -190,8 +190,8 @@ end
 # driver over these kernels is native; see soft_symcover_min.
 # ============================================================
 
-function ScaleInvariantAnalysis.soft_symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
-    ScaleInvariantAnalysis._prepare_soft_symcover_start!(a, A)
+function MatrixCovers.soft_symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
+    MatrixCovers._prepare_soft_symcover_start!(a, A)
     axr = axes(A, 1)
     T = float(real(eltype(A)))
     pr = collect(axr)
@@ -217,8 +217,8 @@ function ScaleInvariantAnalysis.soft_symcover_min!(::AbsLinear{2}, a::AbstractVe
     return a
 end
 
-function ScaleInvariantAnalysis.soft_symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
-    ScaleInvariantAnalysis._prepare_soft_symcover_start!(a, A)
+function MatrixCovers.soft_symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
+    MatrixCovers._prepare_soft_symcover_start!(a, A)
     axr = axes(A, 1)
     T = float(real(eltype(A)))
     pr = collect(axr)
@@ -256,8 +256,8 @@ end
 # scales, so the count of zeros enters the objective as a constant, matching cover_objective.
 # ============================================================
 
-function ScaleInvariantAnalysis.soft_cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractVector, A)
-    ScaleInvariantAnalysis._prepare_soft_cover_start!(a, b, A)
+function MatrixCovers.soft_cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractVector, A)
+    MatrixCovers._prepare_soft_cover_start!(a, b, A)
     axr, axc = axes(A, 1), axes(A, 2)
     T = float(real(eltype(A)))
     pr, pc = collect(axr), collect(axc)
@@ -289,8 +289,8 @@ function ScaleInvariantAnalysis.soft_cover_min!(::AbsLinear{2}, a::AbstractVecto
     return a, b
 end
 
-function ScaleInvariantAnalysis.soft_cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractVector, A)
-    ScaleInvariantAnalysis._prepare_soft_cover_start!(a, b, A)
+function MatrixCovers.soft_cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractVector, A)
+    MatrixCovers._prepare_soft_cover_start!(a, b, A)
     axr, axc = axes(A, 1), axes(A, 2)
     T = float(real(eltype(A)))
     pr, pc = collect(axr), collect(axc)
@@ -327,4 +327,4 @@ function ScaleInvariantAnalysis.soft_cover_min!(::AbsLinear{1}, a::AbstractVecto
     return a, b
 end
 
-end  # module SIAIpopt
+end  # module MatrixCoversIpoptExt

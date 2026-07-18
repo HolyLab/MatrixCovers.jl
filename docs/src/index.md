@@ -1,8 +1,8 @@
 ```@meta
-CurrentModule = ScaleInvariantAnalysis
+CurrentModule = MatrixCovers
 ```
 
-# ScaleInvariantAnalysis
+# MatrixCovers
 
 This package computes *covers* of matrices.  Given a matrix `A`, a cover (more
 specifically, a *hard cover*) is a matrix `C` that can be defined as
@@ -41,7 +41,7 @@ Newtons.  Loading [Unitful](https://github.com/PainterQubits/Unitful.jl) lets
 the matrix carry those units itself:
 
 ```jldoctest coverunits
-julia> using ScaleInvariantAnalysis, Unitful
+julia> using MatrixCovers, Unitful
 
 julia> L, V, F = u"m", u"m/s", u"N";  # length, velocity, force
 
@@ -112,7 +112,7 @@ which the solvers minimize.  Two penalty families are provided:
 [`cover_objective`](@ref) evaluates either penalty for a given cover:
 
 ```jldoctest quality; filter = r"(\d+\.\d{6})\d+" => s"\1"
-julia> using ScaleInvariantAnalysis
+julia> using MatrixCovers
 
 julia> A = [4.0 2.0; 2.0 16.0];
 
@@ -186,7 +186,7 @@ penalty they are solved natively (no external solver) by penalty-continuation
 with a damped semismooth Newton iteration:
 
 ```jldoctest qmin; filter = r"(\d+\.\d{6})\d+" => s"\1"
-julia> using ScaleInvariantAnalysis
+julia> using MatrixCovers
 
 julia> A = [1 2 3; 6 5 4];
 
@@ -219,7 +219,7 @@ faster than a general-purpose convex solver.  The other penalties — `AbsLog{1}
 
 ```julia
 using JuMP, HiGHS   # HiGHS for AbsLog penalties
-using ScaleInvariantAnalysis
+using MatrixCovers
 
 a    = symcover_min(AbsLog{1}(), A)   # L1-minimal symmetric hard cover
 a, b = cover_min(AbsLog{1}(), A)      # L1-minimal general hard cover
@@ -293,7 +293,7 @@ For finer control, you can run these manually:
 
 ```julia
 using JuMP, Ipopt   # Ipopt for the AbsLinear penalties
-using ScaleInvariantAnalysis
+using MatrixCovers
 
 a = symcover_min(AbsLinear{2}(), A)                      # multistart over the whole menu
 a = symcover_min(AbsLinear{2}(), A; strategies=(:geomean,))   # or commit to one start
@@ -323,7 +323,7 @@ That quantity can be estimated from the magnitudes of `A` and `b` alone, without
 forming `x` at all:
 
 ```jldoctest roundoff
-julia> using ScaleInvariantAnalysis, LinearAlgebra
+julia> using MatrixCovers, LinearAlgebra
 
 julia> A = [1e6 1e3; 1e3 4.0];
 
@@ -410,12 +410,12 @@ true
 ## Index of available tools
 
 ```@index
-Modules = [ScaleInvariantAnalysis]
+Modules = [MatrixCovers]
 ```
 
 ## Reference documentation
 
 ```@autodocs
-Modules = [ScaleInvariantAnalysis]
+Modules = [MatrixCovers]
 Private = false
 ```

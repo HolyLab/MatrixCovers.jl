@@ -295,8 +295,8 @@ end
     # so the instrumented call reproduces the public entry point exactly (asserted below).
     function provenance(A; rng=StableRNG(0))
         labels = String[]; objs = Float64[]
-        a = ScaleInvariantAnalysis._soft_symcover_abslinear2(A, 32, 5, 2.0, rng; labels, objs)
-        return a, labels[ScaleInvariantAnalysis._multistart_select(objs)], labels, objs
+        a = MatrixCovers._soft_symcover_abslinear2(A, 32, 5, 2.0, rng; labels, objs)
+        return a, labels[MatrixCovers._multistart_select(objs)], labels, objs
     end
 
     # The greedy feasible cover (`init_feasible_diag!`) is offered as a start only when `A` has a
@@ -329,10 +329,10 @@ end
     # As above, the positional arguments mirror `soft_cover`'s defaults.
     Ag = [1.0 2.0 3.0; 6.0 5.0 4.0]
     albs = String[]; aobjs = Float64[]
-    ab = ScaleInvariantAnalysis._soft_cover_abslinear2(Ag, 200, 4, 2.0, StableRNG(0);
+    ab = MatrixCovers._soft_cover_abslinear2(Ag, 200, 4, 2.0, StableRNG(0);
                                                        labels=albs, objs=aobjs)
     @test ab == soft_cover(Ag; rng=StableRNG(0))
-    @test albs[ScaleInvariantAnalysis._multistart_select(aobjs)] in albs
+    @test albs[MatrixCovers._multistart_select(aobjs)] in albs
     @test "feasible" ∉ albs
 end
 

@@ -1,4 +1,4 @@
-module ScaleInvariantAnalysis
+module MatrixCovers
 
 using LinearAlgebra: LinearAlgebra, Adjoint, Bidiagonal, Diagonal, SymTridiagonal,
                      Symmetric, Transpose, Tridiagonal, dot, norm

@@ -1,4 +1,4 @@
-name = "ScaleInvariantAnalysis"
+name = "MatrixCovers"
 uuid = "727e6139-ff52-4636-a344-ed1d23e73ffc"
 version = "1.0.0-DEV"
 authors = ["Tim Holy <tim.holy@gmail.com> and contributors"]
@@ -16,11 +16,11 @@ SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 
 [extensions]
-SIAIpopt = ["Ipopt", "JuMP"]
-SIAJuMP = ["HiGHS", "JuMP"]
-SIASparseArrays = "SparseArrays"
-SIASparseArraysUnitful = ["SparseArrays", "Unitful"]
-SIAUnitful = "Unitful"
+MatrixCoversIpoptExt = ["Ipopt", "JuMP"]
+MatrixCoversJuMPExt = ["HiGHS", "JuMP"]
+MatrixCoversSparseArraysExt = "SparseArrays"
+MatrixCoversSparseArraysUnitfulExt = ["SparseArrays", "Unitful"]
+MatrixCoversUnitfulExt = "Unitful"
 
 [compat]
 Aqua = "0.8"

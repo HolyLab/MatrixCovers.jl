@@ -100,7 +100,7 @@
         @test all(unit.(v) == fill(u"m^-1", 3) for v in cover(S))
         @test unit.(symcover(Symmetric(S))) == fill(u"m^-1", 3)
 
-        # The refiners are where SIASparseArrays and SIAUnitful overlap.
+        # The refiners are where MatrixCoversSparseArraysExt and MatrixCoversUnitfulExt overlap.
         a = initialize_symcover(S)
         @test unit.(symcover_min!(AbsLog{2}(), a, S)) == fill(u"m^-1", 3)
         @test unit.(symcover_min!(AbsLog{2}(), a, Symmetric(S))) == fill(u"m^-1", 3)

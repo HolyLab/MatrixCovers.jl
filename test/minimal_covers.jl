@@ -15,7 +15,7 @@ end
     for (_, A) in symmetric_matrices
         Af = Float64.(A)
         a  = symcover_min(AbsLog{2}(), Af)
-        aj = ScaleInvariantAnalysis.symcover_min_jump(AbsLog{2}(), Af)
+        aj = MatrixCovers.symcover_min_jump(AbsLog{2}(), Af)
         @test iscover(a, Af; atol=1e-8)
         oj = cover_objective(AbsLog{2}(), aj, Af)
         o  = cover_objective(AbsLog{2}(), a, Af)
@@ -57,7 +57,7 @@ end
         a, b = cover_min(AbsLog{2}(), Af)
         @test iscover(a, b, Af; atol=1e-7)
         if k in idx_sub
-            aj, bj = ScaleInvariantAnalysis.cover_min_jump(AbsLog{2}(), Af)
+            aj, bj = MatrixCovers.cover_min_jump(AbsLog{2}(), Af)
             oj = cover_objective(AbsLog{2}(), aj, bj, Af)
             o  = cover_objective(AbsLog{2}(), a, b, Af)
             @test o <= oj * (1 + 1e-6) + 1e-10
@@ -112,7 +112,7 @@ end
     for (_, A) in symmetric_matrices
         Af = Float64.(A)
         a  = symcover_min(AbsLog{2}(), Af; linsolve=:lsqr)
-        aj = ScaleInvariantAnalysis.symcover_min_jump(AbsLog{2}(), Af)
+        aj = MatrixCovers.symcover_min_jump(AbsLog{2}(), Af)
         @test iscover(a, Af; atol=1e-8)
         @test cover_objective(AbsLog{2}(), a, Af) <=
               cover_objective(AbsLog{2}(), aj, Af) * (1 + 1e-6) + 1e-10
@@ -124,7 +124,7 @@ end
         Af = Float64.(A)
         a, b = cover_min(AbsLog{2}(), Af; linsolve=:lsqr)
         @test iscover(a, b, Af; atol=1e-7)
-        aj, bj = ScaleInvariantAnalysis.cover_min_jump(AbsLog{2}(), Af)
+        aj, bj = MatrixCovers.cover_min_jump(AbsLog{2}(), Af)
         @test cover_objective(AbsLog{2}(), a, b, Af) <=
               cover_objective(AbsLog{2}(), aj, bj, Af) * (1 + 1e-6) + 1e-10
     end
@@ -198,7 +198,7 @@ end
     A = [1.0 2.0 3.0; 6.0 5.0 4.0]
     a, b = soft_cover_min(AbsLog{2}(), A)
     a_ref, b_ref = similar(a), similar(b)
-    ScaleInvariantAnalysis.unconstrained_min!(AbsLog{2}(), a_ref, b_ref, A)
+    MatrixCovers.unconstrained_min!(AbsLog{2}(), a_ref, b_ref, A)
     @test a ≈ a_ref && b ≈ b_ref
 
     # It's the unconstrained minimum: any perturbation can only raise the objective.

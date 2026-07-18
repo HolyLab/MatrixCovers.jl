@@ -369,7 +369,7 @@ end
     # JuMP/HiGHS/Ipopt unloaded (this test file loads them itself, which
     # would otherwise mask the failure), so the hint should fire.
     script = """
-    using ScaleInvariantAnalysis
+    using MatrixCovers
     A = [4.0 1.0; 1.0 4.0]
     try
         symcover_min(AbsLog{1}(), A)
@@ -381,11 +381,11 @@ end
     @test occursin("loading JuMP", out)
 
     # The no-ϕ wrapper `soft_symcover_min(A)` exists in the base package, but the
-    # `AbsLinear{2}` method it forwards to lives in the SIAIpopt extension. The
+    # `AbsLinear{2}` method it forwards to lives in the MatrixCoversIpoptExt extension. The
     # MethodError raised (and hinted on) is for the inner call, so the hint must
     # still fire even though the outer, no-ϕ call is what the user wrote.
     script_noϕ = """
-    using ScaleInvariantAnalysis
+    using MatrixCovers
     A = [4.0 1.0; 1.0 4.0]
     try
         soft_symcover_min(A)
@@ -414,7 +414,7 @@ end
     # call reaches it directly (AbsLog{1}) or through the AbsLinear multistart driver,
     # whose MethodError is raised on the cover_min! kernel it calls.
     script_cover = """
-    using ScaleInvariantAnalysis
+    using MatrixCovers
     A = [4.0 1.0; 1.0 4.0]
     for call in (() -> cover_min(AbsLog{1}(), A), () -> cover_min(AbsLinear{2}(), A))
         try
@@ -430,7 +430,7 @@ end
     # The refiners are themselves the extension's entry points, so a caller who reaches
     # for one directly must be advised of the load just as the drivers' callers are.
     script_bang = """
-    using ScaleInvariantAnalysis
+    using MatrixCovers
     A = [4.0 1.0; 1.0 4.0]
     for call in (() -> symcover_min!(AbsLinear{2}(), [2.0, 2.0], A),
                  () -> cover_min!(AbsLinear{2}(), [2.0, 2.0], [2.0, 2.0], A))

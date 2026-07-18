@@ -1,11 +1,11 @@
-module SIAUnitful
+module MatrixCoversUnitfulExt
 
 using LinearAlgebra: LinearAlgebra
-using ScaleInvariantAnalysis
-using ScaleInvariantAnalysis: AbsLog, AbsLinear
+using MatrixCovers
+using MatrixCovers: AbsLog, AbsLinear
 using Unitful: Unitful, FreeUnits, Quantity, Unit, unit, ustrip
 
-const SIA = ScaleInvariantAnalysis
+const MC = MatrixCovers
 
 # Exponents of a unit, keyed by atomic unit. Rational, because a symmetric cover
 # halves the diagonal's exponents.
@@ -244,7 +244,7 @@ function asymstart!(f, a::QVector, b::QVector, A::QMatrix, ϕ...; kwargs...)
     return a, b
 end
 
-# Every penalty slot below mirrors ScaleInvariantAnalysis's own method table: where
+# Every penalty slot below mirrors MatrixCovers's own method table: where
 # it leaves `ϕ` untyped these do too, and where it dispatches on concrete penalties
 # these enumerate the same ones. Each method is then strictly more specific than the
 # one it shadows -- including those in the JuMP and Ipopt extensions, which leave the
@@ -253,57 +253,57 @@ end
 const PENALTIES = (:(AbsLog{1}), :(AbsLog{2}), :(AbsLinear{1}), :(AbsLinear{2}))
 
 # Heuristic covers and initializers: `ϕ` is untyped upstream and ignored.
-SIA.symcover(A::QMatrix; kwargs...) = sym(SIA.symcover, A; kwargs...)
-SIA.symcover(ϕ, A::QMatrix; kwargs...) = sym(SIA.symcover, A, ϕ; kwargs...)
-SIA.symcover!(a::QVector, A::QMatrix; kwargs...) = sym!(SIA.symcover!, a, A; kwargs...)
-SIA.symcover!(ϕ, a::QVector, A::QMatrix; kwargs...) = sym!(SIA.symcover!, a, A, ϕ; kwargs...)
+MC.symcover(A::QMatrix; kwargs...) = sym(MC.symcover, A; kwargs...)
+MC.symcover(ϕ, A::QMatrix; kwargs...) = sym(MC.symcover, A, ϕ; kwargs...)
+MC.symcover!(a::QVector, A::QMatrix; kwargs...) = sym!(MC.symcover!, a, A; kwargs...)
+MC.symcover!(ϕ, a::QVector, A::QMatrix; kwargs...) = sym!(MC.symcover!, a, A, ϕ; kwargs...)
 
-SIA.cover(A::QMatrix; kwargs...) = asym(SIA.cover, A; kwargs...)
-SIA.cover(ϕ, A::QMatrix; kwargs...) = asym(SIA.cover, A, ϕ; kwargs...)
-SIA.cover!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(SIA.cover!, a, b, A; kwargs...)
-SIA.cover!(ϕ, a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(SIA.cover!, a, b, A, ϕ; kwargs...)
+MC.cover(A::QMatrix; kwargs...) = asym(MC.cover, A; kwargs...)
+MC.cover(ϕ, A::QMatrix; kwargs...) = asym(MC.cover, A, ϕ; kwargs...)
+MC.cover!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover!, a, b, A; kwargs...)
+MC.cover!(ϕ, a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover!, a, b, A, ϕ; kwargs...)
 
 # `cover`/`cover!` dispatch on `Adjoint`/`Transpose` upstream without an eltype
 # bound, so a wrapped `Quantity` matrix needs these to stay unambiguous.
 for W in (:(LinearAlgebra.Adjoint{<:Quantity}), :(LinearAlgebra.Transpose{<:Quantity}))
     @eval begin
-        SIA.cover(A::$W; kwargs...) = asym(SIA.cover, A; kwargs...)
-        SIA.cover!(a::QVector, b::QVector, A::$W; kwargs...) = asym!(SIA.cover!, a, b, A; kwargs...)
+        MC.cover(A::$W; kwargs...) = asym(MC.cover, A; kwargs...)
+        MC.cover!(a::QVector, b::QVector, A::$W; kwargs...) = asym!(MC.cover!, a, b, A; kwargs...)
     end
 end
 
-SIA.initialize_symcover(A::QMatrix; kwargs...) = sym(SIA.initialize_symcover, A; kwargs...)
-SIA.initialize_symcover!(a::QVector, A::QMatrix; kwargs...) = sym!(SIA.initialize_symcover!, a, A; kwargs...)
-SIA.initialize_cover(A::QMatrix; kwargs...) = asym(SIA.initialize_cover, A; kwargs...)
-SIA.initialize_cover!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(SIA.initialize_cover!, a, b, A; kwargs...)
+MC.initialize_symcover(A::QMatrix; kwargs...) = sym(MC.initialize_symcover, A; kwargs...)
+MC.initialize_symcover!(a::QVector, A::QMatrix; kwargs...) = sym!(MC.initialize_symcover!, a, A; kwargs...)
+MC.initialize_cover(A::QMatrix; kwargs...) = asym(MC.initialize_cover, A; kwargs...)
+MC.initialize_cover!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.initialize_cover!, a, b, A; kwargs...)
 
 # Soft covers and the `*_min` family: `ϕ` is dispatched on upstream.
-SIA.soft_symcover(A::QMatrix; kwargs...) = sym(SIA.soft_symcover, A; kwargs...)
-SIA.soft_cover(A::QMatrix; kwargs...) = asym(SIA.soft_cover, A; kwargs...)
-SIA.symcover_min(A::QMatrix; kwargs...) = sym(SIA.symcover_min, A; kwargs...)
-SIA.symcover_min!(a::QVector, A::QMatrix; kwargs...) = symstart!(SIA.symcover_min!, a, A; kwargs...)
-SIA.cover_min(A::QMatrix; kwargs...) = asym(SIA.cover_min, A; kwargs...)
-SIA.cover_min!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(SIA.cover_min!, a, b, A; kwargs...)
-SIA.soft_symcover_min(A::QMatrix; kwargs...) = sym(SIA.soft_symcover_min, A; kwargs...)
-SIA.soft_symcover_min!(a::QVector, A::QMatrix; kwargs...) = symstart!(SIA.soft_symcover_min!, a, A; kwargs...)
-SIA.soft_cover_min(A::QMatrix; kwargs...) = asym(SIA.soft_cover_min, A; kwargs...)
-SIA.soft_cover_min!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(SIA.soft_cover_min!, a, b, A; kwargs...)
+MC.soft_symcover(A::QMatrix; kwargs...) = sym(MC.soft_symcover, A; kwargs...)
+MC.soft_cover(A::QMatrix; kwargs...) = asym(MC.soft_cover, A; kwargs...)
+MC.symcover_min(A::QMatrix; kwargs...) = sym(MC.symcover_min, A; kwargs...)
+MC.symcover_min!(a::QVector, A::QMatrix; kwargs...) = symstart!(MC.symcover_min!, a, A; kwargs...)
+MC.cover_min(A::QMatrix; kwargs...) = asym(MC.cover_min, A; kwargs...)
+MC.cover_min!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.cover_min!, a, b, A; kwargs...)
+MC.soft_symcover_min(A::QMatrix; kwargs...) = sym(MC.soft_symcover_min, A; kwargs...)
+MC.soft_symcover_min!(a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_symcover_min!, a, A; kwargs...)
+MC.soft_cover_min(A::QMatrix; kwargs...) = asym(MC.soft_cover_min, A; kwargs...)
+MC.soft_cover_min!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover_min!, a, b, A; kwargs...)
 
 for P in PENALTIES
     @eval begin
-        SIA.soft_symcover(ϕ::$P, A::QMatrix; kwargs...) = sym(SIA.soft_symcover, A, ϕ; kwargs...)
-        SIA.soft_cover(ϕ::$P, A::QMatrix; kwargs...) = asym(SIA.soft_cover, A, ϕ; kwargs...)
+        MC.soft_symcover(ϕ::$P, A::QMatrix; kwargs...) = sym(MC.soft_symcover, A, ϕ; kwargs...)
+        MC.soft_cover(ϕ::$P, A::QMatrix; kwargs...) = asym(MC.soft_cover, A, ϕ; kwargs...)
 
-        SIA.symcover_min(ϕ::$P, A::QMatrix; kwargs...) = sym(SIA.symcover_min, A, ϕ; kwargs...)
-        SIA.symcover_min!(ϕ::$P, a::QVector, A::QMatrix; kwargs...) = symstart!(SIA.symcover_min!, a, A, ϕ; kwargs...)
-        SIA.cover_min(ϕ::$P, A::QMatrix; kwargs...) = asym(SIA.cover_min, A, ϕ; kwargs...)
-        SIA.cover_min!(ϕ::$P, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(SIA.cover_min!, a, b, A, ϕ; kwargs...)
+        MC.symcover_min(ϕ::$P, A::QMatrix; kwargs...) = sym(MC.symcover_min, A, ϕ; kwargs...)
+        MC.symcover_min!(ϕ::$P, a::QVector, A::QMatrix; kwargs...) = symstart!(MC.symcover_min!, a, A, ϕ; kwargs...)
+        MC.cover_min(ϕ::$P, A::QMatrix; kwargs...) = asym(MC.cover_min, A, ϕ; kwargs...)
+        MC.cover_min!(ϕ::$P, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.cover_min!, a, b, A, ϕ; kwargs...)
 
-        SIA.soft_symcover_min(ϕ::$P, A::QMatrix; kwargs...) = sym(SIA.soft_symcover_min, A, ϕ; kwargs...)
-        SIA.soft_symcover_min!(ϕ::$P, a::QVector, A::QMatrix; kwargs...) = symstart!(SIA.soft_symcover_min!, a, A, ϕ; kwargs...)
-        SIA.soft_cover_min(ϕ::$P, A::QMatrix; kwargs...) = asym(SIA.soft_cover_min, A, ϕ; kwargs...)
-        SIA.soft_cover_min!(ϕ::$P, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(SIA.soft_cover_min!, a, b, A, ϕ; kwargs...)
+        MC.soft_symcover_min(ϕ::$P, A::QMatrix; kwargs...) = sym(MC.soft_symcover_min, A, ϕ; kwargs...)
+        MC.soft_symcover_min!(ϕ::$P, a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_symcover_min!, a, A, ϕ; kwargs...)
+        MC.soft_cover_min(ϕ::$P, A::QMatrix; kwargs...) = asym(MC.soft_cover_min, A, ϕ; kwargs...)
+        MC.soft_cover_min!(ϕ::$P, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover_min!, a, b, A, ϕ; kwargs...)
     end
 end
 
-end  # module SIAUnitful
+end  # module MatrixCoversUnitfulExt

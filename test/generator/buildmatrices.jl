@@ -11,7 +11,7 @@ using Random
 using ProgressMeter
 
 # Reference AbsLog{2} minimal covers, the same formulation as `symcover_min_jump` and
-# `cover_min_jump` in ext/SIAJuMP.jl, but built on ParametricOptInterface so a single
+# `cover_min_jump` in ext/MatrixCoversJuMPExt.jl, but built on ParametricOptInterface so a single
 # model is re-solved across many candidate matrices.
 using JuMP: JuMP, @variable, @objective, @constraint, @expression, Parameter
 using HiGHS: HiGHS
