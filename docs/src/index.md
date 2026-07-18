@@ -145,12 +145,29 @@ You can override the default penalty by supplying it as an argument to the solve
 | [`soft_symcover_min`](@ref) | yes | soft (penalized) | `AbsLog{2}`, `AbsLinear` | native for `AbsLog{2}`; else JuMP |
 | [`soft_cover_min`](@ref) | no | soft (penalized) | `AbsLog{2}`, `AbsLinear` | native for `AbsLog{2}`; else JuMP |
 
-Under `AbsLog{2}` the soft objective is convex with a single minimizer, so
-[`soft_symcover`](@ref) and [`soft_symcover_min`](@ref) are the same function, as are
-[`soft_cover`](@ref) and [`soft_cover_min`](@ref): there is nothing for a heuristic and a
-minimizer to disagree about. Under `AbsLog{1}` they part company — the soft `AbsLog{1}`
+The two soft tiers are separated by a different axis than the two hard ones.  For hard
+covers, [`symcover`](@ref) trades optimality for speed while guaranteeing feasibility, and
+[`symcover_min`](@ref) is optimal.  Both soft tiers minimize the same unconstrained
+objective, and differ instead in what they promise about reaching its minimum:
+
+- [`soft_symcover`](@ref) and [`soft_cover`](@ref) are **always native and best-effort.**
+  They require no extension for any penalty, and they own their multistart — but what they
+  return is a coordinate-descent fixed point, which for the non-convex and nonsmooth
+  penalties need not be a minimizer.
+- [`soft_symcover_min`](@ref) and [`soft_cover_min`](@ref) return a **true minimizer of the
+  basin they start in, and may require an extension.**  `AbsLog{2}` is native; the
+  `AbsLinear` penalties need JuMP and Ipopt; `AbsLog{1}` is not implemented.
+
+Both reduce to the same trade: cheap and always available, against best quality and
+possibly an extra dependency.
+
+Under `AbsLog{2}` the objective is convex with a single minimizer, so the tiers coincide —
+[`soft_symcover`](@ref) *is* [`soft_symcover_min`](@ref) there, and likewise for the
+asymmetric pair.  That is the degenerate case of the contract rather than an exception to
+it: with one minimizer there is nothing for a best-effort descent and a minimizer to
+disagree about.  Under `AbsLog{1}` they part company most sharply — the soft `AbsLog{1}`
 covers are coordinate descents that reach a deterministic fixed point rather than a
-minimizer, and `soft_symcover_min`/`soft_cover_min` do not yet accept `AbsLog{1}`.
+minimizer, and `soft_symcover_min`/`soft_cover_min` do not accept `AbsLog{1}` at all.
 
 **[`symcover`](@ref), [`cover`](@ref), and any native implementation can be recommended for production use,**
 possibly with relaxed convergence bounds.
@@ -208,8 +225,11 @@ a    = symcover_min(AbsLog{1}(), A)   # L1-minimal symmetric hard cover
 a, b = cover_min(AbsLog{1}(), A)      # L1-minimal general hard cover
 ```
 
-The [`soft_symcover_min`](@ref) soft solver is likewise JuMP-backed (HiGHS for
-`AbsLog{2}`, Ipopt for the `AbsLinear` penalties).
+The soft `*_min` solvers divide along the same line, but not at the same place:
+[`soft_symcover_min`](@ref) and [`soft_cover_min`](@ref) solve `AbsLog{2}` natively and
+reach for JuMP with Ipopt only for the `AbsLinear` penalties.  They do not accept
+`AbsLog{1}`; the soft `AbsLog{1}` covers are available through [`soft_symcover`](@ref) and
+[`soft_cover`](@ref), which are native.
 
 ### Uniqueness
 
@@ -250,15 +270,24 @@ At a lower level, this package's interface is organized in three layers:
   basins — which is why the choice is a named part of the start rather than an internal
   detail.  The heuristic [`cover`](@ref) is itself a composition of these: the geometric
   mean, boosted, then tightened.
-- **Refiners** improve a starting point in place.  [`symcover_min!`](@ref),
-  [`cover_min!`](@ref), and [`soft_symcover_min!`](@ref) validate the start, then optimize
-  from it.  Which basin they reach is the caller's choice, by construction.  The hard
-  refiners require a start that covers `A`; the soft one does not, since its objective
-  constrains nothing.
-- **Solvers** bundle the two.  [`symcover_min`](@ref), [`cover_min`](@ref), and
-  [`soft_symcover_min`](@ref) refine every start on a menu (the `strategies` keyword) and
-  return the best cover by [`cover_objective`](@ref), so their result depends on `A` and not
-  on an initialization the caller never chose.
+- **Refiners** improve a starting point in place, and are the `!`-suffixed forms of the
+  solvers: [`symcover_min!`](@ref), [`cover_min!`](@ref), [`soft_symcover!`](@ref),
+  [`soft_cover!`](@ref), [`soft_symcover_min!`](@ref), and [`soft_cover_min!`](@ref)
+  validate the start, then optimize from it.  Which basin they reach is the caller's
+  choice, by construction, and supplying the start is the caller's job.  The hard refiners
+  require a start that covers `A`; the soft ones do not, since their objective constrains
+  nothing — build theirs with `feasible=:none`.
+- **Solvers** bundle the two.  [`symcover_min`](@ref), [`cover_min`](@ref),
+  [`soft_symcover`](@ref), [`soft_cover`](@ref), [`soft_symcover_min`](@ref), and
+  [`soft_cover_min`](@ref) refine every start on a menu (the `strategies` keyword, or the
+  multistart's own list) and return the best cover by [`cover_objective`](@ref), so their
+  result depends on `A` and not on an initialization the caller never chose.
+
+That is the rule for the whole grid: **the plain form owns the menu, so its result is a
+property of `A`; the `!` form refines the one start you give it, so its result is a
+property of `A` and that start.**  [`symcover!`](@ref) and [`cover!`](@ref) are the
+exception that proves it — they are initializers, not refiners, and construct their cover
+from scratch rather than reading the vector passed in.
 
 For finer control, you can run these manually:
 

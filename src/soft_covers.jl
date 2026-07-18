@@ -101,6 +101,58 @@ function soft_symcover(::AbsLinear{1}, A::AbstractMatrix; maxiter::Int=20, kwarg
 end
 
 """
+    a = soft_symcover!(ϕ, a, A; maxiter=...)
+    a = soft_symcover!(a, A; maxiter=...)
+
+Refine the starting point `a` into a symmetric soft cover of `A`, in place, and return it.
+The no-ϕ form defaults to `AbsLinear{2}()`, matching [`soft_symcover`](@ref), whose
+supported ϕ values these methods share.
+
+This is the refiner half of [`soft_symcover`](@ref): the non-mutating form owns a
+multistart menu, so its result is a property of `A`, while this one descends from the
+single start you hand it, so its result is a property of `A` *and* that start. Building
+the start is the caller's job — see [`initialize_symcover`](@ref), and pass
+`feasible=:none`, since a soft cover is under no obligation to cover `A`.
+
+`a` must be finite and strictly positive on every row of `A` that carries support; scales
+on rows carrying no support are inert, and are zero on output. Unlike [`symcover_min!`](@ref),
+`a` need *not* cover `A` — the soft objective imposes no coverage constraint.
+
+`maxiter` bounds the descent sweeps; its default matches the corresponding
+[`soft_symcover`](@ref) method. Under `AbsLog{2}` the objective is convex with a unique
+minimizer, so the start is honored but not visible in the result.
+
+See also: [`soft_symcover`](@ref), [`soft_symcover_min!`](@ref), [`initialize_symcover`](@ref), [`soft_cover!`](@ref).
+"""
+function soft_symcover! end
+soft_symcover!(a::AbstractVector, A::AbstractMatrix; kwargs...) =
+    soft_symcover!(AbsLinear{2}(), a, A; kwargs...)
+
+function soft_symcover!(::AbsLog{2}, a::AbstractVector, A::AbstractMatrix; kwargs...)
+    _prepare_soft_symcover_start!(a, A, :soft_symcover!)
+    a .= soft_symcover_min(AbsLog{2}(), A; kwargs...)   # convex: the start is not read
+    return a
+end
+
+function soft_symcover!(::AbsLog{1}, a::AbstractVector, A::AbstractMatrix; maxiter::Int=20)
+    _prepare_soft_symcover_start!(a, A, :soft_symcover!)
+    _abslog1_iter!(a, A, maxiter)
+    return a
+end
+
+function soft_symcover!(::AbsLinear{2}, a::AbstractVector, A::AbstractMatrix; maxiter::Int=32)
+    _prepare_soft_symcover_start!(a, A, :soft_symcover!)
+    _abslinear2_iter!(a, A, maxiter)
+    return a
+end
+
+function soft_symcover!(::AbsLinear{1}, a::AbstractVector, A::AbstractMatrix; maxiter::Int=20)
+    _prepare_soft_symcover_start!(a, A, :soft_symcover!)
+    _abslinear1_iter!(a, A, maxiter)
+    return a
+end
+
+"""
     a, b = soft_cover(ϕ, A; maxiter=200, starts=4, σ=2.0, rng=MersenneTwister(0))
     a, b = soft_cover(A; maxiter=200, starts=4, σ=2.0, rng=MersenneTwister(0))
 
@@ -194,6 +246,55 @@ function soft_cover(ϕ::AbsLinear{1}, A::AbstractMatrix; maxiter::Int=100, kwarg
 end
 
 """
+    a, b = soft_cover!(ϕ, a, b, A; maxiter=...)
+    a, b = soft_cover!(a, b, A; maxiter=...)
+
+Refine the starting point `(a, b)` into a soft cover of `A`, in place, and return it. This
+is the asymmetric counterpart of [`soft_symcover!`](@ref) and the refiner half of
+[`soft_cover`](@ref), carrying the same contract on the start: finite and strictly
+positive on every supported row and column, inert (and zero on output) elsewhere, and
+under no obligation to cover `A`. Build one with [`initialize_cover`](@ref) and
+`feasible=:none`. The no-ϕ form defaults to `AbsLinear{2}()`, matching
+[`soft_cover`](@ref).
+
+The product `a[i]*b[j]` is unchanged by `a -> c*a`, `b -> b/c`, so the start is read only
+up to that gauge: `(a, b)` and `(2a, b/2)` give the same result. The result itself is
+pinned to the balance convention of [`cover_min`](@ref), as every asymmetric cover in this
+package is.
+
+See also: [`soft_cover`](@ref), [`soft_cover_min!`](@ref), [`initialize_cover`](@ref), [`soft_symcover!`](@ref).
+"""
+function soft_cover! end
+soft_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
+    soft_cover!(AbsLinear{2}(), a, b, A; kwargs...)
+
+function soft_cover!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
+    _prepare_soft_cover_start!(a, b, A, :soft_cover!)
+    anew, bnew = soft_cover_min(AbsLog{2}(), A; kwargs...)   # convex: the start is not read
+    a .= anew
+    b .= bnew
+    return a, b
+end
+
+function soft_cover!(::AbsLog{1}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; maxiter::Int=20)
+    _prepare_soft_cover_start!(a, b, A, :soft_cover!)
+    _abslog1_iter_asym!(a, b, A, maxiter)
+    return _balance_cover!(a, b, A)
+end
+
+function soft_cover!(::AbsLinear{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; maxiter::Int=200)
+    _prepare_soft_cover_start!(a, b, A, :soft_cover!)
+    _mscm_als!(a, b, A, maxiter)
+    return _balance_cover!(a, b, A)
+end
+
+function soft_cover!(::AbsLinear{1}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; maxiter::Int=100)
+    _prepare_soft_cover_start!(a, b, A, :soft_cover!)
+    _abslinear1_iter_asym!(a, b, A, maxiter)
+    return _balance_cover!(a, b, A)
+end
+
+"""
     a = soft_symcover_min(ϕ, A)
     a = soft_symcover_min(A)
 
@@ -279,12 +380,13 @@ function soft_symcover_min!(::AbsLog{2}, a::AbstractVector, A::AbstractMatrix; k
     return a
 end
 
-# Shared prologue of the `soft_symcover_min!` kernels. The soft objective constrains
-# nothing, so — unlike `_prepare_symcover_start!` — this checks positivity only, and moves
-# the start nowhere.
-function _prepare_soft_symcover_start!(a::AbstractVector, A::AbstractMatrix)
+# Shared prologue of the symmetric soft refiners (`soft_symcover!`, `soft_symcover_min!`).
+# The soft objective constrains nothing, so — unlike `_prepare_symcover_start!` — this
+# checks positivity only, and moves the start nowhere. `fname` names the caller so the
+# error reports the function the user actually called.
+function _prepare_soft_symcover_start!(a::AbstractVector, A::AbstractMatrix, fname::Symbol=:soft_symcover_min!)
     ax = axes(A, 1)
-    axes(A, 2) == ax || throw(ArgumentError("soft_symcover_min! requires a square matrix"))
+    axes(A, 2) == ax || throw(ArgumentError("$fname requires a square matrix"))
     eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$ax"))
     supp = fill!(similar(a, Bool), false)
     foreach_support_sym(A) do i, j, v
@@ -297,7 +399,7 @@ function _prepare_soft_symcover_start!(a::AbstractVector, A::AbstractMatrix)
     for i in ax
         supp[i] || continue
         (isfinite(a[i]) && a[i] > zero(a[i])) ||
-            throw(ArgumentError("soft_symcover_min! requires a start with finite positive scale on every supported row, got a[$i] = $(a[i])"))
+            throw(ArgumentError("$fname requires a start with finite positive scale on every supported row, got a[$i] = $(a[i])"))
     end
     return a
 end
@@ -391,10 +493,13 @@ function soft_cover_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::A
     return a, b
 end
 
-# Shared prologue of the `soft_cover_min!` kernels; the asymmetric counterpart of
-# `_prepare_soft_symcover_start!`. Positivity only — the soft objective constrains nothing —
-# plus the balance pin, so the refiners read the start only up to the row/column gauge.
-function _prepare_soft_cover_start!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
+# Shared prologue of the asymmetric soft refiners (`soft_cover!`, `soft_cover_min!`); the
+# counterpart of `_prepare_soft_symcover_start!`. Positivity only — the soft objective
+# constrains nothing — plus the balance pin, so the refiners read the start only up to the
+# row/column gauge. `fname` names the caller so the error reports the function the user
+# actually called.
+function _prepare_soft_cover_start!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
+                                    fname::Symbol=:soft_cover_min!)
     axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$(axes(A, 1))"))
     axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
     suppa = fill!(similar(a, Bool), false)
@@ -412,12 +517,12 @@ function _prepare_soft_cover_start!(a::AbstractVector, b::AbstractVector, A::Abs
     for i in eachindex(a)
         suppa[i] || continue
         (isfinite(a[i]) && a[i] > zero(a[i])) ||
-            throw(ArgumentError("soft_cover_min! requires a start with finite positive scale on every supported row, got a[$i] = $(a[i])"))
+            throw(ArgumentError("$fname requires a start with finite positive scale on every supported row, got a[$i] = $(a[i])"))
     end
     for j in eachindex(b)
         suppb[j] || continue
         (isfinite(b[j]) && b[j] > zero(b[j])) ||
-            throw(ArgumentError("soft_cover_min! requires a start with finite positive scale on every supported column, got b[$j] = $(b[j])"))
+            throw(ArgumentError("$fname requires a start with finite positive scale on every supported column, got b[$j] = $(b[j])"))
     end
     return _balance_cover!(a, b, A)
 end
