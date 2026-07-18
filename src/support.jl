@@ -63,6 +63,18 @@ satisfies it — `|A[i,j]| == |conj(A[j,i])|`.
 This traversal does not check the precondition; the public `sym` entry points do,
 before they call it (`MatrixCovers.require_abs_symmetric`).
 
+# Objective weighting
+
+Because each pair is reported once, a caller accumulating a cover objective must
+supply the multiplicity itself: `w = (i == j) ? 1 : 2`. That reproduces the
+`∑_{i,j}` convention of [`cover_objective`](@ref), which runs over the full grid
+and so counts each off-diagonal pair twice and each diagonal entry once. The
+constraint set needs no such correction — `a[i]*a[j] >= |A[i,j]|` and its
+transpose are the same constraint, so imposing it on the `i <= j` triangle alone
+is equivalent to imposing it everywhere. Every solver in this package minimizes
+the full-grid objective, so a cover's reported score and the quantity that was
+minimized agree.
+
 # Extending
 
 To support a new matrix type, define
@@ -73,7 +85,9 @@ which must call `f(i, j, v)` exactly once for each pair `i <= j` with
 `v = abs(A[i, j]) != 0`, must not call `f` for zero pairs, and must return
 `nothing`. Whatever `f` returns is ignored, so a traversal runs to completion
 and must not be stopped early on the strength of it.
-Reporting the same pair in both orientations double-counts it. A
+Reporting the same pair in both orientations double-counts it: the off-diagonal
+weight of 2 is the caller's to apply, per *Objective weighting* above, so a pair
+emitted twice is weighted 4. A
 type whose storage is triangular (`Symmetric{<:Any,<:SparseMatrixCSC}` in this
 package's own extension) must map stored `(i, j)` with `i > j` back to `(j, i)`
 rather than emit it as found.

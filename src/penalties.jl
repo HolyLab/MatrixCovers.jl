@@ -107,6 +107,13 @@ Compute the cover objective `∑_{i,j} ϕ(|A[i,j]| / (a[i] * b[j]))` for the giv
 penalty function `ϕ`. The two-argument form is for symmetric matrices where the cover
 is `a*a'`.
 
+The sum runs over the full grid in both forms, so in the symmetric form each
+off-diagonal pair contributes twice and each diagonal entry once. This weighting
+is what the `sym` solvers minimize, so the score reported here is the quantity
+they optimized; code that reads a symmetric matrix through
+[`foreach_support_sym`](@ref), which reports each pair once, must apply the
+factor of 2 itself to match.
+
 Zero entries of `A` are handled according to `ϕ`:
 - `AbsLog{p}`: zero entries contribute 0 (φ(0) = 0 by convention).
 - `AbsLinear{p}`: zero entries contribute 1 (φ(0) = |1-0|^p = 1).
