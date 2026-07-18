@@ -750,3 +750,17 @@ function symcover_min_jump end
 # Internal exact reference implemented by the MatrixCoversJuMPExt extension; used only to
 # cross-check the native `cover_min(::AbsLog{2})` in the test suite.
 function cover_min_jump end
+
+# A solve that stops for any reason other than a solved one leaves the model holding
+# a point that does not solve the problem posed -- the base of an unbounded ray, or
+# whatever the solver last had. Handing that back would be a minimal cover in name
+# only, so it is an error. `ALMOST_*` statuses are rejected along with the rest:
+# they report a tolerance the caller did not ask for.
+#
+# Takes the status rather than the model so that both solver extensions can share it
+# without the main package depending on JuMP.
+function check_solved(status, solver, fname)
+    Symbol(status) in (:OPTIMAL, :LOCALLY_SOLVED) ||
+        error("$fname: $solver terminated with status $status")
+    return nothing
+end

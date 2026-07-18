@@ -17,15 +17,8 @@ using MatrixCovers: AbsLinear
 # `*_min!` refiners, which take the start from the caller. The non-mutating `symcover_min`
 # and `cover_min` are multistart drivers over these kernels and live in the main package.
 
-# Ipopt is a local solver on a non-convex problem; any termination other than a
-# solved one means the returned point does not solve the problem posed, so it is an
-# error rather than a result to be quietly handed back.
-function check_solved(model, fname)
-    status = JuMP.termination_status(model)
-    status == JuMP.LOCALLY_SOLVED || status == JuMP.OPTIMAL ||
-        error("$fname: Ipopt terminated with status $status")
-    return nothing
-end
+check_solved(model, fname) =
+    MatrixCovers.check_solved(JuMP.termination_status(model), "Ipopt", fname)
 
 # ============================================================
 # Hard cover: symcover_min!(::AbsLinear{p}, a, A)

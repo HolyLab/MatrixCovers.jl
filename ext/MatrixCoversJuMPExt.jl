@@ -6,6 +6,9 @@ using MatrixCovers
 using MatrixCovers: AbsLog
 using LinearAlgebra: dot
 
+check_solved(model, fname) =
+    MatrixCovers.check_solved(JuMP.termination_status(model), "HiGHS", fname)
+
 # The models are built over 1-based positions 1:n; `pr`/`pc` map each position to
 # the corresponding axis index of `A`, and results are scattered back onto vectors
 # whose axes match `A`'s so offset axes are honored. A row/column of `A` with no
@@ -31,6 +34,7 @@ function MatrixCovers.symcover_min_jump(::AbsLog{2}, A)
         Apos[i, j] != 0 && @constraint(model, α[i] + α[j] - logA[i, j] >= 0)
     end
     JuMP.optimize!(model)
+    check_solved(model, "symcover_min_jump")
     a = similar(Array{T}, axr)
     for (i, k) in pairs(pr)
         a[k] = supported[i] ? exp(JuMP.value(α[i])) : zero(T)
@@ -65,13 +69,14 @@ const LEX_L1_SLACK = 1e-9
 # `lin` is the AbsLog{1} objective and `residuals` the expressions α[i]+α[j]-log|A[i,j]| over
 # the support, one per stored entry — the same convention `cover_objective` sums over, so the
 # quadratic minimized here is the AbsLog{2} objective it reports.
-function _minimize_l2_over_l1_face!(model, lin, residuals)
+function _minimize_l2_over_l1_face!(model, lin, residuals, fname)
     isempty(residuals) && return nothing
     linopt = JuMP.value(lin)
     l1 = sum(JuMP.value, residuals)          # the AbsLog{1} objective attained
     @constraint(model, lin <= linopt + LEX_L1_SLACK * max(one(l1), l1))
     @objective(model, Min, sum(r^2 for r in residuals))
     JuMP.optimize!(model)
+    check_solved(model, fname)
     return nothing
 end
 
@@ -105,8 +110,9 @@ function _symcover_min_abslog1(A, start)
         Apos[i, j] != 0 && @constraint(model, α[i] + α[j] - logA[i, j] >= 0)
     end
     JuMP.optimize!(model)
+    check_solved(model, "symcover_min")
     residuals = [α[i] + α[j] - logA[i, j] for i in 1:n, j in 1:n if Apos[i, j] != 0]
-    _minimize_l2_over_l1_face!(model, lin, residuals)
+    _minimize_l2_over_l1_face!(model, lin, residuals, "symcover_min")
     a = similar(Array{T}, axr)
     for (i, k) in pairs(pr)
         a[k] = supported[i] ? exp(JuMP.value(α[i])) : zero(T)
@@ -135,6 +141,7 @@ function MatrixCovers.cover_min_jump(::AbsLog{2}, A)
     nza, nzb = vec(sum(!iszero, Apos; dims=2)), vec(sum(!iszero, Apos; dims=1))
     @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
     JuMP.optimize!(model)
+    check_solved(model, "cover_min_jump")
     a = similar(Array{T}, axr)
     b = similar(Array{T}, axc)
     for (i, k) in pairs(pr)
@@ -194,8 +201,9 @@ function _cover_min_abslog1(A, start)
     # degeneracy the second stage resolves, and stays in force there.
     @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
     JuMP.optimize!(model)
+    check_solved(model, "cover_min")
     residuals = [α[i] + β[j] - logA[i, j] for i in 1:m, j in 1:n if Apos[i, j] != 0]
-    _minimize_l2_over_l1_face!(model, lin, residuals)
+    _minimize_l2_over_l1_face!(model, lin, residuals, "cover_min")
     a = similar(Array{T}, axr)
     b = similar(Array{T}, axc)
     for (i, k) in pairs(pr)

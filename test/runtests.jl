@@ -42,7 +42,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
                      :_prepare_cover_start!, :_prepare_symcover_start!,
                      :_prepare_soft_cover_start!, :_prepare_soft_symcover_start!,
                      :foreach_support, :foreach_support_sym,
-                     :cover_min_jump, :symcover_min_jump)
+                     :cover_min_jump, :symcover_min_jump, :check_solved)
         # Non-public names owned by other packages, each with no public equivalent:
         # `FreeUnits`/`Unit` are Unitful's unit representation, `Optimizer` is the
         # solver handle JuMP's own documented `Model(HiGHS.Optimizer)` entry point

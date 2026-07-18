@@ -49,6 +49,12 @@
     A_rank1 = [2.0 1.0 4.0; 1.0 0.5 2.0; 4.0 2.0 8.0]
     a_soft = soft_symcover_min(AbsLog{2}(), A_rank1)
     @test cover_objective(AbsLog{2}(), a_soft, A_rank1) < 1e-8
+
+    # A solve that does not reach an optimum is an error, not a cover: this input
+    # leaves the AbsLog{1} LP unbounded, and the point the solver holds is the base
+    # of a ray rather than a minimizer.
+    @test_throws "terminated with status" symcover_min(AbsLog{1}(), [0.0 0.0; 1.0 0.0])
+    @test_throws "symcover_min" symcover_min(AbsLog{1}(), [0.0 0.0; 1.0 0.0])
 end
 
 @testset "symcover_min and soft_symcover_min (JuMP/Ipopt, AbsLinear)" begin
