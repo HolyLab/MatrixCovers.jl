@@ -4,6 +4,7 @@ using JuMP: JuMP, @variable, @objective, @constraint
 using HiGHS: HiGHS
 using MatrixCovers
 using MatrixCovers: AbsLog
+using MatrixCovers: _edge_list, _sym_edge_list, _degrees
 using LinearAlgebra: dot
 
 check_solved(model, fname) =
@@ -14,6 +15,11 @@ check_solved(model, fname) =
 # whose axes match `A`'s so offset axes are honored. A row/column of `A` with no
 # nonzero entry carries no constraint or objective term; its scale is set to exactly
 # 0, matching the native solvers.
+#
+# `A` is read through the support hook and gathered into a flat edge list in position
+# space — `ei`/`ej` the endpoints, `elog` the log-magnitude — so a model costs O(nnz)
+# to build rather than O(length(A)). The symmetric list is the full-grid reading, whose
+# `ei <= ej` half is the constraint set.
 
 # Exact reference for the native `symcover_min(::AbsLog{2})`: same QP, solved by
 # HiGHS. Not exported; used by the test suite to cross-check the native solver.
@@ -24,15 +30,14 @@ function MatrixCovers.symcover_min_jump(::AbsLog{2}, A)
     T = float(real(eltype(A)))
     pr = collect(axr)
     n = length(pr)
-    Apos = [A[pr[i], pr[j]] for i in 1:n, j in 1:n]
-    logA = log.(abs.(Apos))
-    supported = [any(!iszero, @view Apos[i, :]) || any(!iszero, @view Apos[:, i]) for i in 1:n]
+    ei, ej, elog = _sym_edge_list(A, T)
+    supported = _degrees(ei, n) .> 0
     model = JuMP.Model(HiGHS.Optimizer)
     JuMP.set_silent(model)
     @variable(model, α[1:n])
-    @objective(model, Min, sum(abs2, α[i] + α[j] - logA[i, j] for i in 1:n, j in 1:n if Apos[i, j] != 0))
-    for i in 1:n, j in i:n
-        Apos[i, j] != 0 && @constraint(model, α[i] + α[j] - logA[i, j] >= 0)
+    @objective(model, Min, sum(abs2, α[ei[e]] + α[ej[e]] - elog[e] for e in eachindex(ei)))
+    for e in eachindex(ei)
+        ei[e] <= ej[e] && @constraint(model, α[ei[e]] + α[ej[e]] - elog[e] >= 0)
     end
     JuMP.optimize!(model)
     check_solved(model, "symcover_min_jump")
@@ -93,11 +98,11 @@ function _symcover_min_abslog1(A, start)
     T = float(real(eltype(A)))
     pr = collect(axr)
     n = length(pr)
-    Apos = [A[pr[i], pr[j]] for i in 1:n, j in 1:n]
-    logA = log.(abs.(Apos))
-    colcount = vec(count(!iszero, Apos, dims=1))
-    rowcount = vec(count(!iszero, Apos, dims=2))
-    supported = [colcount[i] > 0 || rowcount[i] > 0 for i in 1:n]
+    ei, ej, elog = _sym_edge_list(A, T)
+    # The gather is already the full grid, so a position's degree is both its row
+    # count and its column count.
+    cnt = _degrees(ei, n)
+    supported = cnt .> 0
     model = JuMP.Model(HiGHS.Optimizer)
     JuMP.set_silent(model)
     if start === nothing
@@ -106,14 +111,14 @@ function _symcover_min_abslog1(A, start)
         α0 = [supported[k] ? log(T(start[pr[k]])) : zero(T) for k in 1:n]
         @variable(model, α[k=1:n], start = α0[k])
     end
-    lin = dot(α, colcount .+ rowcount)
+    lin = dot(α, 2 .* cnt)
     @objective(model, Min, lin)
-    for i in 1:n, j in i:n
-        Apos[i, j] != 0 && @constraint(model, α[i] + α[j] - logA[i, j] >= 0)
+    for e in eachindex(ei)
+        ei[e] <= ej[e] && @constraint(model, α[ei[e]] + α[ej[e]] - elog[e] >= 0)
     end
     JuMP.optimize!(model)
     check_solved(model, "symcover_min")
-    residuals = [α[i] + α[j] - logA[i, j] for i in 1:n, j in 1:n if Apos[i, j] != 0]
+    residuals = [α[ei[e]] + α[ej[e]] - elog[e] for e in eachindex(ei)]
     _minimize_l2_over_l1_face!(model, lin, residuals, "symcover_min")
     a = similar(Array{T}, axr)
     for (i, k) in pairs(pr)
@@ -130,17 +135,16 @@ function MatrixCovers.cover_min_jump(::AbsLog{2}, A)
     pc = collect(axc)
     m = length(pr)
     n = length(pc)
-    Apos = [A[pr[i], pc[j]] for i in 1:m, j in 1:n]
-    logA = log.(abs.(Apos))
+    ei, ej, elog = _edge_list(A, T)
     model = JuMP.Model(HiGHS.Optimizer)
     JuMP.set_silent(model)
     @variable(model, α[1:m])
     @variable(model, β[1:n])
-    @objective(model, Min, sum(abs2, α[i] + β[j] - logA[i, j] for i in 1:m, j in 1:n if Apos[i, j] != 0))
-    for i in 1:m, j in 1:n
-        Apos[i, j] != 0 && @constraint(model, α[i] + β[j] - logA[i, j] >= 0)
+    @objective(model, Min, sum(abs2, α[ei[e]] + β[ej[e]] - elog[e] for e in eachindex(ei)))
+    for e in eachindex(ei)
+        @constraint(model, α[ei[e]] + β[ej[e]] - elog[e] >= 0)
     end
-    nza, nzb = vec(sum(!iszero, Apos; dims=2)), vec(sum(!iszero, Apos; dims=1))
+    nza, nzb = _degrees(ei, m), _degrees(ej, n)
     @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
     JuMP.optimize!(model)
     check_solved(model, "cover_min_jump")
@@ -176,10 +180,9 @@ function _cover_min_abslog1(A, start)
     pc = collect(axc)
     m = length(pr)
     n = length(pc)
-    Apos = [A[pr[i], pc[j]] for i in 1:m, j in 1:n]
-    logA = log.(abs.(Apos))
-    colcount = vec(count(!iszero, Apos, dims=1))
-    rowcount = vec(count(!iszero, Apos, dims=2))
+    ei, ej, elog = _edge_list(A, T)
+    rowcount = _degrees(ei, m)
+    colcount = _degrees(ej, n)
     model = JuMP.Model(HiGHS.Optimizer)
     JuMP.set_silent(model)
     if start === nothing
@@ -194,8 +197,8 @@ function _cover_min_abslog1(A, start)
     end
     lin = dot(α, rowcount) + dot(β, colcount)
     @objective(model, Min, lin)
-    for i in 1:m, j in 1:n
-        Apos[i, j] != 0 && @constraint(model, α[i] + β[j] - logA[i, j] >= 0)
+    for e in eachindex(ei)
+        @constraint(model, α[ei[e]] + β[ej[e]] - elog[e] >= 0)
     end
     nza, nzb = rowcount, colcount
     # Gauge pin: the products a[i]*b[j] are unchanged by a -> c*a, b -> b/c, so without this
@@ -204,7 +207,7 @@ function _cover_min_abslog1(A, start)
     @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
     JuMP.optimize!(model)
     check_solved(model, "cover_min")
-    residuals = [α[i] + β[j] - logA[i, j] for i in 1:m, j in 1:n if Apos[i, j] != 0]
+    residuals = [α[ei[e]] + β[ej[e]] - elog[e] for e in eachindex(ei)]
     _minimize_l2_over_l1_face!(model, lin, residuals, "cover_min")
     a = similar(Array{T}, axr)
     b = similar(Array{T}, axc)

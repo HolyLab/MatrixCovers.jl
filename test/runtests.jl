@@ -44,7 +44,8 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
                      :_prepare_soft_cover_start!, :_prepare_soft_symcover_start!,
                      :foreach_support, :foreach_support_sym,
                      :cover_min_jump, :symcover_min_jump, :check_solved,
-                     :require_abs_symmetric)
+                     :require_abs_symmetric,
+                     :_edge_list, :_sym_edge_list, :_degrees)
         # Non-public names owned by other packages, each with no public equivalent:
         # `FreeUnits`/`Unit` are Unitful's unit representation and `Units` their
         # abstract supertype, needed to reject the unit types this package cannot

@@ -154,6 +154,44 @@ function _nsupport(A::AbstractMatrix)
     return n[]
 end
 
+# Support gathered as a flat edge list in 1-based position space, for solver backends
+# whose models are indexed by position rather than by `A`'s own indices: `ei[e]` and
+# `ej[e]` are positions within `axes(A, 1)` and `axes(A, 2)`, and `elog[e]` is
+# `log(abs(A[i,j]))`, the form every model here uses. Building a model from this costs
+# O(nnz) rather than the O(length(A)) of materializing the matrix in position space.
+function _edge_list(A::AbstractMatrix, ::Type{T}) where T
+    or, oc = first(axes(A, 1)) - 1, first(axes(A, 2)) - 1
+    ei, ej, elog = Int[], Int[], T[]
+    foreach_support(A) do i, j, v
+        push!(ei, i - or); push!(ej, j - oc); push!(elog, log(T(v)))
+    end
+    return ei, ej, elog
+end
+
+# Symmetric counterpart: each off-diagonal pair is entered in both orientations and the
+# diagonal once, so the list is the full-grid reading of `A` (see `foreach_support_sym`'s
+# *Objective weighting*). A caller wanting the triangle instead takes the `ei[e] <= ej[e]`
+# half, which is the same constraint set and the other objective convention.
+function _sym_edge_list(A::AbstractMatrix, ::Type{T}) where T
+    o = first(axes(A, 1)) - 1
+    ei, ej, elog = Int[], Int[], T[]
+    foreach_support_sym(A) do i, j, v
+        lv = log(T(v))
+        push!(ei, i - o); push!(ej, j - o); push!(elog, lv)
+        i == j || (push!(ei, j - o); push!(ej, i - o); push!(elog, lv))
+    end
+    return ei, ej, elog
+end
+
+# Number of edges incident on each of `n` positions, counting one endpoint per edge.
+function _degrees(endpoints, n)
+    d = zeros(Int, n)
+    for p in endpoints
+        d[p] += 1
+    end
+    return d
+end
+
 # Support of `A` gathered into per-group neighbor lists, in compressed form: the
 # entries of group `g` occupy the slots `_slots(S, g)`, with `S.idx[s]` the
 # partner index and `S.val[s]` the magnitude.

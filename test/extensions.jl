@@ -473,3 +473,48 @@ end
     @test e5 isa MethodError
     @test !occursin("loading JuMP", sprint(showerror, e5))
 end
+
+# `HookOnlyMatrix` (defined in soft_covers.jl) throws from `getindex`, so a model
+# builder that materialized `A` in position space could not get this far.
+@testset "the solver entry points read through the support hook" begin
+    entries = [(1, 1, 2.0), (1, 3, 1.5), (2, 2, 3.0), (2, 4, 0.5), (3, 4, 4.0), (4, 4, 1.0)]
+    M = HookOnlyMatrix(entries, 4)
+    dense = zeros(4, 4)
+    for (i, j, v) in entries
+        dense[i, j] = dense[j, i] = v
+    end
+
+    @test symcover_min(AbsLog{2}(), M) ≈ symcover_min(AbsLog{2}(), dense) rtol=1e-8
+    @test MatrixCovers.symcover_min_jump(AbsLog{2}(), M) ≈
+          MatrixCovers.symcover_min_jump(AbsLog{2}(), dense) rtol=1e-6
+    @test symcover_min(AbsLog{1}(), M) ≈ symcover_min(AbsLog{1}(), dense) rtol=1e-6
+    @test iscover(symcover_min(AbsLog{1}(), M), dense; rtol=1e-8)
+
+    for (fh, fd) in ((cover_min(AbsLog{1}(), M), cover_min(AbsLog{1}(), dense)),
+                     (MatrixCovers.cover_min_jump(AbsLog{2}(), M),
+                      MatrixCovers.cover_min_jump(AbsLog{2}(), dense)))
+        @test fh[1] ≈ fd[1] rtol=1e-6
+        @test fh[2] ≈ fd[2] rtol=1e-6
+    end
+
+    # Ipopt: the AbsLinear kernels, whose starts the caller supplies.
+    for p in (1, 2)
+        ϕ = AbsLinear{p}()
+        sh = symcover_min!(ϕ, symcover(ϕ, M), M)
+        sd = symcover_min!(ϕ, symcover(ϕ, dense), dense)
+        @test sh ≈ sd rtol=1e-5
+
+        ah, bh = cover_min!(ϕ, cover(ϕ, M)..., M)
+        ad, bd = cover_min!(ϕ, cover(ϕ, dense)..., dense)
+        @test ah ≈ ad rtol=1e-5
+        @test bh ≈ bd rtol=1e-5
+
+        @test soft_symcover_min!(ϕ, soft_symcover(ϕ, M), M) ≈
+              soft_symcover_min!(ϕ, soft_symcover(ϕ, dense), dense) rtol=1e-5
+
+        sah, sbh = soft_cover_min!(ϕ, soft_cover(ϕ, M)..., M)
+        sad, sbd = soft_cover_min!(ϕ, soft_cover(ϕ, dense)..., dense)
+        @test sah ≈ sad rtol=1e-5
+        @test sbh ≈ sbd rtol=1e-5
+    end
+end

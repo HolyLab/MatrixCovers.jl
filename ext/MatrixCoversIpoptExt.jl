@@ -4,12 +4,19 @@ using JuMP: JuMP, @variable, @objective, @constraint, @NLobjective, @NLconstrain
 using Ipopt: Ipopt
 using MatrixCovers
 using MatrixCovers: AbsLinear
+using MatrixCovers: _edge_list, _sym_edge_list, _degrees
 
 # The models are built over 1-based positions 1:n; `pr`/`pc` map each position to the
 # corresponding axis index of `A`, and results are scattered back onto vectors
 # whose axes match `A`'s so offset axes are honored. A row/column of `A` with no
 # nonzero entry appears in no constraint or objective term; its scale is set to
 # exactly 0, matching the native solvers.
+#
+# `A` is read through the support hook and gathered into a flat edge list in position
+# space — `ei`/`ej` the endpoints, `elog` the log-magnitude — so a model costs O(nnz)
+# to build rather than O(length(A)). The symmetric list is the full-grid reading; the
+# hard-cover models below sum over its `ei <= ej` half instead, per the objective each
+# one is defined by.
 
 # The AbsLinear objectives are non-convex, so Ipopt returns a local minimum of
 # whichever basin it descends into from the start it is given. That makes the start a
@@ -33,20 +40,18 @@ function MatrixCovers.symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
     T = float(real(eltype(A)))
     pr = collect(axr)
     n = length(pr)
-    Apos = [A[pr[i], pr[j]] for i in 1:n, j in 1:n]
-    supported = [any(!iszero, @view Apos[i, :]) || any(!iszero, @view Apos[:, i]) for i in 1:n]
-    # Precompute nonzero upper-triangle entries
-    idx = [(i, j) for i in 1:n for j in i:n if Apos[i, j] != 0]
-    logA = Dict((i, j) => log(abs(Apos[i, j])) for (i, j) in idx)
+    fi, fj, flog = _sym_edge_list(A, T)
+    supported = _degrees(fi, n) .> 0
+    tri = [e for e in eachindex(fi) if fi[e] <= fj[e]]   # the i ≤ j entries this objective sums over
 
     model = JuMP.Model(Ipopt.Optimizer)
     JuMP.set_silent(model)
     start0 = [supported[k] && !iszero(a[pr[k]]) ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
     @NLobjective(model, Min,
-        sum((1 - exp(logA[(i,j)] - α[i] - α[j]))^2 for (i,j) in idx))
-    for (i, j) in idx
-        @constraint(model, α[i] + α[j] >= logA[(i, j)])
+        sum((1 - exp(flog[e] - α[fi[e]] - α[fj[e]]))^2 for e in tri))
+    for e in tri
+        @constraint(model, α[fi[e]] + α[fj[e]] >= flog[e])
     end
     JuMP.optimize!(model)
     check_solved(model, "symcover_min!")
@@ -62,25 +67,23 @@ function MatrixCovers.symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
     T = float(real(eltype(A)))
     pr = collect(axr)
     n = length(pr)
-    Apos = [A[pr[i], pr[j]] for i in 1:n, j in 1:n]
-    supported = [any(!iszero, @view Apos[i, :]) || any(!iszero, @view Apos[:, i]) for i in 1:n]
-    idx = [(i, j) for i in 1:n for j in i:n if Apos[i, j] != 0]
-    logA = Dict((i, j) => log(abs(Apos[i, j])) for (i, j) in idx)
+    fi, fj, flog = _sym_edge_list(A, T)
+    supported = _degrees(fi, n) .> 0
+    tri = [e for e in eachindex(fi) if fi[e] <= fj[e]]   # the i ≤ j entries this objective sums over
 
     model = JuMP.Model(Ipopt.Optimizer)
     JuMP.set_silent(model)
     start0 = [supported[k] && !iszero(a[pr[k]]) ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
     # |1 - exp(lA - αi - αj)| via auxiliary variables t ≥ 0 and slack s
-    @variable(model, t[eachindex(idx)] >= 0)
-    for (k, (i, j)) in enumerate(idx)
-        lA = logA[(i, j)]
-        @NLconstraint(model,  1 - exp(lA - α[i] - α[j]) <= t[k])
-        @NLconstraint(model, -1 + exp(lA - α[i] - α[j]) <= t[k])
+    @variable(model, t[eachindex(tri)] >= 0)
+    for (k, e) in enumerate(tri)
+        @NLconstraint(model,  1 - exp(flog[e] - α[fi[e]] - α[fj[e]]) <= t[k])
+        @NLconstraint(model, -1 + exp(flog[e] - α[fi[e]] - α[fj[e]]) <= t[k])
     end
     @objective(model, Min, sum(t))
-    for (i, j) in idx
-        @constraint(model, α[i] + α[j] >= logA[(i, j)])
+    for e in tri
+        @constraint(model, α[fi[e]] + α[fj[e]] >= flog[e])
     end
     JuMP.optimize!(model)
     check_solved(model, "symcover_min!")
@@ -107,11 +110,9 @@ function MatrixCovers.cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractV
     T = float(real(eltype(A)))
     pr, pc = collect(axr), collect(axc)
     m, n = length(pr), length(pc)
-    Apos = [A[pr[i], pc[j]] for i in 1:m, j in 1:n]
-    nza = vec(count(!iszero, Apos, dims=2))
-    nzb = vec(count(!iszero, Apos, dims=1))
-    idx = [(i, j) for i in 1:m for j in 1:n if Apos[i, j] != 0]
-    logA = Dict((i, j) => log(abs(Apos[i, j])) for (i, j) in idx)
+    ei, ej, elog = _edge_list(A, T)
+    nza = _degrees(ei, m)
+    nzb = _degrees(ej, n)
 
     model = JuMP.Model(Ipopt.Optimizer)
     JuMP.set_silent(model)
@@ -120,9 +121,9 @@ function MatrixCovers.cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractV
     @variable(model, α[i=1:m], start = α0[i])
     @variable(model, β[j=1:n], start = β0[j])
     @NLobjective(model, Min,
-        sum((1 - exp(logA[(i,j)] - α[i] - β[j]))^2 for (i,j) in idx))
-    for (i, j) in idx
-        @constraint(model, α[i] + β[j] >= logA[(i, j)])
+        sum((1 - exp(elog[e] - α[ei[e]] - β[ej[e]]))^2 for e in eachindex(ei)))
+    for e in eachindex(ei)
+        @constraint(model, α[ei[e]] + β[ej[e]] >= elog[e])
     end
     @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
     JuMP.optimize!(model)
@@ -142,11 +143,9 @@ function MatrixCovers.cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractV
     T = float(real(eltype(A)))
     pr, pc = collect(axr), collect(axc)
     m, n = length(pr), length(pc)
-    Apos = [A[pr[i], pc[j]] for i in 1:m, j in 1:n]
-    nza = vec(count(!iszero, Apos, dims=2))
-    nzb = vec(count(!iszero, Apos, dims=1))
-    idx = [(i, j) for i in 1:m for j in 1:n if Apos[i, j] != 0]
-    logA = Dict((i, j) => log(abs(Apos[i, j])) for (i, j) in idx)
+    ei, ej, elog = _edge_list(A, T)
+    nza = _degrees(ei, m)
+    nzb = _degrees(ej, n)
 
     model = JuMP.Model(Ipopt.Optimizer)
     JuMP.set_silent(model)
@@ -154,15 +153,14 @@ function MatrixCovers.cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractV
     β0 = [nzb[j] > 0 ? log(T(b[pc[j]])) : zero(T) for j in 1:n]
     @variable(model, α[i=1:m], start = α0[i])
     @variable(model, β[j=1:n], start = β0[j])
-    @variable(model, t[eachindex(idx)] >= 0)
-    for (k, (i, j)) in enumerate(idx)
-        lA = logA[(i, j)]
-        @NLconstraint(model,  1 - exp(lA - α[i] - β[j]) <= t[k])
-        @NLconstraint(model, -1 + exp(lA - α[i] - β[j]) <= t[k])
+    @variable(model, t[eachindex(ei)] >= 0)
+    for e in eachindex(ei)
+        @NLconstraint(model,  1 - exp(elog[e] - α[ei[e]] - β[ej[e]]) <= t[e])
+        @NLconstraint(model, -1 + exp(elog[e] - α[ei[e]] - β[ej[e]]) <= t[e])
     end
     @objective(model, Min, sum(t))
-    for (i, j) in idx
-        @constraint(model, α[i] + β[j] >= logA[(i, j)])
+    for e in eachindex(ei)
+        @constraint(model, α[ei[e]] + β[ej[e]] >= elog[e])
     end
     @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
     JuMP.optimize!(model)
@@ -189,19 +187,16 @@ function MatrixCovers.soft_symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
     T = float(real(eltype(A)))
     pr = collect(axr)
     n = length(pr)
-    Apos = [A[pr[i], pr[j]] for i in 1:n, j in 1:n]
-    supported = [any(!iszero, @view Apos[i, :]) || any(!iszero, @view Apos[:, i]) for i in 1:n]
-    # Include ALL entries (including zeros, which contribute (1-0)^2=1 regardless of α)
-    nonzero_idx = [(i, j) for i in 1:n, j in 1:n if Apos[i, j] != 0]
-    logA = Dict((i, j) => log(abs(Apos[i, j])) for (i, j) in nonzero_idx)
-    n_zeros = n^2 - length(nonzero_idx)
+    fi, fj, flog = _sym_edge_list(A, T)
+    supported = _degrees(fi, n) .> 0
+    n_zeros = n^2 - length(fi)   # a zero entry contributes (1-0)^2 = 1 regardless of α
 
     model = JuMP.Model(Ipopt.Optimizer)
     JuMP.set_silent(model)
     start0 = [supported[k] ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
     @NLobjective(model, Min,
-        sum((1 - exp(logA[(i,j)] - α[i] - α[j]))^2 for (i,j) in nonzero_idx) + n_zeros)
+        sum((1 - exp(flog[e] - α[fi[e]] - α[fj[e]]))^2 for e in eachindex(fi)) + n_zeros)
     JuMP.optimize!(model)
     check_solved(model, "soft_symcover_min!")
     for (i, k) in pairs(pr)
@@ -216,21 +211,18 @@ function MatrixCovers.soft_symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
     T = float(real(eltype(A)))
     pr = collect(axr)
     n = length(pr)
-    Apos = [A[pr[i], pr[j]] for i in 1:n, j in 1:n]
-    supported = [any(!iszero, @view Apos[i, :]) || any(!iszero, @view Apos[:, i]) for i in 1:n]
-    nonzero_idx = [(i, j) for i in 1:n, j in 1:n if Apos[i, j] != 0]
-    logA = Dict((i, j) => log(abs(Apos[i, j])) for (i, j) in nonzero_idx)
-    n_zeros = n^2 - length(nonzero_idx)
+    fi, fj, flog = _sym_edge_list(A, T)
+    supported = _degrees(fi, n) .> 0
+    n_zeros = n^2 - length(fi)   # a zero entry contributes |1 - 0| = 1 regardless of α
 
     model = JuMP.Model(Ipopt.Optimizer)
     JuMP.set_silent(model)
     start0 = [supported[k] ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
-    @variable(model, t[eachindex(nonzero_idx)] >= 0)
-    for (k, (i, j)) in enumerate(nonzero_idx)
-        lA = logA[(i, j)]
-        @NLconstraint(model,  1 - exp(lA - α[i] - α[j]) <= t[k])
-        @NLconstraint(model, -1 + exp(lA - α[i] - α[j]) <= t[k])
+    @variable(model, t[eachindex(fi)] >= 0)
+    for e in eachindex(fi)
+        @NLconstraint(model,  1 - exp(flog[e] - α[fi[e]] - α[fj[e]]) <= t[e])
+        @NLconstraint(model, -1 + exp(flog[e] - α[fi[e]] - α[fj[e]]) <= t[e])
     end
     @objective(model, Min, sum(t) + n_zeros)
     JuMP.optimize!(model)
@@ -255,12 +247,10 @@ function MatrixCovers.soft_cover_min!(::AbsLinear{2}, a::AbstractVector, b::Abst
     T = float(real(eltype(A)))
     pr, pc = collect(axr), collect(axc)
     m, n = length(pr), length(pc)
-    Apos = [A[pr[i], pc[j]] for i in 1:m, j in 1:n]
-    nza = vec(count(!iszero, Apos, dims=2))
-    nzb = vec(count(!iszero, Apos, dims=1))
-    idx = [(i, j) for i in 1:m for j in 1:n if Apos[i, j] != 0]
-    logA = Dict((i, j) => log(abs(Apos[i, j])) for (i, j) in idx)
-    n_zeros = m * n - length(idx)
+    ei, ej, elog = _edge_list(A, T)
+    nza = _degrees(ei, m)
+    nzb = _degrees(ej, n)
+    n_zeros = m * n - length(ei)
 
     model = JuMP.Model(Ipopt.Optimizer)
     JuMP.set_silent(model)
@@ -269,7 +259,7 @@ function MatrixCovers.soft_cover_min!(::AbsLinear{2}, a::AbstractVector, b::Abst
     @variable(model, α[i=1:m], start = α0[i])
     @variable(model, β[j=1:n], start = β0[j])
     @NLobjective(model, Min,
-        sum((1 - exp(logA[(i,j)] - α[i] - β[j]))^2 for (i,j) in idx) + n_zeros)
+        sum((1 - exp(elog[e] - α[ei[e]] - β[ej[e]]))^2 for e in eachindex(ei)) + n_zeros)
     @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
     JuMP.optimize!(model)
     check_solved(model, "soft_cover_min!")
@@ -288,12 +278,10 @@ function MatrixCovers.soft_cover_min!(::AbsLinear{1}, a::AbstractVector, b::Abst
     T = float(real(eltype(A)))
     pr, pc = collect(axr), collect(axc)
     m, n = length(pr), length(pc)
-    Apos = [A[pr[i], pc[j]] for i in 1:m, j in 1:n]
-    nza = vec(count(!iszero, Apos, dims=2))
-    nzb = vec(count(!iszero, Apos, dims=1))
-    idx = [(i, j) for i in 1:m for j in 1:n if Apos[i, j] != 0]
-    logA = Dict((i, j) => log(abs(Apos[i, j])) for (i, j) in idx)
-    n_zeros = m * n - length(idx)
+    ei, ej, elog = _edge_list(A, T)
+    nza = _degrees(ei, m)
+    nzb = _degrees(ej, n)
+    n_zeros = m * n - length(ei)
 
     model = JuMP.Model(Ipopt.Optimizer)
     JuMP.set_silent(model)
@@ -301,11 +289,10 @@ function MatrixCovers.soft_cover_min!(::AbsLinear{1}, a::AbstractVector, b::Abst
     β0 = [nzb[j] > 0 ? log(T(b[pc[j]])) : zero(T) for j in 1:n]
     @variable(model, α[i=1:m], start = α0[i])
     @variable(model, β[j=1:n], start = β0[j])
-    @variable(model, t[eachindex(idx)] >= 0)
-    for (k, (i, j)) in enumerate(idx)
-        lA = logA[(i, j)]
-        @NLconstraint(model,  1 - exp(lA - α[i] - β[j]) <= t[k])
-        @NLconstraint(model, -1 + exp(lA - α[i] - β[j]) <= t[k])
+    @variable(model, t[eachindex(ei)] >= 0)
+    for e in eachindex(ei)
+        @NLconstraint(model,  1 - exp(elog[e] - α[ei[e]] - β[ej[e]]) <= t[e])
+        @NLconstraint(model, -1 + exp(elog[e] - α[ei[e]] - β[ej[e]]) <= t[e])
     end
     @objective(model, Min, sum(t) + n_zeros)
     @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
