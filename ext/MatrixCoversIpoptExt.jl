@@ -27,10 +27,22 @@ using MatrixCovers: _edge_list, _sym_edge_list, _degrees
 check_solved(model, fname) =
     MatrixCovers.check_solved(JuMP.termination_status(model), "Ipopt", fname)
 
+# The `i ≤ j` half of a symmetric gather, paired with the multiplicity `w` each entry
+# stands for in the full grid: an off-diagonal pair is two entries of `A`, a diagonal
+# entry one. Carrying the weight is equivalent to summing over both orientations and
+# costs half the terms — and, for the AbsLinear{1} models, half the auxiliary variables.
+function _triangle(fi, fj, flog)
+    keep = [e for e in eachindex(fi) if fi[e] <= fj[e]]
+    return fi[keep], fj[keep], flog[keep], [fi[e] == fj[e] ? 1 : 2 for e in keep]
+end
+
 # ============================================================
 # Hard cover: symcover_min!(::AbsLinear{p}, a, A)
-# Minimizes ∑_{i≤j: A[i,j]≠0} |1 - |A[i,j]|/(a[i]*a[j])|^p
-# subject to a[i]*a[j] ≥ |A[i,j]| for all i≤j with A[i,j]≠0.
+# Minimizes ∑_{i,j: A[i,j]≠0} |1 - |A[i,j]|/(a[i]*a[j])|^p over the full grid, so an
+# off-diagonal pair counts twice and a diagonal entry once — the weighting
+# `cover_objective` reports and the rest of the package minimizes.
+# subject to a[i]*a[j] ≥ |A[i,j]| for all i≤j with A[i,j]≠0, which is the same
+# constraint set as imposing it on the full grid.
 # Variables: α[i] = log(a[i]); constraint: α[i]+α[j] ≥ log|A[i,j]|.
 # ============================================================
 
@@ -42,16 +54,16 @@ function MatrixCovers.symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
     n = length(pr)
     fi, fj, flog = _sym_edge_list(A, T)
     supported = _degrees(fi, n) .> 0
-    tri = [e for e in eachindex(fi) if fi[e] <= fj[e]]   # the i ≤ j entries this objective sums over
+    ti, tj, tlog, tw = _triangle(fi, fj, flog)
 
     model = JuMP.Model(Ipopt.Optimizer)
     JuMP.set_silent(model)
     start0 = [supported[k] && !iszero(a[pr[k]]) ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
     @NLobjective(model, Min,
-        sum((1 - exp(flog[e] - α[fi[e]] - α[fj[e]]))^2 for e in tri))
-    for e in tri
-        @constraint(model, α[fi[e]] + α[fj[e]] >= flog[e])
+        sum(tw[k] * (1 - exp(tlog[k] - α[ti[k]] - α[tj[k]]))^2 for k in eachindex(ti)))
+    for k in eachindex(ti)
+        @constraint(model, α[ti[k]] + α[tj[k]] >= tlog[k])
     end
     JuMP.optimize!(model)
     check_solved(model, "symcover_min!")
@@ -69,21 +81,21 @@ function MatrixCovers.symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
     n = length(pr)
     fi, fj, flog = _sym_edge_list(A, T)
     supported = _degrees(fi, n) .> 0
-    tri = [e for e in eachindex(fi) if fi[e] <= fj[e]]   # the i ≤ j entries this objective sums over
+    ti, tj, tlog, tw = _triangle(fi, fj, flog)
 
     model = JuMP.Model(Ipopt.Optimizer)
     JuMP.set_silent(model)
     start0 = [supported[k] && !iszero(a[pr[k]]) ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
     # |1 - exp(lA - αi - αj)| via auxiliary variables t ≥ 0 and slack s
-    @variable(model, t[eachindex(tri)] >= 0)
-    for (k, e) in enumerate(tri)
-        @NLconstraint(model,  1 - exp(flog[e] - α[fi[e]] - α[fj[e]]) <= t[k])
-        @NLconstraint(model, -1 + exp(flog[e] - α[fi[e]] - α[fj[e]]) <= t[k])
+    @variable(model, t[eachindex(ti)] >= 0)
+    for k in eachindex(ti)
+        @NLconstraint(model,  1 - exp(tlog[k] - α[ti[k]] - α[tj[k]]) <= t[k])
+        @NLconstraint(model, -1 + exp(tlog[k] - α[ti[k]] - α[tj[k]]) <= t[k])
     end
-    @objective(model, Min, sum(t))
-    for e in tri
-        @constraint(model, α[fi[e]] + α[fj[e]] >= flog[e])
+    @objective(model, Min, sum(tw[k] * t[k] for k in eachindex(ti)))
+    for k in eachindex(ti)
+        @constraint(model, α[ti[k]] + α[tj[k]] >= tlog[k])
     end
     JuMP.optimize!(model)
     check_solved(model, "symcover_min!")
@@ -189,6 +201,7 @@ function MatrixCovers.soft_symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
     n = length(pr)
     fi, fj, flog = _sym_edge_list(A, T)
     supported = _degrees(fi, n) .> 0
+    ti, tj, tlog, tw = _triangle(fi, fj, flog)
     n_zeros = n^2 - length(fi)   # a zero entry contributes (1-0)^2 = 1 regardless of α
 
     model = JuMP.Model(Ipopt.Optimizer)
@@ -196,7 +209,7 @@ function MatrixCovers.soft_symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
     start0 = [supported[k] ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
     @NLobjective(model, Min,
-        sum((1 - exp(flog[e] - α[fi[e]] - α[fj[e]]))^2 for e in eachindex(fi)) + n_zeros)
+        sum(tw[k] * (1 - exp(tlog[k] - α[ti[k]] - α[tj[k]]))^2 for k in eachindex(ti)) + n_zeros)
     JuMP.optimize!(model)
     check_solved(model, "soft_symcover_min!")
     for (i, k) in pairs(pr)
@@ -213,18 +226,19 @@ function MatrixCovers.soft_symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
     n = length(pr)
     fi, fj, flog = _sym_edge_list(A, T)
     supported = _degrees(fi, n) .> 0
+    ti, tj, tlog, tw = _triangle(fi, fj, flog)
     n_zeros = n^2 - length(fi)   # a zero entry contributes |1 - 0| = 1 regardless of α
 
     model = JuMP.Model(Ipopt.Optimizer)
     JuMP.set_silent(model)
     start0 = [supported[k] ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
-    @variable(model, t[eachindex(fi)] >= 0)
-    for e in eachindex(fi)
-        @NLconstraint(model,  1 - exp(flog[e] - α[fi[e]] - α[fj[e]]) <= t[e])
-        @NLconstraint(model, -1 + exp(flog[e] - α[fi[e]] - α[fj[e]]) <= t[e])
+    @variable(model, t[eachindex(ti)] >= 0)
+    for k in eachindex(ti)
+        @NLconstraint(model,  1 - exp(tlog[k] - α[ti[k]] - α[tj[k]]) <= t[k])
+        @NLconstraint(model, -1 + exp(tlog[k] - α[ti[k]] - α[tj[k]]) <= t[k])
     end
-    @objective(model, Min, sum(t) + n_zeros)
+    @objective(model, Min, sum(tw[k] * t[k] for k in eachindex(ti)) + n_zeros)
     JuMP.optimize!(model)
     check_solved(model, "soft_symcover_min!")
     for (i, k) in pairs(pr)

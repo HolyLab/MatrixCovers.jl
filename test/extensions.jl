@@ -152,16 +152,16 @@ end
     # The AbsLinear objectives are non-convex: on this matrix the :hardcover and
     # :geomean starts descend into genuinely different local minima, which is what
     # makes a menu of starts worth having.
-    Abasin = [6.609216272192496 1.032613546278995 55.276094662396076 0.5076927138328724;
-              1.032613546278995 3.1390835186570034 11.658167585612446 38.315826566607555;
-              55.276094662396076 11.658167585612446 0.001705708114264713 21.68951642774627;
-              0.5076927138328724 38.315826566607555 21.68951642774627 0.006443251375371587]
+    Abasin = [81.892035218799 1.06622031288736 29.4700945830419 0.0181293142917846;
+              1.06622031288736 0.243512973596586 38.0236584552296 0.0279078887878805;
+              29.4700945830419 38.0236584552296 8.96405068596511 26.5775238859338;
+              0.0181293142917846 0.0279078887878805 26.5775238859338 42.6650094474717]
     ϕ = AbsLinear{2}()
     a_hard = symcover_min!(ϕ, initialize_symcover(Abasin; strategy=:hardcover), Abasin)
     a_geo = symcover_min!(ϕ, initialize_symcover(Abasin; strategy=:geomean), Abasin)
     @test iscover(a_hard, Abasin; rtol=1e-6)
     @test iscover(a_geo, Abasin; rtol=1e-6)
-    @test cover_objective(ϕ, a_geo, Abasin) < cover_objective(ϕ, a_hard, Abasin) - 1e-3
+    @test cover_objective(ϕ, a_geo, Abasin) < cover_objective(ϕ, a_hard, Abasin) - 0.5
 
     # Offset axes survive the Ipopt position mapping.
     Ao = OffsetArray(A, -1, -1)
@@ -312,10 +312,10 @@ end
     # The matrix on which the starts genuinely disagree: :geomean reaches a better
     # AbsLinear{2} minimum than :hardcover, so a driver that tried only the latter
     # would report the worse of the two.
-    Abasin = [6.609216272192496 1.032613546278995 55.276094662396076 0.5076927138328724;
-              1.032613546278995 3.1390835186570034 11.658167585612446 38.315826566607555;
-              55.276094662396076 11.658167585612446 0.001705708114264713 21.68951642774627;
-              0.5076927138328724 38.315826566607555 21.68951642774627 0.006443251375371587]
+    Abasin = [81.892035218799 1.06622031288736 29.4700945830419 0.0181293142917846;
+              1.06622031288736 0.243512973596586 38.0236584552296 0.0279078887878805;
+              29.4700945830419 38.0236584552296 8.96405068596511 26.5775238859338;
+              0.0181293142917846 0.0279078887878805 26.5775238859338 42.6650094474717]
     Aasym = [1.0 2.0 3.0; 40.0 5.0 0.6]
 
     for ϕ in (AbsLinear{1}(), AbsLinear{2}())
@@ -351,7 +351,7 @@ end
     @test symcover_min(ϕ, Abasin; strategies=(:hardcover,)) ≈
           symcover_min!(ϕ, initialize_symcover(Abasin; strategy=:hardcover), Abasin)
     @test cover_objective(ϕ, symcover_min(ϕ, Abasin), Abasin) <
-          cover_objective(ϕ, symcover_min(ϕ, Abasin; strategies=(:hardcover,)), Abasin) - 1e-3
+          cover_objective(ϕ, symcover_min(ϕ, Abasin; strategies=(:hardcover,)), Abasin) - 0.5
 
     # A matrix whose every row carries a single support entry admits no :leaveout start;
     # that strategy forfeits its slot rather than failing the solve.
@@ -517,4 +517,20 @@ end
         @test sah ≈ sad rtol=1e-5
         @test sbh ≈ sbd rtol=1e-5
     end
+end
+
+# The `sym` AbsLinear solvers minimize the full-grid objective — each off-diagonal
+# pair twice, each diagonal entry once — which is what `cover_objective` reports.
+# This matrix discriminates between that and weighting each unordered pair once:
+# the latter convention puts the optimum near [2.0, 3.177, 1.574] instead. Most
+# matrices do not discriminate, because the binding constraints have zero residual
+# at the optimum and a zero residual is weight-independent.
+@testset "the Ipopt sym objective uses the full-grid weighting" begin
+    A = Float64[4 1 0; 1 1 5; 0 5 2]
+    a0 = fill(sqrt(maximum(A)), 3)
+    a = symcover_min!(AbsLinear{2}(), copy(a0), A)
+    @test a ≈ [2.0, 1.0, 5.0] rtol=1e-6
+    @test iscover(a, A; rtol=1e-6)
+    # The objective reported for the result is the one that was minimized.
+    @test cover_objective(AbsLinear{2}(), a, A) ≈ cover_objective(AbsLinear{2}(), [2.0, 1.0, 5.0], A) rtol=1e-6
 end
