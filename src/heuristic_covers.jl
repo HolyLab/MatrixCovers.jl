@@ -41,7 +41,7 @@ julia> a * a'   # covers |A|: a[i]*a[j] >= abs(A[i, j])
  4.0  4.0
 ```
 """
-symcover(ϕ, A::AbstractMatrix; kwargs...) = symcover(A; kwargs...)
+symcover(ϕ::AbstractCoverPenalty, A::AbstractMatrix; kwargs...) = symcover(A; kwargs...)
 
 function symcover(A::AbstractMatrix; kwargs...)
     axes(A, 2) == axes(A, 1) || throw(ArgumentError("symcover requires a square matrix"))
@@ -61,7 +61,7 @@ must match `axes(A, 1)` (and `A` must be square). `ϕ` has the same meaning as i
 
 See also: [`symcover`](@ref).
 """
-symcover!(ϕ, a::AbstractVector, A::AbstractMatrix; kwargs...) = symcover!(a, A; kwargs...)
+symcover!(ϕ::AbstractCoverPenalty, a::AbstractVector, A::AbstractMatrix; kwargs...) = symcover!(a, A; kwargs...)
 
 function symcover!(a::AbstractVector, A::AbstractMatrix; kwargs...)
     ax = axes(A, 1)
@@ -107,7 +107,7 @@ julia> a * b'
  6.0      5.63709  8.31251
 ```
 """
-cover(ϕ, A::AbstractMatrix; kwargs...) = cover(A; kwargs...)
+cover(ϕ::AbstractCoverPenalty, A::AbstractMatrix; kwargs...) = cover(A; kwargs...)
 
 function cover(A::AbstractMatrix; kwargs...)
     T = float(real(eltype(A)))
@@ -138,7 +138,7 @@ covers.
 
 See also: [`cover`](@ref).
 """
-cover!(ϕ, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
+cover!(ϕ::AbstractCoverPenalty, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
     cover!(a, b, A; kwargs...)
 
 function cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)

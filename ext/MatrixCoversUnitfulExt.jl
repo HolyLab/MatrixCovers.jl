@@ -258,24 +258,24 @@ function asymstart!(f, a::QVector, b::QVector, A::QMatrix, ϕ...; kwargs...)
     return a, b
 end
 
-# Every penalty slot below mirrors MatrixCovers's own method table: where
-# it leaves `ϕ` untyped these do too, and where it dispatches on concrete penalties
-# these enumerate the same ones. Each method is then strictly more specific than the
+# Every penalty slot below mirrors MatrixCovers's own method table: where it
+# accepts any `AbstractCoverPenalty` these do too, and where it dispatches on
+# concrete penalties these enumerate the same ones. Each method is then strictly more specific than the
 # one it shadows -- including those in the JuMP and Ipopt extensions, which leave the
 # matrix slot untyped -- so no ambiguity arises. A penalty the package does not
 # support raises a `MethodError` here exactly as it does on a unitless matrix.
 const PENALTIES = (:(AbsLog{1}), :(AbsLog{2}), :(AbsLinear{1}), :(AbsLinear{2}))
 
-# Heuristic covers and initializers: `ϕ` is untyped upstream and ignored.
+# Heuristic covers and initializers: `ϕ` is checked but not consulted.
 MC.symcover(A::QMatrix; kwargs...) = sym(MC.symcover, A; kwargs...)
-MC.symcover(ϕ, A::QMatrix; kwargs...) = sym(MC.symcover, A, ϕ; kwargs...)
+MC.symcover(ϕ::MC.AbstractCoverPenalty, A::QMatrix; kwargs...) = sym(MC.symcover, A, ϕ; kwargs...)
 MC.symcover!(a::QVector, A::QMatrix; kwargs...) = sym!(MC.symcover!, a, A; kwargs...)
-MC.symcover!(ϕ, a::QVector, A::QMatrix; kwargs...) = sym!(MC.symcover!, a, A, ϕ; kwargs...)
+MC.symcover!(ϕ::MC.AbstractCoverPenalty, a::QVector, A::QMatrix; kwargs...) = sym!(MC.symcover!, a, A, ϕ; kwargs...)
 
 MC.cover(A::QMatrix; kwargs...) = asym(MC.cover, A; kwargs...)
-MC.cover(ϕ, A::QMatrix; kwargs...) = asym(MC.cover, A, ϕ; kwargs...)
+MC.cover(ϕ::MC.AbstractCoverPenalty, A::QMatrix; kwargs...) = asym(MC.cover, A, ϕ; kwargs...)
 MC.cover!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover!, a, b, A; kwargs...)
-MC.cover!(ϕ, a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover!, a, b, A, ϕ; kwargs...)
+MC.cover!(ϕ::MC.AbstractCoverPenalty, a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover!, a, b, A, ϕ; kwargs...)
 
 # `cover`/`cover!` dispatch on `Adjoint`/`Transpose` upstream without an eltype
 # bound, so a wrapped `Quantity` matrix needs these to stay unambiguous.

@@ -45,6 +45,18 @@ end
             @test symcover(ϕ, A) == a
         end
     end
+
+    # Ignored is not the same as unchecked: the slot takes a penalty, so a wrong
+    # first argument fails rather than being silently dropped.
+    A = [4.0 1.5; 1.5 1.0]
+    a = symcover(A)
+    b = copy(a)
+    for bad in (42, "nope", :whatever)
+        @test_throws MethodError symcover(bad, A)
+        @test_throws MethodError symcover!(bad, copy(a), A)
+        @test_throws MethodError cover(bad, A)
+        @test_throws MethodError cover!(bad, copy(a), copy(b), A)
+    end
 end
 
 @testset "symcover with unequal row degrees" begin
