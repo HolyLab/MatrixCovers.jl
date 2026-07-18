@@ -23,6 +23,14 @@ const QVector = AbstractVector{<:Quantity}
 # Unit algebra
 # ============================================================
 
+# Unitful exposes no public accessor for the atomic units of a `FreeUnits`, and no
+# supported way to iterate them, so the code below reads its representation
+# directly: `FreeUnits{N,D,A}` carries `N` as a tuple of `Unit{U,D}`, each with
+# fields `tens::Int` and `power::Rational{Int}`. That layout is what the
+# `Unitful.Unit` and `Unitful.FreeUnits` docstrings specify. The decomposition
+# cannot be replaced by unit arithmetic: `gauge` takes a per-atom median over
+# rational exponents, which `*`, `/`, and `^` cannot express.
+
 # An atomic unit at the first power. A prefix belongs to the atom -- `mm` and `m`
 # are distinct -- so a coordinate named in `mm` keeps `mm` in its cover.
 atomic(x::Unit{N,D}) where {N,D} = FreeUnits{(Unit{N,D}(x.tens, 1//1),), D, nothing}()
