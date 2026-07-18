@@ -153,3 +153,47 @@ end
                   Matrix(Tridiagonal([2.0, 0.5], [3.0, 2.0, 1.0], [2.0, 0.5])); rtol=8eps())
     @test symcover(Bidiagonal([3.0, 2.0, 1.0], [0.0, 0.0], :U)) isa AbstractVector
 end
+
+# The kernels that gather the support into per-group neighbor lists read those
+# lists in place of the matrix, so the gather must reproduce the matrix exactly —
+# including multiplicity. `_sym_support` in particular enters each off-diagonal
+# pair in both orientations, which is what gives a kernel accumulating over its
+# groups the full-grid weighting of `cover_objective` (each off-diagonal pair
+# twice, each diagonal entry once) rather than a halved one.
+@testset "grouped support reproduces the matrix" begin
+    function regroup(S, groups_are_rows::Bool, sz)
+        R = zeros(Float64, sz)
+        for g in S.ax, s in MatrixCovers._slots(S, g)
+            i, j = groups_are_rows ? (g, S.idx[s]) : (S.idx[s], g)
+            R[i, j] = S.val[s]
+        end
+        return R
+    end
+
+    mats = Any[[2.0 1.0 0.0; 1.0 0.0 3.0; 0.0 3.0 4.0],       # zeros on and off the diagonal
+               [0.0 0.0; 0.0 0.0],                             # empty support
+               Diagonal([2.0, 0.0, 5.0]),
+               SymTridiagonal([4.0, 3.0, 1.0], [2.0, 0.5])]
+    rng = StableRNG(7)
+    for _ in 1:4
+        n = rand(rng, 2:6)
+        B = randn(rng, n, n) .* (rand(rng, n, n) .< 0.5)
+        push!(mats, B + transpose(B))
+    end
+    for M in mats
+        S = MatrixCovers._sym_support(M, Float64)
+        @test regroup(S, true, size(M)) == abs.(Matrix(M))
+    end
+
+    # The asymmetric gathers need no multiplicity rule: one entry, one slot.
+    for M in Any[[1.0 0.0 2.0; 0.0 0.0 0.0; 3.0 4.0 0.0], randn(StableRNG(9), 4, 6)]
+        @test regroup(MatrixCovers._row_support(M, Float64), true, size(M)) == abs.(M)
+        @test regroup(MatrixCovers._col_support(M, Float64), false, size(M)) == abs.(M)
+    end
+
+    # Offset axes: groups are addressed by the matrix's own indices.
+    O = OffsetArray([2.0 1.0; 1.0 3.0], -1:0, -1:0)
+    SO = MatrixCovers._sym_support(O, Float64)
+    @test SO.ax == -1:0
+    @test sort([(SO.idx[s], SO.val[s]) for s in MatrixCovers._slots(SO, -1)]) == [(-1, 2.0), (0, 1.0)]
+end

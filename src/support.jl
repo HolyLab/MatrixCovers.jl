@@ -147,6 +147,79 @@ end
 # invariant already guarantees `abs(A[i,j]) == abs(A[j,i])`.
 require_abs_symmetric(::Union{Symmetric,Hermitian,Diagonal,SymTridiagonal}, fname) = nothing
 
+# Support of `A` gathered into per-group neighbor lists, in compressed form: the
+# entries of group `g` occupy the slots `_slots(S, g)`, with `S.idx[s]` the
+# partner index and `S.val[s]` the magnitude.
+#
+# A coordinate-descent kernel revisits every row on every sweep. Reading them
+# through `foreach_support` directly would mean one traversal per sweep, and a
+# traversal cannot be restarted mid-row; gathering once up front costs O(nnz)
+# storage and turns each sweep into a walk over the support instead of over the
+# full grid.
+#
+# `ptr` is indexed by position within `ax` rather than by the index itself, so
+# offset axes need no special case.
+struct GroupedSupport{T,I,R<:AbstractUnitRange}
+    ax::R
+    ptr::Vector{Int}
+    idx::Vector{I}
+    val::Vector{T}
+end
+
+_slots(S::GroupedSupport, g) = (p = g - first(S.ax) + 1; S.ptr[p]:S.ptr[p+1]-1)
+
+# Number of stored entries in group `g`.
+_ngroup(S::GroupedSupport, g) = length(_slots(S, g))
+
+# Build from a traversal. `each` is called twice with a callback `g(group,
+# partner, v)`: once to count each group's entries, once to fill them.
+function _grouped_support(each, ax::AbstractUnitRange, ::Type{I}, ::Type{T}) where {I,T}
+    off = first(ax) - 1
+    ptr = zeros(Int, length(ax) + 1)
+    each() do g, _, _
+        ptr[g-off+1] += 1
+    end
+    ptr[1] = 1
+    cumsum!(ptr, ptr)
+    n = ptr[end] - 1
+    idx = Vector{I}(undef, n)
+    val = Vector{T}(undef, n)
+    cursor = ptr[1:end-1]        # next free slot of each group, by position
+    each() do g, p, v
+        s = cursor[g-off]
+        idx[s] = p
+        val[s] = T(v)
+        cursor[g-off] = s + 1
+    end
+    return GroupedSupport(ax, ptr, idx, val)
+end
+
+# Group the support of `A` by row; partners are column indices.
+_row_support(A::AbstractMatrix, ::Type{T}) where {T} =
+    _grouped_support(axes(A, 1), eltype(axes(A, 2)), T) do g
+        foreach_support((i, j, v) -> g(i, j, v), A)
+    end
+
+# Group the support of `A` by column; partners are row indices.
+_col_support(A::AbstractMatrix, ::Type{T}) where {T} =
+    _grouped_support(axes(A, 2), eltype(axes(A, 1)), T) do g
+        foreach_support((i, j, v) -> g(j, i, v), A)
+    end
+
+# Group the symmetric support of `A` by row: group `i` holds every `j` with
+# `abs(A[i,j]) != 0`, the off-diagonal pairs entered in both orientations and the
+# diagonal once. That is the full-grid reading of a row, so a kernel accumulating
+# over these groups gets the `∑_{i,j}` weighting of `cover_objective` — each
+# off-diagonal pair twice, each diagonal entry once — without applying a
+# multiplicity factor of its own.
+_sym_support(A::AbstractMatrix, ::Type{T}) where {T} =
+    _grouped_support(axes(A, 1), eltype(axes(A, 1)), T) do g
+        foreach_support_sym(A) do i, j, v
+            g(i, j, v)
+            i == j || g(j, i, v)
+        end
+    end
+
 function foreach_support(f, D::Diagonal)
     for i in axes(D, 1)
         v = abs(D[i, i])

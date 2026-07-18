@@ -674,16 +674,21 @@ end
 # multistart selection stays covariant.
 function _abslinear2_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol::Real=50_000_000 * eps(T)) where T
     ax = eachindex(a)
+    ax == axes(A, 1) || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axes(A, 1)) vs $(ax)"))
+    S = _sym_support(A, T)
     for _ in 1:iter
         maxres = zero(T)
         for k in ax
-            d  = T(abs(A[k, k]))   # diagonal entry
+            d  = zero(T)            # diagonal entry, absent from the support when zero
             s1 = zero(T)            # ∑_{j≠k: A[k,j]≠0} |A[k,j]| / a[j]
             s2 = zero(T)            # ∑_{j≠k: A[k,j]≠0} |A[k,j]|² / a[j]²
-            for j in ax
-                j == k && continue
-                Akj = T(abs(A[k, j]))
-                iszero(Akj) && continue
+            for s in _slots(S, k)
+                j = S.idx[s]
+                Akj = S.val[s]
+                if j == k
+                    d = Akj
+                    continue
+                end
                 inv_aj = one(T) / a[j]
                 s1 += Akj * inv_aj
                 s2 += Akj^2 * inv_aj^2
@@ -758,16 +763,21 @@ end
 # restarts of a rescaled problem exit on the same sweep.
 function _abslinear1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol::Real=5000 * eps(T)) where T
     ax  = eachindex(a)
+    ax == axes(A, 1) || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axes(A, 1)) vs $(ax)"))
+    S   = _sym_support(A, T)
     buf = Vector{T}(undef, length(ax))   # reusable buffer for c_j values
     for _ in 1:iter
         maxrel = zero(T)
         for k in ax
-            d  = T(abs(A[k, k]))
+            d  = zero(T)
             nc = 0
-            for j in ax
-                j == k && continue
-                Akj = T(abs(A[k, j]))
-                iszero(Akj) && continue
+            for s in _slots(S, k)
+                j = S.idx[s]
+                Akj = S.val[s]
+                if j == k
+                    d = Akj
+                    continue
+                end
                 aj = a[j]
                 iszero(aj) && continue
                 nc += 1
@@ -812,22 +822,23 @@ end
 # sweep.
 function _abslog1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol::Real=5000 * eps(T)) where T
     ax  = eachindex(a)
+    ax == axes(A, 1) || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axes(A, 1)) vs $(ax)"))
+    S   = _sym_support(A, T)
     buf = Vector{T}(undef, 2 * length(ax) + 1)   # off-diagonals (×1) + diagonal (×2)
     for _ in 1:iter
         maxrel = zero(T)
         for k in ax
             iszero(a[k]) && continue    # zero rows/columns stay uncovered
             n = 0
-            Akk = T(abs(A[k, k]))
-            if !iszero(Akk)
-                lhalf = log(Akk) / 2
-                buf[n += 1] = lhalf
-                buf[n += 1] = lhalf
-            end
-            for j in ax
-                j == k && continue
-                Akj = T(abs(A[k, j]))
-                iszero(Akj) && continue
+            for s in _slots(S, k)
+                j = S.idx[s]
+                Akj = S.val[s]
+                if j == k
+                    lhalf = log(Akj) / 2
+                    buf[n += 1] = lhalf
+                    buf[n += 1] = lhalf
+                    continue
+                end
                 aj = a[j]
                 iszero(aj) && continue
                 buf[n += 1] = log(Akj) - log(aj)
@@ -868,6 +879,7 @@ function _abslog1_iter_asym!(a::AbstractVector, b::AbstractVector, A::AbstractMa
     axr, axc = axes(A, 1), axes(A, 2)
     eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axr) vs $(eachindex(a))"))
     eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(axc) vs $(eachindex(b))"))
+    R, C = _row_support(A, T), _col_support(A, T)
     bufc = Vector{T}(undef, length(axc))   # log-points for an a-row update
     bufr = Vector{T}(undef, length(axr))   # log-points for a b-column update
     for _ in 1:iter
@@ -875,12 +887,10 @@ function _abslog1_iter_asym!(a::AbstractVector, b::AbstractVector, A::AbstractMa
         for i in axr
             iszero(a[i]) && continue       # unsupported rows/columns stay at zero
             nc = 0
-            for j in axc
-                Aij = T(abs(A[i, j]))
-                iszero(Aij) && continue
-                bj = b[j]
+            for s in _slots(R, i)
+                bj = b[R.idx[s]]
                 iszero(bj) && continue
-                bufc[nc += 1] = log(Aij) - log(bj)
+                bufc[nc += 1] = log(R.val[s]) - log(bj)
             end
             nc == 0 && continue
             c = view(bufc, 1:nc)
@@ -894,12 +904,10 @@ function _abslog1_iter_asym!(a::AbstractVector, b::AbstractVector, A::AbstractMa
         for j in axc
             iszero(b[j]) && continue
             nr = 0
-            for i in axr
-                Aij = T(abs(A[i, j]))
-                iszero(Aij) && continue
-                ai = a[i]
+            for s in _slots(C, j)
+                ai = a[C.idx[s]]
                 iszero(ai) && continue
-                bufr[nr += 1] = log(Aij) - log(ai)
+                bufr[nr += 1] = log(C.val[s]) - log(ai)
             end
             nr == 0 && continue
             c = view(bufr, 1:nr)
@@ -970,18 +978,16 @@ end
 # exact minimizer. Rows/columns with empty support keep scale 0 and are held fixed.
 # Refines `a`, `b` in place starting from their incoming values.
 #
-# Both half-sweeps accumulate over `i` with `j` held fixed, walking `A` down its columns.
+# Both half-sweeps accumulate over `i` with `j` held fixed, so the support is gathered
+# by column once up front and each sweep walks that gather rather than the full grid.
 #
 # The post-sweep objective costs no extra pass over `A`: once the v-half-sweep has set
 # v[j] = num[j]/den[j] from num[j] = ∑_i M[i,j] u[i] and den[j] = ∑_i (M[i,j] u[i])²,
 # column j contributes
 #     ∑_i (1 - M[i,j] u[i] v[j])² = nnz[j] - 2 v[j] num[j] + v[j]² den[j]
 #                                 = nnz[j] - num[j]²/den[j]
-# with nnz[j] the number of stored nonzeros in column j. An empty column has
-# den[j] = nnz[j] = 0 and contributes nothing.
-#
-# Zero entries of `A` need no branch in the accumulators: M[i,j] = 0 adds zero to both
-# num and den. Only `nnz` distinguishes them, and it is formed once up front.
+# with nnz[j] the number of nonzeros in column j, which is that column's size in the
+# gather. An empty column has den[j] = nnz[j] = 0 and contributes nothing.
 function _mscm_als!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, iter::Int;
                     tol=nothing)
     axr, axc = axes(A, 1), axes(A, 2)
@@ -998,18 +1004,16 @@ function _mscm_als!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, ite
     v = map(x -> x > 0 ? inv(T(x)) : zero(T), b)
     numu = similar(u)
     denu = similar(u)
-    nnzc = zeros(Int, axc)
-    foreach_support(A) do _, j, _
-        nnzc[j] += 1
-    end
-    E = _mscm_objective(A, u, v)
+    C = _col_support(A, T)
+    E = _mscm_objective(C, u, v)
     for _ in 1:iter
         fill!(numu, zero(T))
         fill!(denu, zero(T))
         for j in axc
             vj = v[j]
-            for i in axr
-                Av = T(abs(A[i, j])) * vj
+            for s in _slots(C, j)
+                i = C.idx[s]
+                Av = C.val[s] * vj
                 numu[i] += Av
                 denu[i] += Av * Av
             end
@@ -1020,14 +1024,14 @@ function _mscm_als!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, ite
         Enew = zero(T)
         for j in axc
             num = den = zero(T)
-            for i in axr
-                Au = T(abs(A[i, j])) * u[i]
+            for s in _slots(C, j)
+                Au = C.val[s] * u[C.idx[s]]
                 num += Au
                 den += Au * Au
             end
             if den > 0
                 v[j] = num / den
-                Enew += nnzc[j] - num * num / den
+                Enew += _ngroup(C, j) - num * num / den
             end
         end
         E - Enew <= rtol * max(E, one(T)) && (E = Enew; break)
@@ -1043,15 +1047,14 @@ function _mscm_als!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, ite
 end
 
 # Soft-cover objective in inverse-scale variables: ∑_{i,j: A[i,j]≠0} (1 - |A[i,j]| u[i] v[j])².
-function _mscm_objective(A::AbstractMatrix, u::AbstractVector, v::AbstractVector)
-    T = float(promote_type(real(eltype(A)), eltype(u), eltype(v)))
+# Takes the column-grouped support rather than the matrix, so the sweeps and the
+# objective share one gather.
+function _mscm_objective(C::GroupedSupport{T}, u::AbstractVector, v::AbstractVector) where T
     E = zero(T)
-    for j in axes(A, 2)
+    for j in C.ax
         vj = v[j]
-        for i in axes(A, 1)
-            Aij = T(abs(A[i, j]))
-            iszero(Aij) && continue
-            r = one(T) - Aij * u[i] * vj
+        for s in _slots(C, j)
+            r = one(T) - C.val[s] * u[C.idx[s]] * vj
             E += r * r
         end
     end
@@ -1074,19 +1077,18 @@ function _abslinear1_iter_asym!(a::AbstractVector, b::AbstractVector, A::Abstrac
     axr, axc = axes(A, 1), axes(A, 2)
     eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axr) vs $(eachindex(a))"))
     eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(axc) vs $(eachindex(b))"))
+    R, C = _row_support(A, T), _col_support(A, T)
     bufc = Vector{T}(undef, length(axc))   # c_j buffer for an a-row update
     bufr = Vector{T}(undef, length(axr))   # c_i buffer for a b-column update
     for _ in 1:iter
         maxrel = zero(T)
         for i in axr
             nc = 0
-            for j in axc
-                Aij = T(abs(A[i, j]))
-                iszero(Aij) && continue
-                bj = b[j]
+            for s in _slots(R, i)
+                bj = b[R.idx[s]]
                 iszero(bj) && continue
                 nc += 1
-                bufc[nc] = Aij / bj
+                bufc[nc] = R.val[s] / bj
             end
             x = nc == 0 ? zero(T) : _weighted_self_median!(view(bufc, 1:nc))
             ai  = a[i]
@@ -1096,13 +1098,11 @@ function _abslinear1_iter_asym!(a::AbstractVector, b::AbstractVector, A::Abstrac
         end
         for j in axc
             nc = 0
-            for i in axr
-                Aij = T(abs(A[i, j]))
-                iszero(Aij) && continue
-                ai = a[i]
+            for s in _slots(C, j)
+                ai = a[C.idx[s]]
                 iszero(ai) && continue
                 nc += 1
-                bufr[nc] = Aij / ai
+                bufr[nc] = C.val[s] / ai
             end
             x = nc == 0 ? zero(T) : _weighted_self_median!(view(bufr, 1:nc))
             bj  = b[j]

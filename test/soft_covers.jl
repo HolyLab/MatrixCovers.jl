@@ -526,3 +526,55 @@ end
         @test collect(ao) ≈ aref rtol=1e-6
     end
 end
+
+# A matrix readable only through the support hook: any full-grid scan hits the
+# throwing `getindex`. Both traversals are defined so the sym and asym kernels
+# can be driven from the same fixture.
+struct HookOnlyMatrix{T} <: AbstractMatrix{T}
+    entries::Vector{Tuple{Int,Int,T}}   # `i <= j` only; the transpose is implied
+    n::Int
+end
+Base.size(M::HookOnlyMatrix) = (M.n, M.n)
+Base.getindex(::HookOnlyMatrix, ::Int, ::Int) =
+    error("HookOnlyMatrix must be read through foreach_support")
+function MatrixCovers.foreach_support_sym(f, M::HookOnlyMatrix)
+    for (i, j, v) in M.entries
+        iszero(v) || f(i, j, abs(v))
+    end
+    return nothing
+end
+function MatrixCovers.foreach_support(f, M::HookOnlyMatrix)
+    for (i, j, v) in M.entries
+        iszero(v) && continue
+        f(i, j, abs(v))
+        i == j || f(j, i, abs(v))
+    end
+    return nothing
+end
+
+# The descent kernels are exercised directly rather than through `soft_symcover`
+# and `soft_cover`, whose initializers still scan the full grid.
+@testset "the soft-cover kernels read through the support hook" begin
+    entries = [(1, 1, 2.0), (1, 3, 1.5), (2, 2, 3.0), (2, 4, 0.5), (3, 4, 4.0), (4, 4, 1.0)]
+    M = HookOnlyMatrix(entries, 4)
+    dense = zeros(4, 4)
+    for (i, j, v) in entries
+        dense[i, j] = dense[j, i] = v
+    end
+    start() = [1.3, 0.7, 2.1, 0.9]
+
+    # Reaching a result at all proves the kernel never indexed `M`; matching the
+    # dense run proves the gathered support is the same set of entries carrying the
+    # same full-grid multiplicity.
+    for kernel! in (MatrixCovers._abslog1_iter!, MatrixCovers._abslinear1_iter!,
+                    MatrixCovers._abslinear2_iter!)
+        @test kernel!(start(), M, 50) ≈ kernel!(start(), dense, 50) rtol=1e-10
+    end
+    for kernel! in (MatrixCovers._abslog1_iter_asym!, MatrixCovers._abslinear1_iter_asym!,
+                    MatrixCovers._mscm_als!)
+        ah, bh = kernel!(start(), start(), M, 50)
+        ad, bd = kernel!(start(), start(), dense, 50)
+        @test ah ≈ ad rtol=1e-10
+        @test bh ≈ bd rtol=1e-10
+    end
+end
