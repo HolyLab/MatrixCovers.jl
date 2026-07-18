@@ -265,3 +265,26 @@ end
               cover_objective(AbsLog{2}(), cover_min(AbsLog{2}(), M)..., M) rtol = 1e-7
     end
 end
+
+# `Symmetric`/`Hermitian` over a sparse parent store one triangle, so the
+# asymmetric traversal must reconstitute the other. Without its own method these
+# fall back to the generic full-grid `getindex` scan, which is correct but defeats
+# the sparse specialization the wrapper exists to enable.
+@testset "asymmetric traversal of wrapped sparse storage" begin
+    P = sparse([1, 2, 1, 3], [1, 2, 3, 3], [2.0, 3.0, 1.5, 4.0], 3, 3)
+    for W in (Symmetric(P, :U), Symmetric(sparse(transpose(P)), :L),
+              Hermitian(complex(P), :U))
+        emitted = Tuple{Int,Int,Float64}[]
+        foreach_support(W) do i, j, v
+            push!(emitted, (i, j, v))
+        end
+        reference = Tuple{Int,Int,Float64}[]
+        foreach_support(Matrix(W)) do i, j, v
+            push!(reference, (i, j, v))
+        end
+        @test sort(emitted) == sort(reference)
+        # Each pair exactly once per orientation: a doubled emission would silently
+        # double that entry's weight in every objective.
+        @test length(emitted) == length(unique(e -> (e[1], e[2]), emitted))
+    end
+end

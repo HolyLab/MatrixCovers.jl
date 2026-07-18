@@ -63,6 +63,21 @@ function MatrixCovers.foreach_support_sym(f,
     return nothing
 end
 
+# The asymmetric traversal of a wrapped sparse matrix, which the asymmetric cover
+# algorithms and `cover_objective` read even when the matrix is symmetric. Only the
+# named triangle is stored, so each off-diagonal pair is emitted in both
+# orientations and the diagonal once; the magnitudes agree in both, including for a
+# complex `Hermitian`. Without this the wrappers fall back to the generic
+# `AbstractMatrix` method and its full-grid `getindex` scan.
+function MatrixCovers.foreach_support(f,
+        S::Union{Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}})
+    MatrixCovers.foreach_support_sym(S) do i, j, v
+        f(i, j, v)
+        i == j || f(j, i, v)
+    end
+    return nothing
+end
+
 # ============================================================
 # Native minimal-cover (MCM) solvers
 # ============================================================

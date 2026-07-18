@@ -399,27 +399,27 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     T = float(real(eltype(A)))
     n = length(ax)
     use_lsqr = linsolve === :lsqr
-    # log|A| on the support S; the Newton solve runs on 1-based positions 1:n and
+    # Support entries, one per residual z_ij = α_i + α_j - log|A_ij|, with `cvals`
+    # holding log|A_ij| alongside. The gather reports each off-diagonal pair in both
+    # orientations and the diagonal once, which is the full-grid weighting the
+    # objective is defined with. The Newton solve runs on 1-based positions 1:n and
     # is scattered back onto `a` through `ax` so `A`'s own axes are honored.
-    C = zeros(T, n, n)
-    S = falses(n, n)
-    for (jp, j) in enumerate(ax), (ip, i) in enumerate(ax)
-        Aij = abs(A[i, j])
-        iszero(Aij) && continue
-        C[ip, jp] = log(Aij)
-        S[ip, jp] = true
-    end
-    hassupp = [any(@view S[ip, :]) for ip in 1:n]
-    # Support entries, one per residual z_ij = α_i + α_j - log|A_ij|.
+    G = _sym_support(A, T)
     edges = Tuple{Int,Int}[]
-    for jp in 1:n, ip in 1:n
-        S[ip, jp] && push!(edges, (ip, jp))
+    cvals = T[]
+    hassupp = falses(n)
+    for (ip, i) in enumerate(ax)
+        for s in _slots(G, i)
+            push!(edges, (ip, G.idx[s] - first(ax) + 1))
+            push!(cvals, log(G.val[s]))
+        end
+        hassupp[ip] = !isempty(_slots(G, i))
     end
     ne = length(edges)
     fκ = function (α, κ)
         v = zero(T)
-        for (ip, jp) in edges
-            z = α[ip] + α[jp] - C[ip, jp]
+        for (e, (ip, jp)) in enumerate(edges)
+            z = α[ip] + α[jp] - cvals[e]
             v += (z < 0 ? T(κ) : oneunit(T)) * z^2
         end
         return v
@@ -435,7 +435,6 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     # of `√W R` (≈ √κ) rather than that of `B` (≈ κ).
     ws = zeros(T, ne)   # √weight per support entry, frozen during one solve
     cv = zeros(T, ne)   # √weight · log|A_ij| (LSQR right-hand side)
-    W = zeros(T, n, n)  # weights (dense path)
     f = zeros(T, n)
     nsolves = Ref(0)
     nlsqr = Ref(0)
@@ -443,10 +442,11 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         nsolves[] += 1
         if use_lsqr
             for (e, (ip, jp)) in enumerate(edges)
-                w = κ === nothing ? oneunit(T) : ((α[ip] + α[jp] - C[ip, jp]) < 0 ? T(κ) : oneunit(T))
+                c = cvals[e]
+                w = κ === nothing ? oneunit(T) : ((α[ip] + α[jp] - c) < 0 ? T(κ) : oneunit(T))
                 sw = sqrt(w)
                 ws[e] = sw
-                cv[e] = sw * C[ip, jp]
+                cv[e] = sw * c
             end
             Amul! = function (y, x)
                 for (e, (ip, jp)) in enumerate(edges)
@@ -467,16 +467,12 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             nlsqr[] += it
             return sol
         else
-            fill!(W, zero(T))
             fill!(f, zero(T))
-            for (ip, jp) in edges
-                w = κ === nothing ? oneunit(T) : ((α[ip] + α[jp] - C[ip, jp]) < 0 ? T(κ) : oneunit(T))
-                W[ip, jp] = w
-                f[ip] += w * C[ip, jp]
-            end
             B = zeros(T, n, n)
-            for (ip, jp) in edges
-                w = W[ip, jp]
+            for (e, (ip, jp)) in enumerate(edges)
+                c = cvals[e]
+                w = κ === nothing ? oneunit(T) : ((α[ip] + α[jp] - c) < 0 ? T(κ) : oneunit(T))
+                f[ip] += w * c
                 B[ip, ip] += w
                 B[ip, jp] += w
             end
@@ -515,9 +511,8 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     # imposes no coverage constraint and whose optimum the boost would move off.
     γ = zero(T)
     if boost
-        for jp in 1:n, ip in 1:n
-            S[ip, jp] || continue
-            γ = max(γ, (C[ip, jp] - α[ip] - α[jp]) / 2)
+        for (e, (ip, jp)) in enumerate(edges)
+            γ = max(γ, (cvals[e] - α[ip] - α[jp]) / 2)
         end
     end
     # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
@@ -547,18 +542,27 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     n = length(axc)
     N = m + n
     use_lsqr = linsolve === :lsqr
-    # log|A| on the support S; internal positions 1:m index rows, m+1:m+n index
-    # columns, and results are scattered back through axr/axc so A's axes are honored.
-    C = zeros(T, m, n)
-    S = falses(m, n)
-    for (jp, j) in enumerate(axc), (ip, i) in enumerate(axr)
-        Aij = abs(A[i, j])
-        iszero(Aij) && continue
-        C[ip, jp] = log(Aij)
-        S[ip, jp] = true
+    # Support entries as edges linking a row position ip to a column position m+jp,
+    # with `cvals` holding log|A_ij| alongside. Internal positions 1:m index rows,
+    # m+1:m+n index columns, and results are scattered back through axr/axc so A's
+    # axes are honored.
+    G = _row_support(A, T)
+    edges = Tuple{Int,Int}[]
+    cvals = T[]
+    nzrow = zeros(Int, m)   # support entries per row, for the balance convention
+    nzcol = zeros(Int, n)   # ditto per column
+    for (ip, i) in enumerate(axr)
+        for s in _slots(G, i)
+            jp = G.idx[s] - first(axc) + 1
+            push!(edges, (ip, m + jp))
+            push!(cvals, log(G.val[s]))
+            nzrow[ip] += 1
+            nzcol[jp] += 1
+        end
     end
-    hasrow = [any(@view S[ip, :]) for ip in 1:m]
-    hascol = [any(@view S[:, jp]) for jp in 1:n]
+    ne = length(edges)
+    hasrow = nzrow .> 0
+    hascol = nzcol .> 0
     # Gauge vector: ±1 on supported variables, 0 on support-free ones (which carry
     # no constraint and are decoupled with an identity row in `solve_weighted`).
     v0 = zeros(T, N)
@@ -568,16 +572,10 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     for jp in 1:n
         hascol[jp] && (v0[m+jp] = -one(T))
     end
-    # Support entries as edges linking a row position ip to a column position m+jp.
-    edges = Tuple{Int,Int}[]
-    for jp in 1:n, ip in 1:m
-        S[ip, jp] && push!(edges, (ip, m + jp))
-    end
-    ne = length(edges)
     fκ = function (x, κ)
         v = zero(T)
-        for (p, q) in edges
-            z = x[p] + x[q] - C[p, q-m]
+        for (e, (p, q)) in enumerate(edges)
+            z = x[p] + x[q] - cvals[e]
             v += (z < 0 ? T(κ) : oneunit(T)) * z^2
         end
         return v
@@ -590,7 +588,6 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     # least-squares system so `√W R` has full column rank, applies it matrix-free, and
     # warm-starts from the incoming iterate. After the solve a closed-form shift moves
     # the result to the balance convention, so the pinned gauge is not observable.
-    W = zeros(T, m, n)      # per-support weights (dense path)
     f = zeros(T, N)
     ws = zeros(T, ne)       # √weight per support entry (LSQR path)
     cv = zeros(T, ne + 1)   # √weight · log|A_ij|, with a trailing 0 gauge target
@@ -600,7 +597,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         nsolves[] += 1
         if use_lsqr
             for (e, (p, q)) in enumerate(edges)
-                c = C[p, q-m]
+                c = cvals[e]
                 w = κ === nothing ? oneunit(T) : ((x[p] + x[q] - c) < 0 ? T(κ) : oneunit(T))
                 sw = sqrt(w)
                 ws[e] = sw
@@ -628,19 +625,13 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             nlsqr[] += it
             return sol
         else
-            fill!(W, zero(T))
             fill!(f, zero(T))
-            for (p, q) in edges
-                jp = q - m
-                c = C[p, jp]
+            B = v0 * v0'
+            for (e, (p, q)) in enumerate(edges)
+                c = cvals[e]
                 w = κ === nothing ? oneunit(T) : ((x[p] + x[q] - c) < 0 ? T(κ) : oneunit(T))
-                W[p, jp] = w
                 f[p] += w * c
                 f[q] += w * c
-            end
-            B = v0 * v0'
-            for (p, q) in edges
-                w = W[p, q-m]
                 B[p, p] += w
                 B[q, q] += w
                 B[p, q] += w
@@ -704,25 +695,23 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     # constraint, and every cover this package returns satisfies it.
     if boost
         γ = zero(T)
-        for jp in 1:n, ip in 1:m
-            S[ip, jp] || continue
-            γ = max(γ, (C[ip, jp] - x[ip] - x[m+jp]) / 2)
+        for (e, (p, q)) in enumerate(edges)
+            γ = max(γ, (cvals[e] - x[p] - x[q]) / 2)
         end
         for p in 1:N
             x[p] += γ
         end
     end
     # Shift along the (e; -e) gauge to the balance convention ∑ nzaᵢ αᵢ = ∑ nzbⱼ βⱼ.
-    nnz = count(S)
     Lα = zero(T)
     Lβ = zero(T)
     for ip in 1:m
-        Lα += count(@view S[ip, :]) * x[ip]
+        Lα += nzrow[ip] * x[ip]
     end
     for jp in 1:n
-        Lβ += count(@view S[:, jp]) * x[m+jp]
+        Lβ += nzcol[jp] * x[m+jp]
     end
-    s = nnz > 0 ? (Lβ - Lα) / (2 * nnz) : zero(T)
+    s = ne > 0 ? (Lβ - Lα) / (2 * ne) : zero(T)
     # Dense scale vectors matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     a = similar(Array{T}, axr)
     b = similar(Array{T}, axc)
