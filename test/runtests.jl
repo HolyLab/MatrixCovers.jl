@@ -24,6 +24,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
     include("initializers.jl")      # initialize_symcover/initialize_cover strategies
     include("minimal_covers.jl")    # the *_min family (native solvers)
     include("storage_types.jl")     # sparse/structured/wrapped storage vs dense reference
+    include("element_types.jl")     # Float32/BigFloat: eltype-scaled internal tolerances
     include("extensions.jl")        # JuMP/HiGHS and Ipopt solvers, missing-extension hints
     include("unitful.jl")           # dimensional covers via the Unitful extension
     include("invariants.jl")        # shared conventions checked across every notion

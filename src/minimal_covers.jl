@@ -321,7 +321,7 @@ end
 # scalars (‖Mᵀr‖ = ϕbar·α·|c|, ‖r‖ = ϕbar, ‖M‖ from the Frobenius norm of the
 # bidiagonal). Returns `(x, iters)`.
 function _lsqr(Amul!, Atmul!, b::AbstractVector{T}, x0::AbstractVector{T};
-               atol=1e-12, maxiter::Int=2 * (length(b) + length(x0)) + 100) where {T}
+               atol=5000 * eps(T), maxiter::Int=2 * (length(b) + length(x0)) + 100) where {T}
     x = copy(x0)
     u = similar(b)
     Amul!(u, x)
@@ -494,12 +494,12 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             αnew = solve_weighted(α, κ)
             t = one(T)
             fnew = fκ(αnew, κ)
-            while fnew > fcur && t > 1e-10
+            while fnew > fcur && t > 500_000 * eps(T)
                 t /= 2
                 fnew = fκ(α .+ t .* (αnew .- α), κ)
             end
             α = α .+ t .* (αnew .- α)
-            fcur - fnew <= 1e-12 * max(fcur, one(T)) && break
+            fcur - fnew <= 5000 * eps(T) * max(fcur, one(T)) && break
             fcur = fnew
         end
     end
@@ -681,12 +681,12 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             xnew = solve_weighted(x, κ)
             t = one(T)
             fnew = fκ(xnew, κ)
-            while fnew > fcur && t > 1e-10
+            while fnew > fcur && t > 500_000 * eps(T)
                 t /= 2
                 fnew = fκ(x .+ t .* (xnew .- x), κ)
             end
             x = x .+ t .* (xnew .- x)
-            fcur - fnew <= 1e-12 * max(fcur, one(T)) && break
+            fcur - fnew <= 5000 * eps(T) * max(fcur, one(T)) && break
             fcur = fnew
         end
     end

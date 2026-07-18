@@ -180,8 +180,8 @@ Supported penalty functions:
 
       u[i] = ∑_j |A[i,j]| v[j] / ∑_j (|A[i,j]| v[j])²   (dually for v[j])
 
-  is monotone, stopping when the relative objective decrease drops below `1e-14` or after
-  `maxiter` sweeps.
+  is monotone, stopping when the relative objective decrease falls to rounding level
+  for the element type, or after `maxiter` sweeps.
 - `AbsLinear{1}()`: initializes from the `AbsLinear{2}()` result, then refines by alternating
   weighted-median updates — each row/column block is minimized exactly, so the descent is
   monotone. Its flat basins are broken by a deterministic lower-median tie-break, giving a
@@ -554,7 +554,7 @@ end
 # covariance; it must also stay below any genuine basin gap, which is orders of magnitude
 # larger. Candidates stopped short of convergence may differ by far more than roundoff, but
 # such differences are deterministic and co-vary with the frame, so switching on them is safe.
-const _MULTISTART_SWITCHTOL = 1e-9
+_multistart_switchtol(::Type{T}) where {T} = 5_000_000 * eps(T)
 
 # Labeled candidate starts for the symmetric AbsLinear{2} multistart, in selection order.
 # The deterministic starts are the `initialize_symcover` menu: the geometric mean (raw — it is
@@ -610,8 +610,9 @@ end
 function _multistart_select(objs)
     besti = firstindex(objs)
     Ebest = objs[besti]
+    switchtol = _multistart_switchtol(float(eltype(objs)))
     for k in eachindex(objs)
-        objs[k] < Ebest * (1 - _MULTISTART_SWITCHTOL) && ((besti, Ebest) = (k, objs[k]))
+        objs[k] < Ebest * (1 - switchtol) && ((besti, Ebest) = (k, objs[k]))
     end
     return besti
 end
@@ -665,7 +666,7 @@ end
 # quantity optimality demands be zero, and it is scale-invariant (each ρ is), so
 # covariant restarts of a rescaled problem exit on the same sweep and the
 # multistart selection stays covariant.
-function _abslinear2_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol::Real=1e-8) where T
+function _abslinear2_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol::Real=50_000_000 * eps(T)) where T
     ax = eachindex(a)
     for _ in 1:iter
         maxres = zero(T)
@@ -749,7 +750,7 @@ end
 # exact fixed point (identical ordering selects the same value), so movement
 # falls to zero there. Relative movement is scale-invariant, so covariant
 # restarts of a rescaled problem exit on the same sweep.
-function _abslinear1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol::Real=1e-12) where T
+function _abslinear1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol::Real=5000 * eps(T)) where T
     ax  = eachindex(a)
     buf = Vector{T}(undef, length(ax))   # reusable buffer for c_j values
     for _ in 1:iter
@@ -803,7 +804,7 @@ end
 # exact fixed point, so movement falls to zero there. Relative movement is
 # scale-invariant, so covariant restarts of a rescaled problem exit on the same
 # sweep.
-function _abslog1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol::Real=1e-12) where T
+function _abslog1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol::Real=5000 * eps(T)) where T
     ax  = eachindex(a)
     buf = Vector{T}(undef, 2 * length(ax) + 1)   # off-diagonals (×1) + diagonal (×2)
     for _ in 1:iter
@@ -855,7 +856,7 @@ end
 # movement in a sweep drops to `tol` (scale-invariant, so covariant restarts of a rescaled
 # problem exit on the same sweep). Rows/columns with empty support keep scale 0.
 function _abslog1_iter_asym!(a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix,
-                             iter::Int; tol::Real=1e-12) where T
+                             iter::Int; tol::Real=5000 * eps(T)) where T
     axr, axc = axes(A, 1), axes(A, 2)
     eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axr) vs $(eachindex(a))"))
     eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(axc) vs $(eachindex(b))"))
@@ -974,11 +975,16 @@ end
 # Zero entries of `A` need no branch in the accumulators: M[i,j] = 0 adds zero to both
 # num and den. Only `nnz` distinguishes them, and it is formed once up front.
 function _mscm_als!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, iter::Int;
-                    tol=1e-14)
+                    tol=nothing)
     axr, axc = axes(A, 1), axes(A, 2)
     eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axr) vs $(eachindex(a))"))
     eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(axc) vs $(eachindex(b))"))
     T = float(promote_type(eltype(a), eltype(b), real(eltype(A))))
+    # The convergence test is on a relative movement, so its floor is set by the
+    # precision of `T`: a fixed Float64-scaled literal can never be reached in
+    # Float32 (every call would run to `iter`) and stops far short of what a wider
+    # type can resolve.
+    rtol = tol === nothing ? 50 * eps(T) : T(tol)
     # Invert to inverse-scale variables; empty-support rows/columns (scale 0) stay at 0.
     u = map(x -> x > 0 ? inv(T(x)) : zero(T), a)
     v = map(x -> x > 0 ? inv(T(x)) : zero(T), b)
@@ -1016,7 +1022,7 @@ function _mscm_als!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, ite
                 Enew += nnzc[j] - num * num / den
             end
         end
-        E - Enew <= tol * max(E, one(T)) && (E = Enew; break)
+        E - Enew <= rtol * max(E, one(T)) && (E = Enew; break)
         E = Enew
     end
     for i in axr
@@ -1054,7 +1060,7 @@ end
 # in a sweep drops to `tol` (scale-invariant, so covariant restarts of a rescaled problem exit
 # on the same sweep). Rows/columns with empty support keep scale 0.
 function _abslinear1_iter_asym!(a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix,
-                                iter::Int; tol::Real=1e-12) where T
+                                iter::Int; tol::Real=5000 * eps(T)) where T
     axr, axc = axes(A, 1), axes(A, 2)
     eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axr) vs $(eachindex(a))"))
     eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(axc) vs $(eachindex(b))"))
