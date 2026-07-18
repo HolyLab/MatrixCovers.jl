@@ -83,6 +83,7 @@ function initialize_symcover!(a::AbstractVector, A::AbstractMatrix;
                               strategy::Symbol=:hardcover, feasible::Symbol=:inflate, kwargs...)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("initialize_symcover! requires a square matrix"))
+    require_abs_symmetric(A, :initialize_symcover!)
     eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$ax"))
     _initialize_symcover!(a, A, strategy, feasible; kwargs...) ||
         throw(ArgumentError("strategy=:leaveout requires a support entry that can be dropped without emptying a row"))

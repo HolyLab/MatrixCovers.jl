@@ -244,9 +244,10 @@ _start_slack(lv::T, li::T, lj::T) where {T} =
 # Shared prologue of the `symcover_min!` kernels: check that the caller's start is a
 # cover of `A`, discard the inert scales on unsupported rows, and move the start onto
 # the coverage boundary exactly, so every kernel begins from a feasible point.
-function _prepare_symcover_start!(a::AbstractVector, A::AbstractMatrix)
+function _prepare_symcover_start!(a::AbstractVector, A::AbstractMatrix, fname=:symcover_min!)
     ax = axes(A, 1)
-    axes(A, 2) == ax || throw(ArgumentError("symcover_min! requires a square matrix"))
+    axes(A, 2) == ax || throw(ArgumentError("$fname requires a square matrix"))
+    require_abs_symmetric(A, fname)
     eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$ax"))
     T = float(eltype(a))
     supp = fill!(similar(a, Bool), false)
@@ -383,9 +384,13 @@ end
 # unweighted solve; the objective is convex, so it changes the path but not the result.
 function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                                maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
-                               boost::Bool=true)
+                               boost::Bool=true, fname=:symcover_min)
     linsolve in (:auto, :dense, :lsqr) ||
         throw(ArgumentError("linsolve must be :auto, :dense, or :lsqr; got :$linsolve"))
+    # The shared entry to the native solve, reached from the sym `*_min` methods in
+    # this package and in the SparseArrays extension, so the precondition is checked
+    # once here rather than at each of them.
+    require_abs_symmetric(A, fname)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("symcover_min requires a square matrix"))
     # The problem only ever depends on abs.(A), a real quantity, so the working type
@@ -741,7 +746,7 @@ end
 # Both paths inherit the hard workers' handling of a singular signless Laplacian (the
 # `[0 1; 1 0]` support graph among them) and of support-free rows and columns.
 _soft_symcover_min_abslog2(A::AbstractMatrix; kwargs...) =
-    _symcover_min_abslog2(A; κs=(), boost=false, kwargs...)
+    _symcover_min_abslog2(A; κs=(), boost=false, fname=:soft_symcover_min, kwargs...)
 _soft_cover_min_abslog2(A::AbstractMatrix; kwargs...) =
     _cover_min_abslog2(A; κs=(), boost=false, kwargs...)
 

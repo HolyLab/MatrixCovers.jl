@@ -74,6 +74,7 @@ soft_symcover(A::AbstractMatrix; kwargs...) = soft_symcover(AbsLinear{2}(), A; k
 soft_symcover(::AbsLog{2}, A::AbstractMatrix; kwargs...) = soft_symcover_min(AbsLog{2}(), A; kwargs...)
 
 function soft_symcover(::AbsLog{1}, A::AbstractMatrix; maxiter::Int=20)
+    require_abs_symmetric(A, :soft_symcover)
     a = soft_symcover_min(AbsLog{2}(), A)   # convex AbsLog{2} minimum: a good start
     _abslog1_iter!(a, A, maxiter)
     return a
@@ -87,12 +88,14 @@ function soft_symcover(::AbsLinear{2}, A::AbstractMatrix; maxiter::Int=32, start
                        rng::AbstractRNG=MersenneTwister(_MULTISTART_SEED))
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("soft_symcover requires a square matrix"))
+    require_abs_symmetric(A, :soft_symcover)
     return _soft_symcover_abslinear2(A, maxiter, starts, _resolve_alias(σ, sigma, 2.0, :σ, :sigma), rng)
 end
 
 function soft_symcover(::AbsLinear{1}, A::AbstractMatrix; maxiter::Int=20, kwargs...)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("soft_symcover requires a square matrix"))
+    require_abs_symmetric(A, :soft_symcover)
     # Initialize from the AbsLinear{2} soft cover (a good starting point for AbsLinear{1});
     # the multistart is spent there, then the AbsLinear{1} weighted-median descent refines.
     a = soft_symcover(AbsLinear{2}(), A; maxiter=5, kwargs...)
@@ -389,6 +392,7 @@ end
 function _prepare_soft_symcover_start!(a::AbstractVector, A::AbstractMatrix, fname::Symbol=:soft_symcover_min!)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("$fname requires a square matrix"))
+    require_abs_symmetric(A, fname)
     eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$ax"))
     supp = fill!(similar(a, Bool), false)
     foreach_support_sym(A) do i, j, v

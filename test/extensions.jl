@@ -50,11 +50,17 @@
     a_soft = soft_symcover_min(AbsLog{2}(), A_rank1)
     @test cover_objective(AbsLog{2}(), a_soft, A_rank1) < 1e-8
 
-    # A solve that does not reach an optimum is an error, not a cover: this input
-    # leaves the AbsLog{1} LP unbounded, and the point the solver holds is the base
-    # of a ray rather than a minimizer.
-    @test_throws "terminated with status" symcover_min(AbsLog{1}(), [0.0 0.0; 1.0 0.0])
-    @test_throws "symcover_min" symcover_min(AbsLog{1}(), [0.0 0.0; 1.0 0.0])
+    # A solve that does not reach an optimum is an error, not a cover: the point
+    # such a model holds is the base of a ray rather than a minimizer. The guard is
+    # exercised directly on the status, since the symmetry precondition rejects the
+    # asymmetric input that is what left this LP unbounded.
+    @test MatrixCovers.check_solved(JuMP.OPTIMAL, "HiGHS", "symcover_min") === nothing
+    @test MatrixCovers.check_solved(JuMP.LOCALLY_SOLVED, "Ipopt", "symcover_min!") === nothing
+    @test_throws "terminated with status" MatrixCovers.check_solved(JuMP.DUAL_INFEASIBLE, "HiGHS", "symcover_min")
+    @test_throws "symcover_min" MatrixCovers.check_solved(JuMP.DUAL_INFEASIBLE, "HiGHS", "symcover_min")
+    @test_throws "HiGHS" MatrixCovers.check_solved(JuMP.INFEASIBLE, "HiGHS", "symcover_min")
+    # A tolerance the caller did not ask for is not a solve.
+    @test_throws "terminated with status" MatrixCovers.check_solved(JuMP.ALMOST_LOCALLY_SOLVED, "Ipopt", "symcover_min!")
 end
 
 @testset "symcover_min and soft_symcover_min (JuMP/Ipopt, AbsLinear)" begin

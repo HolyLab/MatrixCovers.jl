@@ -66,6 +66,7 @@ symcover!(ϕ::AbstractCoverPenalty, a::AbstractVector, A::AbstractMatrix; kwargs
 function symcover!(a::AbstractVector, A::AbstractMatrix; kwargs...)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("symcover! requires a square matrix"))
+    require_abs_symmetric(A, :symcover!)
     eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$ax"))
     unconstrained_min!(AbsLog{2}(), a, A)
     boost_feasible!(a, A)

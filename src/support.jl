@@ -54,18 +54,14 @@ reported in the canonical orientation `i <= j`, the diagonal included, with
 `v = abs(A[i, j])`; zero pairs are skipped. `A` must be square, or a
 `DimensionMismatch` is thrown.
 
-`A` must also be **symmetric in value**, not merely square — this is a
-precondition the function cannot check cheaply and does not try to. It is what
-makes reporting one member of each pair sufficient: a symmetric cover
-constrains `a[i]*a[j]` by a single magnitude, so visiting `(j, i)` as well would
-only duplicate it. Handing this an asymmetric matrix does not error; it silently
-covers a symmetrization of it, and which one is not specified.
+`abs.(A)` must also be **symmetric**, not merely square. That is what makes
+reporting one member of each pair sufficient: a symmetric cover constrains
+`a[i]*a[j]` by a single magnitude, so visiting `(j, i)` as well would only
+duplicate it. Note the predicate is on the magnitudes, so a complex `Hermitian`
+satisfies it — `|A[i,j]| == |conj(A[j,i])|`.
 
-(The `Bidiagonal`/`Tridiagonal` methods, whose two off-diagonal bands are stored
-separately and need not agree, report `max(|A[i,j]|, |A[j,i]|)` — the value a
-full-grid tighten would enforce on both entries. Under the precondition the two
-bands agree and this is just `abs(A[i,j])`; outside it, the choice is
-robustness, not a promise.)
+This traversal does not check the precondition; the public `sym` entry points do,
+before they call it (`MatrixCovers.require_abs_symmetric`).
 
 # Extending
 
@@ -95,6 +91,47 @@ function foreach_support_sym(f, A::AbstractMatrix)
     end
     return nothing
 end
+
+# Width of the roundoff band the symmetry test allows, in ULPs of the larger of
+# the two magnitudes. A matrix that is symmetric in exact arithmetic can land a
+# ULP or two off after ordinary floating-point work — `D*A*D` for a diagonal
+# rescale is the case that arises throughout this package — and rejecting that
+# would reject input the algorithms handle perfectly well. The band sits far
+# below any genuine asymmetry, which is what the check is for.
+const ASYMMETRY_ULPS = 8
+
+"""
+    MatrixCovers.require_abs_symmetric(A, fname)
+
+Throw unless `abs.(A)` is symmetric to within roundoff, naming `fname` and the
+first offending index pair. Return `nothing` otherwise.
+
+This is the precondition of [`foreach_support_sym`](@ref), enforced at the public
+`sym` entry points rather than inside the traversal, which runs many times per
+solve. An unchecked violation is not a visible failure: the cover returned would
+be a cover of a symmetrization of `A`, plausible-looking and wrong.
+
+The predicate is on the magnitudes rather than on `A` itself, which is both what
+the traversal reads and what admits a complex `Hermitian`.
+"""
+function require_abs_symmetric(A::AbstractMatrix, fname)
+    ax = axes(A, 1)
+    axes(A, 2) == ax ||
+        throw(DimensionMismatch("$fname requires a square matrix, got axes $(axes(A))"))
+    foreach_support(A) do i, j, v
+        w = abs(A[j, i])
+        m = max(v, w)
+        abs(v - w) <= ASYMMETRY_ULPS * eps(float(real(typeof(m)))) * m || throw(ArgumentError("""
+        $fname requires `abs.(A)` to be symmetric, but abs(A[$i,$j]) = $v and \
+        abs(A[$j,$i]) = $w. Wrap `A` in `Symmetric` (or `Hermitian`) to name the \
+        triangle to read; that also skips this check."""))
+    end
+    return nothing
+end
+
+# Storage that makes the precondition structural: the wrapper or the type's own
+# invariant already guarantees `abs(A[i,j]) == abs(A[j,i])`.
+require_abs_symmetric(::Union{Symmetric,Hermitian,Diagonal,SymTridiagonal}, fname) = nothing
 
 function foreach_support(f, D::Diagonal)
     for i in axes(D, 1)
@@ -166,9 +203,8 @@ function foreach_support(f, A::Tridiagonal)
     return nothing
 end
 
-# Bidiagonal/Tridiagonal symmetric-contract traversal: a structural-zero band
-# entry (e.g. the subdiagonal of an upper Bidiagonal) reads as exact zero via
-# getindex, so `max` over both entries is correct without special-casing uplo.
+# The two band entries agree to within `ASYMMETRY_ULPS`, so `max` reports the one
+# that dominates both without special-casing uplo.
 function foreach_support_sym(f, A::Union{Bidiagonal,Tridiagonal})
     ax = axes(A, 1)
     for i in ax
