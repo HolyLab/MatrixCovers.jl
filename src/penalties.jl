@@ -74,6 +74,32 @@ struct AbsLinear{p} <: AbstractCoverPenalty end
 # ============================================================
 
 """
+    MatrixCovers.scalar_type(T)
+
+The plain floating-point type underlying the element type `T`, with any units
+removed. [`cover_objective`](@ref) sums the ratios `|A[i,j]| / (a[i]*b[j])`,
+which are dimensionless because a cover requires
+`unit(A[i,j]) == unit(a[i])*unit(b[j])`, so the score is an ordinary number
+whatever the operands carry.
+
+This cannot be expressed as `float(real(T))`: a matrix whose entries carry
+different units has an abstract `eltype`, for which `real` and `oneunit` are
+undefined. A unit-carrying element type therefore needs its own method.
+"""
+scalar_type(::Type{T}) where {T<:Number} = float(real(T))
+
+# The accumulator type for a cover objective over `x`. `eltype` answers it when
+# concrete; a matrix whose entries carry different units can have an element type
+# as abstract as `Quantity`, which names no numeric type at all, so there the
+# elements themselves are consulted. The extra pass is O(length(x)) against an
+# objective that is already O(length(A)).
+function objective_type(x)
+    T = eltype(x)
+    isconcretetype(T) && return scalar_type(T)
+    return mapfoldl(v -> scalar_type(typeof(v)), promote_type, x; init=Bool)
+end
+
+"""
     cover_objective(ϕ, a, b, A)
     cover_objective(ϕ, a, A)
 
@@ -90,16 +116,15 @@ See also:
 - Solvers: [`symcover`](@ref), [`cover`](@ref), [`soft_symcover`](@ref), [`soft_cover`](@ref).
 """
 function cover_objective(ϕ, a, b, A)
-    T = float(promote_type(eltype(a), eltype(b), real(eltype(A))))
+    T = promote_type(objective_type(A), objective_type(a), objective_type(b))
     s = zero(T)
     for j in eachindex(b)
-        bj = T(b[j])
+        bj = b[j]
         for i in eachindex(a)
-            ai = T(a[i])
-            Aij = T(abs(A[i, j]))
-            ab = ai * bj
+            ab = a[i] * bj
+            Aij = abs(A[i, j])
             # 0/0 → 0 (no cover constraint); nonzero/0 → Inf (violated cover)
-            r = iszero(ab) ? (iszero(Aij) ? zero(T) : typemax(T)) : Aij / ab
+            r = iszero(ab) ? (iszero(Aij) ? zero(T) : typemax(T)) : T(Aij / ab)
             s += T(ϕ(r))
         end
     end

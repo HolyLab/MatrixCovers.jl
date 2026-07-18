@@ -10,6 +10,12 @@ const MC = MatrixCovers
 # Exponents of a unit, keyed by atomic unit. Rational, because a symmetric cover
 # halves the diagonal's exponents.
 const UnitExps = Dict{FreeUnits,Rational{Int}}
+
+# A cover objective is dimensionless, so it accumulates in the quantity's own
+# numeric type. This is stated for `Quantity{T}` rather than a concrete quantity
+# type because a matrix whose entries carry different units has exactly that
+# abstract element type.
+MC.scalar_type(::Type{<:Quantity{T}}) where {T} = MC.scalar_type(T)
 const QMatrix = AbstractMatrix{<:Quantity}
 const QVector = AbstractVector{<:Quantity}
 
