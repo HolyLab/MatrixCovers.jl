@@ -203,6 +203,8 @@ end
 function symcover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=SYMCOVER_MIN_STRATEGIES)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("symcover_min requires a square matrix"))
+    isempty(strategies) &&
+        throw(ArgumentError("symcover_min: `strategies` must name at least one starting cover"))
     T = float(real(eltype(A)))
     starts = [similar(Array{T}, ax) for _ in strategies]
     # A strategy for which `A` admits no start forfeits its slot; only a menu that yields

@@ -355,7 +355,14 @@ end
     @test_throws "unknown strategy :banana" symcover_min(ϕ, Abasin; strategies=(:banana,))
     @test_throws "no strategy in (:leaveout,)" symcover_min(ϕ, Adiag; strategies=(:leaveout,))
     @test_throws "has no asymmetric formulation" cover_min(ϕ, Aasym; strategies=(:leaveout,))
+    # An empty menu is reported as such by all four drivers, rather than as the
+    # unrelated "no strategy yields a start" that a fall-through would produce.
     @test_throws "at least one starting cover" cover_min(ϕ, Aasym; strategies=())
+    @test_throws "at least one starting cover" symcover_min(ϕ, Abasin; strategies=())
+    @test_throws "at least one starting cover" soft_cover_min(ϕ, Aasym; strategies=())
+    @test_throws "at least one starting cover" soft_symcover_min(ϕ, Abasin; strategies=())
+    @test_throws "symcover_min:" symcover_min(ϕ, Abasin; strategies=())
+    @test_throws "soft_symcover_min:" soft_symcover_min(ϕ, Abasin; strategies=())
 end
 
 @testset "error hint gated on argument types" begin

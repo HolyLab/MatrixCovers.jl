@@ -338,6 +338,8 @@ end
 function soft_symcover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=SYMCOVER_MIN_STRATEGIES)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("soft_symcover_min requires a square matrix"))
+    isempty(strategies) &&
+        throw(ArgumentError("soft_symcover_min: `strategies` must name at least one starting cover"))
     T = float(real(eltype(A)))
     starts = [similar(Array{T}, ax) for _ in strategies]
     built = [_initialize_symcover!(a, A, strategy, :none) for (a, strategy) in zip(starts, strategies)]
