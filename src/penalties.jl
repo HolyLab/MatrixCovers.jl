@@ -118,24 +118,39 @@ Zero entries of `A` are handled according to `ϕ`:
 - `AbsLog{p}`: zero entries contribute 0 (φ(0) = 0 by convention).
 - `AbsLinear{p}`: zero entries contribute 1 (φ(0) = |1-0|^p = 1).
 
+`eachindex(a)` must match `axes(A, 1)` and `eachindex(b)` must match `axes(A, 2)`.
+
+`A` is read through [`foreach_support`](@ref), so the cost is proportional to the
+support rather than to `length(A)` for a storage type that specializes it.
+
 See also:
 - Penalty types (options for `ϕ`): [`AbsLog`](@ref), [`AbsLinear`](@ref).
 - Solvers: [`symcover`](@ref), [`cover`](@ref), [`soft_symcover`](@ref), [`soft_cover`](@ref).
 """
 function cover_objective(ϕ, a, b, A)
+    eachindex(a) == axes(A, 1) ||
+        throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$(axes(A, 1))"))
+    eachindex(b) == axes(A, 2) ||
+        throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
     T = promote_type(objective_type(A), objective_type(a), objective_type(b))
-    s = zero(T)
-    for j in eachindex(b)
-        bj = b[j]
-        for i in eachindex(a)
-            ab = a[i] * bj
-            Aij = abs(A[i, j])
-            # 0/0 → 0 (no cover constraint); nonzero/0 → Inf (violated cover)
-            r = iszero(ab) ? (iszero(Aij) ? zero(T) : typemax(T)) : T(Aij / ab)
-            s += T(ϕ(r))
-        end
+    s = Ref(zero(T))
+    nsupport = Ref(0)
+    foreach_support(A) do i, j, v
+        ab = a[i] * b[j]
+        # A nonzero entry over a zero scale is uncovered; `typemax` is the ratio's
+        # stand-in for the infinite excess.
+        r = iszero(ab) ? typemax(T) : T(v / ab)
+        s[] += T(ϕ(r))
+        nsupport[] += 1
     end
-    return s
+    # Every entry outside the support has `r = 0` whatever its scales, including a
+    # zero entry over a zero scale, which constrains nothing. They therefore share
+    # one penalty value, and only their count is needed: zero for `AbsLog`, but a
+    # nonzero constant for `AbsLinear`, which is continuous at `r = 0`.
+    # The guard is not just an optimization: a penalty that is infinite at zero
+    # would otherwise turn a fully-dense `A` into `0 * Inf`, i.e. `NaN`.
+    nzero = length(a) * length(b) - nsupport[]
+    return iszero(nzero) ? s[] : s[] + nzero * T(ϕ(zero(T)))
 end
 cover_objective(ϕ, a, A) = cover_objective(ϕ, a, a, A)
 
