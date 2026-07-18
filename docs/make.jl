@@ -14,7 +14,10 @@ makedocs(;
         edit_link="main",
         assets=String[],
     ),
-    checkdocs=:exports,
+    # `:public` also covers the bindings marked `public` but not exported (the
+    # extension hooks). It rests on `Base.ispublic`, which Julia 1.10 lacks, so
+    # there the check falls back to the exported set.
+    checkdocs=(VERSION >= v"1.11" ? :public : :exports),
     pages=[
         "Home" => "index.md",
     ],
