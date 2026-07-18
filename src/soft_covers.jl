@@ -591,7 +591,7 @@ function _soft_symcover_abslinear2_inits(A::AbstractMatrix, starts::Int, σ::Rea
         lo = similar(ag)
         _initialize_symcover!(lo, A, :leaveout, :none) && (push!(labels, "leaveout"); push!(inits, lo))
     end
-    if length(inits) < starts && any(iszero, A)
+    if length(inits) < starts && _nsupport(A) < length(A)
         push!(labels, "feasible"); push!(inits, initialize_symcover(A; strategy=:diagfeasible, feasible=:none))
     end
     k = 0

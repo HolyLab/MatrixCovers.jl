@@ -275,8 +275,13 @@ end
 # every diagonal-zero row is deferred until an off-diagonal neighbor supplies
 # a scale for it (see `boost_feasible_seq!`).
 function init_feasible_diag!(a::AbstractVector{T}, A::AbstractMatrix) where T
-    for k in eachindex(a)
-        a[k] = sqrt(T(abs(A[k, k])))
+    ax = eachindex(a)
+    axes(A) == (ax, ax) || throw(DimensionMismatch("`init_feasible_diag!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(axes(A)), axes(a)=$(axes(a)))"))
+    # A diagonal entry the traversal skips is zero, which is the "not yet resolved"
+    # value `boost_feasible_seq!` expects.
+    fill!(a, zero(T))
+    foreach_support_sym(A) do i, j, v
+        i == j && (a[i] = sqrt(T(v)))
     end
     return boost_feasible_seq!(a, A)
 end
@@ -545,30 +550,32 @@ end
 # initialization, a heuristic guaranteed to be O(n^2) seems reasonable.
 function boost_feasible_seq!(a::AbstractVector{T}, A::AbstractMatrix) where T
     ax = eachindex(a)
-    n  = length(ax)
-    f  = first(ax)
+    axes(A) == (ax, ax) || throw(DimensionMismatch("`boost_feasible_seq!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(axes(A)), axes(a)=$(axes(a)))"))
+    I = eltype(ax)
 
-    deferred = Tuple{Int,Int,T}[]
-    for j in 1:n-1
-        for ik in 0:n-j-1
-            k   = f + ik
-            l   = k + j
-            Akl = T(abs(A[k, l]))
-            iszero(Akl) && continue
-            ak, al = a[k], a[l]
-            if !iszero(ak) && !iszero(al)
-                aprod = ak * al
-                if aprod < Akl
-                    s = sqrt(Akl / aprod)
-                    a[k] *= s; a[l] *= s
-                end
-            elseif !iszero(ak)
-                a[l] = Akl / ak
-            elseif !iszero(al)
-                a[k] = Akl / al
-            else
-                push!(deferred, (k, l, Akl))
+    # The support gathered as off-diagonal pairs, ordered by increasing offset and
+    # then by row, which is the propagation order the heuristic is defined by.
+    pairs = Tuple{I,I,T}[]
+    foreach_support_sym(A) do i, j, v
+        i == j || push!(pairs, (i, j, T(v)))
+    end
+    sort!(pairs; by = ((k, l, _),) -> (l - k, k))
+
+    deferred = Tuple{I,I,T}[]
+    for (k, l, Akl) in pairs
+        ak, al = a[k], a[l]
+        if !iszero(ak) && !iszero(al)
+            aprod = ak * al
+            if aprod < Akl
+                s = sqrt(Akl / aprod)
+                a[k] *= s; a[l] *= s
             end
+        elseif !iszero(ak)
+            a[l] = Akl / ak
+        elseif !iszero(al)
+            a[k] = Akl / al
+        else
+            push!(deferred, (k, l, Akl))
         end
     end
 

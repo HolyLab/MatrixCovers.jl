@@ -551,9 +551,10 @@ function MatrixCovers.foreach_support(f, M::HookOnlyMatrix)
     end
     return nothing
 end
+# Storing one member of each pair makes `abs`-symmetry structural, so the
+# precondition check is a no-op — as it must be, since it cannot index `M`.
+MatrixCovers.require_abs_symmetric(::HookOnlyMatrix, fname) = nothing
 
-# The descent kernels are exercised directly rather than through `soft_symcover`
-# and `soft_cover`, whose initializers still scan the full grid.
 @testset "the soft-cover kernels read through the support hook" begin
     entries = [(1, 1, 2.0), (1, 3, 1.5), (2, 2, 3.0), (2, 4, 0.5), (3, 4, 4.0), (4, 4, 1.0)]
     M = HookOnlyMatrix(entries, 4)
@@ -576,5 +577,41 @@ end
         ad, bd = kernel!(start(), start(), dense, 50)
         @test ah ≈ ad rtol=1e-10
         @test bh ≈ bd rtol=1e-10
+    end
+end
+
+# The kernels above are only half the path: the public entry points reach them
+# through the initializers, so a full-grid scan in either one would surface here.
+@testset "the cover entry points read through the support hook" begin
+    entries = [(1, 1, 2.0), (1, 3, 1.5), (2, 2, 3.0), (2, 4, 0.5), (3, 4, 4.0), (4, 4, 1.0)]
+    M = HookOnlyMatrix(entries, 4)
+    dense = zeros(4, 4)
+    for (i, j, v) in entries
+        dense[i, j] = dense[j, i] = v
+    end
+
+    # `:diagfeasible` runs `init_feasible_diag!` and `boost_feasible_seq!`;
+    # `:leaveout` runs `_leaveout_logmean_init!`.
+    for strategy in (:geomean, :hardcover, :leaveout, :diagfeasible)
+        for feasible in (:none, :boost, :inflate)
+            @test initialize_symcover(M; strategy, feasible) ≈
+                  initialize_symcover(dense; strategy, feasible) rtol=1e-10
+        end
+    end
+
+    for ϕ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{1}(), AbsLog{2}())
+        @test symcover(ϕ, M) ≈ symcover(ϕ, dense) rtol=1e-10
+        @test soft_symcover(ϕ, M) ≈ soft_symcover(ϕ, dense) rtol=1e-6
+        @test iscover(symcover(ϕ, M), dense; rtol=8eps())
+        @test cover_objective(ϕ, symcover(ϕ, M), M) ≈
+              cover_objective(ϕ, symcover(ϕ, dense), dense) rtol=1e-10
+    end
+
+    for ϕ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{1}(), AbsLog{2}())
+        ah, bh = cover(ϕ, M)
+        ad, bd = cover(ϕ, dense)
+        @test ah ≈ ad rtol=1e-10
+        @test bh ≈ bd rtol=1e-10
+        @test iscover(ah, bh, dense; rtol=8eps())
     end
 end

@@ -147,6 +147,13 @@ end
 # invariant already guarantees `abs(A[i,j]) == abs(A[j,i])`.
 require_abs_symmetric(::Union{Symmetric,Hermitian,Diagonal,SymTridiagonal}, fname) = nothing
 
+# Number of entries `foreach_support` reports, i.e. the size of the stored support.
+function _nsupport(A::AbstractMatrix)
+    n = Ref(0)
+    foreach_support((_, _, _) -> (n[] += 1), A)
+    return n[]
+end
+
 # Support of `A` gathered into per-group neighbor lists, in compressed form: the
 # entries of group `g` occupy the slots `_slots(S, g)`, with `S.idx[s]` the
 # partner index and `S.val[s]` the magnitude.
