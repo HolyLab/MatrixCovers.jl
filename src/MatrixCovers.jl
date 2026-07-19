@@ -8,6 +8,7 @@ using Random: Random, AbstractRNG, MersenneTwister
 export AbsLog, AbsLinear
 export cover_objective, iscover
 export cover, cover!, symcover, symcover!
+export gramcover, gramcover!
 export soft_symcover, soft_symcover!, soft_cover, soft_cover!
 export initialize_cover, initialize_cover!, initialize_symcover, initialize_symcover!
 export symcover_min, symcover_min!, cover_min, cover_min!
@@ -22,6 +23,7 @@ include("penalties.jl")
 include("support.jl")
 include("iscover.jl")
 include("heuristic_covers.jl")
+include("gram_covers.jl")    # symmetric covers of A'*W*A from an asymmetric cover of A
 include("initializers.jl")   # the start menu; consumed by both solver families below
 include("soft_covers.jl")
 include("minimal_covers.jl")

@@ -271,6 +271,27 @@
         @test_throws Unitful.DimensionError symcover_min!(AbsLog{2}(), a3, A)
     end
 
+    @testset "gramcover carries units" begin
+        # A rectangular matrix with a single uniform unit: the row/column split of
+        # `unit(A[i,j]) = unit(a[i])*unit(b[j])` need not be even (more rows than
+        # columns here pushes the whole unit onto `b`), but `gramcover` must carry
+        # whatever split `cover` returns through correctly regardless.
+        J = [4.0 1.0; 1.0 3.0; 2.0 0.5] .* u"N/m"
+        a, b = cover(J)
+        s = gramcover(a, b, J)
+        # `unit(a[i])` is the same for every `i` -- it must be, for `a[i]^2` to sum
+        # across rows of a component in the first place -- so any row names it.
+        @test unit.(s) == unit(a[1]) .* unit.(b)
+        @test all(ustrip.(s * s') .>= ustrip.(abs.(J' * J)))
+
+        # A dimensioned diagonal weight: `s` picks up `sqrt(unit(w))` on top.
+        w = [1.0, 2.0, 0.5] .* u"s"
+        sw = gramcover(a, b, J, w)
+        @test unit.(sw) == unit(a[1]) .* unit.(b) .* unit(sqrt(1.0u"s"))
+        Gw = J' * Diagonal(w) * J
+        @test all(ustrip.(sw * sw') .>= ustrip.(abs.(Gw)))
+    end
+
     @testset "unit types the cover cannot use" begin
         # An affine unit measures from a shifted origin, so no product a[i]*b[j]
         # scales it: refuse it rather than silently reducing it to its atom.

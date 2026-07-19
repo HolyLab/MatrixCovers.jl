@@ -345,6 +345,49 @@ perturbations of a base point up to a user-controllable number of `starts`.
 For the convex `AbsLog` penalties the start cannot change the result, and the refiners
 accept one only so that the two families share an interface.
 
+## Consuming one factor alone: gauges and Gram covers
+
+For asymmetric covers, only the products `a[i]*b[j]` are determined by the
+problem; the split into the pair is fixed by the balance convention described
+under [Uniqueness](@ref). That convention makes the split *deterministic*, but
+it is still a convention, and it is **not covariant** under one-sided
+rescaling: if `a*b'` covers `A`, then `a*(D*b)'` covers `A*D` — but the
+balanced representative of the rescaled problem is `(γ*a, D*b/γ)` for a
+per-component constant `γ ≠ 1` that depends on `D`.
+
+This has important implications for applications where you might estimate covers
+by composition. Let's take the example of the
+[Levenberg-Marquardt algorithm](https://en.wikipedia.org/wiki/Levenberg%E2%80%93Marquardt_algorithm),
+where you form products `J'*J` of the Jacobian matrix `J`. Suppose `a*b'` is
+a cover of `J`: then `(a'*a) * b * b'` is a cover of `J'*J` (note the `a`-factor
+`a'*a` is a scalar). The *tightness* of this cover for `J'*J` depends on the convention
+used to balance `a` and `b`.
+
+To do better, this package provides the Gram cover `s = ` [`gramcover`](@ref)`(a, b, J[, W])`,
+a symmetric cover of `J'*W*J` built from the asymmetric cover of `J`.
+Built this way, `s` covaries with right-scaling of `J`.
+
+```jldoctest gauge
+julia> using MatrixCovers, LinearAlgebra
+
+julia> J = [1.0 2; 3 4; 5 6];
+
+julia> D = Diagonal([100.0, 1.0]);        # reparametrize the second frame
+
+julia> a1, b1 = cover(J); a2, b2 = cover(J * D);
+
+julia> r = b2 ./ (D.diag .* b1); all(x -> x ≈ first(r), r)
+true
+
+julia> first(r) ≈ 1                       # bare-factor consumers see this constant
+false
+
+julia> s1 = gramcover(a1, b1, J); s2 = gramcover(a2, b2, J * D);
+
+julia> s2 ≈ D.diag .* s1                  # the Gram cover transports exactly
+true
+```
+
 ## Worked example: roundoff in `A \ b`
 
 Because a cover names each variable's natural scale, it also says how to measure a

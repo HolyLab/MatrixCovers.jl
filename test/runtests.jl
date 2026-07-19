@@ -20,6 +20,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
     include("support.jl")           # foreach_support(_sym) traversal
     include("iscover.jl")           # the cover predicate
     include("heuristic_covers.jl")  # symcover/cover and their internals
+    include("gram_covers.jl")       # gramcover/gramcover!: symmetric covers of A'*W*A
     include("soft_covers.jl")       # soft_symcover/soft_cover multistart descent
     include("initializers.jl")      # initialize_symcover/initialize_cover strategies
     include("minimal_covers.jl")    # the *_min family (native solvers)
