@@ -288,7 +288,9 @@
         w = [1.0, 2.0, 0.5] .* u"s"
         sw = gramcover(a, b, J, w)
         @test unit.(sw) == unit(a[1]) .* unit.(b) .* unit(sqrt(1.0u"s"))
-        Gw = J' * Diagonal(w) * J
+        # Two-step product: the three-term `J' * Diagonal(w) * J` routes through a
+        # mixed-unit intermediate that throws a DimensionError on Julia 1.10.
+        Gw = J' * (Diagonal(w) * J)
         @test all(ustrip.(sw * sw') .>= ustrip.(abs.(Gw)))
     end
 
