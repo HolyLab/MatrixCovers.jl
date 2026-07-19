@@ -83,6 +83,7 @@ function initialize_symcover!(a::AbstractVector, A::AbstractMatrix;
                               strategy::Symbol=:hardcover, feasible::Symbol=:inflate, kwargs...)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("initialize_symcover! requires a square matrix"))
+    require_abs_symmetric(A, :initialize_symcover!)
     eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$ax"))
     _initialize_symcover!(a, A, strategy, feasible; kwargs...) ||
         throw(ArgumentError("strategy=:leaveout requires a support entry that can be dropped without emptying a row"))
@@ -230,20 +231,24 @@ function _leaveout_logmean_init!(a::AbstractVector{T}, A::AbstractMatrix) where 
     axes(A) == (ax, ax) || throw(DimensionMismatch("`_leaveout_logmean_init!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(axes(A)), axes(a)=$(axes(a)))"))
     nza = unconstrained_min!(AbsLog{2}(), a, A)
     sum(nza) == 0 && return false
+    # One gather serves all three passes below: the two pair scans read the `j >= i`
+    # half of it, the Gauss-Seidel sweeps read whole rows.
+    S = _sym_support(A, T)
     # Most negative residual over the support, with a roundoff-tolerant tie set: exact ties
     # (e.g. z[1,1] == z[2,2] for every 2×2) must not be ordered by floating-point noise.
     zmin = T(Inf)
-    for j in ax, i in first(ax):j
-        Aij = abs(A[i, j])
-        iszero(Aij) && continue
-        zmin = min(zmin, log(T(Aij)) - log(a[i]) - log(a[j]))
+    for i in ax, s in _slots(S, i)
+        j = S.idx[s]
+        j < i && continue
+        zmin = min(zmin, log(S.val[s]) - log(a[i]) - log(a[j]))
     end
     ztol = 64 * eps(T) * max(one(T), abs(zmin))
     ibest = jbest = first(ax) - 1
     Abest = T(Inf)
-    for j in ax, i in first(ax):j
-        Aij = T(abs(A[i, j]))
-        iszero(Aij) && continue
+    for i in ax, s in _slots(S, i)
+        j = S.idx[s]
+        j < i && continue
+        Aij = S.val[s]
         z = log(Aij) - log(a[i]) - log(a[j])
         if z <= zmin + ztol && Aij < Abest
             ibest, jbest, Abest = i, j, Aij
@@ -268,11 +273,10 @@ function _leaveout_logmean_init!(a::AbstractVector{T}, A::AbstractMatrix) where 
             iszero(nza[i]) && continue
             num = zero(T)   # Σ_j W[i,j] (log|A[i,j]| - α[j]), α[i]-coefficient split out
             den = zero(T)
-            for j in ax
+            for s in _slots(S, i)
+                j = S.idx[s]
                 (min(i, j) == ibest && max(i, j) == jbest) && continue
-                Aij = abs(A[i, j])
-                iszero(Aij) && continue
-                lAij = log(Aij)
+                lAij = log(S.val[s])
                 if j == i
                     num += lAij
                     den += 2

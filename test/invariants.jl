@@ -96,4 +96,53 @@ const GEN_NOTIONS = (
             strategy in (:hardcover, :geomean), feasible in (:inflate, :boost, :none)
         @test isbalanced(initialize_cover(Agen; strategy, feasible)..., Agen)
     end
+
+    # The sym objective is summed over the full grid: each off-diagonal pair counts
+    # twice, each diagonal entry once. `cover_objective` is the reference, and every
+    # sym solver must minimize that same weighting even though its constraints live on
+    # the `i <= j` triangle. The references below impose the constraints on the full
+    # grid explicitly, so agreeing with them pins both halves of the convention: that
+    # the triangle is the equivalent constraint set, and that the objective is not
+    # halved along with it.
+    @testset "sym solvers minimize the full-grid objective" begin
+        function ref_min(pow, A)
+            n = size(A, 1)
+            L = log.(abs.(A))
+            supp = [(i, j) for i in 1:n, j in 1:n if !iszero(A[i, j])]
+            model = JuMP.Model(HiGHS.Optimizer)
+            JuMP.set_silent(model)
+            JuMP.@variable(model, α[1:n])
+            r(i, j) = α[i] + α[j] - L[i, j]
+            JuMP.@objective(model, Min, sum(r(i, j)^pow for (i, j) in supp))
+            for (i, j) in supp
+                JuMP.@constraint(model, r(i, j) >= 0)
+            end
+            JuMP.optimize!(model)
+            return JuMP.objective_value(model)
+        end
+
+        # The two conventions share a minimizer whenever the diagonal residuals
+        # vanish at the optimum, which is the common case — so a discriminating
+        # matrix is committed rather than left to the random draws. Weighting this
+        # one's off-diagonal pairs once instead of twice moves the optimum.
+        Mdisc = [2.4 1.2 1.2; 1.2 1.4 2.4; 1.2 2.4 0.6]
+
+        rng = StableRNG(20)
+        mats = Any[Asym, Azsym, abs.(Hc), Mdisc]
+        for _ in 1:5
+            n = rand(rng, 3:7)
+            B = randn(rng, n, n) .* (rand(rng, n, n) .< 0.5)
+            M = B + transpose(B)
+            push!(mats, M)
+        end
+        for M in mats
+            # AbsLog{2}: native solver and the HiGHS reference model.
+            o2 = ref_min(2, M)
+            @test cover_objective(AbsLog{2}(), symcover_min(AbsLog{2}(), M), M) ≈ o2 rtol=1e-5
+            @test cover_objective(AbsLog{2}(), MatrixCovers.symcover_min_jump(AbsLog{2}(), M), M) ≈ o2 rtol=1e-5
+            # AbsLog{1}: the HiGHS LP, whose objective is assembled from nonzero counts
+            # rather than from the residuals directly.
+            @test cover_objective(AbsLog{1}(), symcover_min(AbsLog{1}(), M), M) ≈ ref_min(1, M) rtol=1e-5
+        end
+    end
 end

@@ -1,7 +1,7 @@
 module MatrixCovers
 
-using LinearAlgebra: LinearAlgebra, Adjoint, Bidiagonal, Diagonal, SymTridiagonal,
-                     Symmetric, Transpose, Tridiagonal, dot, norm
+using LinearAlgebra: LinearAlgebra, Adjoint, Bidiagonal, Diagonal, Hermitian,
+                     SymTridiagonal, Symmetric, Transpose, Tridiagonal, dot, norm
 using PrecompileTools: PrecompileTools, @compile_workload
 using Random: Random, AbstractRNG, MersenneTwister
 
@@ -15,7 +15,7 @@ export soft_symcover_min, soft_symcover_min!, soft_cover_min, soft_cover_min!
 
 # `public` is parsed as a keyword only from Julia 1.11; this package supports 1.10.
 @static if VERSION >= v"1.11"
-    eval(Meta.parse("public AbstractCoverPenalty, foreach_support, foreach_support_sym"))
+    eval(Meta.parse("public AbstractCoverPenalty, foreach_support, foreach_support_sym, scalar_type"))
 end
 
 include("penalties.jl")

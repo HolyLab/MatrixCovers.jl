@@ -74,6 +74,32 @@ struct AbsLinear{p} <: AbstractCoverPenalty end
 # ============================================================
 
 """
+    MatrixCovers.scalar_type(T)
+
+The plain floating-point type underlying the element type `T`, with any units
+removed. [`cover_objective`](@ref) sums the ratios `|A[i,j]| / (a[i]*b[j])`,
+which are dimensionless because a cover requires
+`unit(A[i,j]) == unit(a[i])*unit(b[j])`, so the score is an ordinary number
+whatever the operands carry.
+
+This cannot be expressed as `float(real(T))`: a matrix whose entries carry
+different units has an abstract `eltype`, for which `real` and `oneunit` are
+undefined. A unit-carrying element type therefore needs its own method.
+"""
+scalar_type(::Type{T}) where {T<:Number} = float(real(T))
+
+# The accumulator type for a cover objective over `x`. `eltype` answers it when
+# concrete; a matrix whose entries carry different units can have an element type
+# as abstract as `Quantity`, which names no numeric type at all, so there the
+# elements themselves are consulted. The extra pass is O(length(x)) against an
+# objective that is already O(length(A)).
+function objective_type(x)
+    T = eltype(x)
+    isconcretetype(T) && return scalar_type(T)
+    return mapfoldl(v -> scalar_type(typeof(v)), promote_type, x; init=Bool)
+end
+
+"""
     cover_objective(ϕ, a, b, A)
     cover_objective(ϕ, a, A)
 
@@ -81,29 +107,50 @@ Compute the cover objective `∑_{i,j} ϕ(|A[i,j]| / (a[i] * b[j]))` for the giv
 penalty function `ϕ`. The two-argument form is for symmetric matrices where the cover
 is `a*a'`.
 
+The sum runs over the full grid in both forms, so in the symmetric form each
+off-diagonal pair contributes twice and each diagonal entry once. This weighting
+is what the `sym` solvers minimize, so the score reported here is the quantity
+they optimized; code that reads a symmetric matrix through
+[`foreach_support_sym`](@ref), which reports each pair once, must apply the
+factor of 2 itself to match.
+
 Zero entries of `A` are handled according to `ϕ`:
 - `AbsLog{p}`: zero entries contribute 0 (φ(0) = 0 by convention).
 - `AbsLinear{p}`: zero entries contribute 1 (φ(0) = |1-0|^p = 1).
+
+`eachindex(a)` must match `axes(A, 1)` and `eachindex(b)` must match `axes(A, 2)`.
+
+`A` is read through [`foreach_support`](@ref), so the cost is proportional to the
+support rather than to `length(A)` for a storage type that specializes it.
 
 See also:
 - Penalty types (options for `ϕ`): [`AbsLog`](@ref), [`AbsLinear`](@ref).
 - Solvers: [`symcover`](@ref), [`cover`](@ref), [`soft_symcover`](@ref), [`soft_cover`](@ref).
 """
 function cover_objective(ϕ, a, b, A)
-    T = float(promote_type(eltype(a), eltype(b), real(eltype(A))))
-    s = zero(T)
-    for j in eachindex(b)
-        bj = T(b[j])
-        for i in eachindex(a)
-            ai = T(a[i])
-            Aij = T(abs(A[i, j]))
-            ab = ai * bj
-            # 0/0 → 0 (no cover constraint); nonzero/0 → Inf (violated cover)
-            r = iszero(ab) ? (iszero(Aij) ? zero(T) : typemax(T)) : Aij / ab
-            s += T(ϕ(r))
-        end
+    eachindex(a) == axes(A, 1) ||
+        throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$(axes(A, 1))"))
+    eachindex(b) == axes(A, 2) ||
+        throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
+    T = promote_type(objective_type(A), objective_type(a), objective_type(b))
+    s = Ref(zero(T))
+    nsupport = Ref(0)
+    foreach_support(A) do i, j, v
+        ab = a[i] * b[j]
+        # A nonzero entry over a zero scale is uncovered; `typemax` is the ratio's
+        # stand-in for the infinite excess.
+        r = iszero(ab) ? typemax(T) : T(v / ab)
+        s[] += T(ϕ(r))
+        nsupport[] += 1
     end
-    return s
+    # Every entry outside the support has `r = 0` whatever its scales, including a
+    # zero entry over a zero scale, which constrains nothing. They therefore share
+    # one penalty value, and only their count is needed: zero for `AbsLog`, but a
+    # nonzero constant for `AbsLinear`, which is continuous at `r = 0`.
+    # The guard is not just an optimization: a penalty that is infinite at zero
+    # would otherwise turn a fully-dense `A` into `0 * Inf`, i.e. `NaN`.
+    nzero = length(a) * length(b) - nsupport[]
+    return iszero(nzero) ? s[] : s[] + nzero * T(ϕ(zero(T)))
 end
 cover_objective(ϕ, a, A) = cover_objective(ϕ, a, a, A)
 

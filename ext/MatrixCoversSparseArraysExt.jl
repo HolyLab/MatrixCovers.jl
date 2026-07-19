@@ -36,9 +36,11 @@ function MatrixCovers.foreach_support_sym(f, A::SparseMatrixCSC)
 end
 
 # Emitted pairs are canonical (row <= col) regardless of uplo: for uplo='L'
-# the stored (i, j) with i >= j is reported as (j, i).
+# the stored (i, j) with i >= j is reported as (j, i). Complex `Hermitian` is
+# admitted alongside the real case because only `abs` of a stored value is ever
+# read, and `abs(A[i,j]) == abs(conj(A[j,i]))`.
 function MatrixCovers.foreach_support_sym(f,
-        S::Union{Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Real,<:SparseMatrixCSC}})
+        S::Union{Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}})
     P = parent(S)
     ax = axes(P, 1)
     axes(P, 2) == ax || throw(DimensionMismatch("foreach_support_sym requires a square matrix, got axes $(axes(P))"))
@@ -57,6 +59,21 @@ function MatrixCovers.foreach_support_sym(f,
                 iszero(v) || f(j, i, v)
             end
         end
+    end
+    return nothing
+end
+
+# The asymmetric traversal of a wrapped sparse matrix, which the asymmetric cover
+# algorithms and `cover_objective` read even when the matrix is symmetric. Only the
+# named triangle is stored, so each off-diagonal pair is emitted in both
+# orientations and the diagonal once; the magnitudes agree in both, including for a
+# complex `Hermitian`. Without this the wrappers fall back to the generic
+# `AbstractMatrix` method and its full-grid `getindex` scan.
+function MatrixCovers.foreach_support(f,
+        S::Union{Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}})
+    MatrixCovers.foreach_support_sym(S) do i, j, v
+        f(i, j, v)
+        i == j || f(j, i, v)
     end
     return nothing
 end

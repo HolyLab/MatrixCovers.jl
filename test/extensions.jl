@@ -49,6 +49,18 @@
     A_rank1 = [2.0 1.0 4.0; 1.0 0.5 2.0; 4.0 2.0 8.0]
     a_soft = soft_symcover_min(AbsLog{2}(), A_rank1)
     @test cover_objective(AbsLog{2}(), a_soft, A_rank1) < 1e-8
+
+    # A solve that does not reach an optimum is an error, not a cover: the point
+    # such a model holds is the base of a ray rather than a minimizer. The guard is
+    # exercised directly on the status, since the symmetry precondition rejects the
+    # asymmetric input that is what left this LP unbounded.
+    @test MatrixCovers.check_solved(JuMP.OPTIMAL, "HiGHS", "symcover_min") === nothing
+    @test MatrixCovers.check_solved(JuMP.LOCALLY_SOLVED, "Ipopt", "symcover_min!") === nothing
+    @test_throws "terminated with status" MatrixCovers.check_solved(JuMP.DUAL_INFEASIBLE, "HiGHS", "symcover_min")
+    @test_throws "symcover_min" MatrixCovers.check_solved(JuMP.DUAL_INFEASIBLE, "HiGHS", "symcover_min")
+    @test_throws "HiGHS" MatrixCovers.check_solved(JuMP.INFEASIBLE, "HiGHS", "symcover_min")
+    # A tolerance the caller did not ask for is not a solve.
+    @test_throws "terminated with status" MatrixCovers.check_solved(JuMP.ALMOST_LOCALLY_SOLVED, "Ipopt", "symcover_min!")
 end
 
 @testset "symcover_min and soft_symcover_min (JuMP/Ipopt, AbsLinear)" begin
@@ -140,16 +152,16 @@ end
     # The AbsLinear objectives are non-convex: on this matrix the :hardcover and
     # :geomean starts descend into genuinely different local minima, which is what
     # makes a menu of starts worth having.
-    Abasin = [6.609216272192496 1.032613546278995 55.276094662396076 0.5076927138328724;
-              1.032613546278995 3.1390835186570034 11.658167585612446 38.315826566607555;
-              55.276094662396076 11.658167585612446 0.001705708114264713 21.68951642774627;
-              0.5076927138328724 38.315826566607555 21.68951642774627 0.006443251375371587]
+    Abasin = [81.892035218799 1.06622031288736 29.4700945830419 0.0181293142917846;
+              1.06622031288736 0.243512973596586 38.0236584552296 0.0279078887878805;
+              29.4700945830419 38.0236584552296 8.96405068596511 26.5775238859338;
+              0.0181293142917846 0.0279078887878805 26.5775238859338 42.6650094474717]
     ϕ = AbsLinear{2}()
     a_hard = symcover_min!(ϕ, initialize_symcover(Abasin; strategy=:hardcover), Abasin)
     a_geo = symcover_min!(ϕ, initialize_symcover(Abasin; strategy=:geomean), Abasin)
     @test iscover(a_hard, Abasin; rtol=1e-6)
     @test iscover(a_geo, Abasin; rtol=1e-6)
-    @test cover_objective(ϕ, a_geo, Abasin) < cover_objective(ϕ, a_hard, Abasin) - 1e-3
+    @test cover_objective(ϕ, a_geo, Abasin) < cover_objective(ϕ, a_hard, Abasin) - 0.5
 
     # Offset axes survive the Ipopt position mapping.
     Ao = OffsetArray(A, -1, -1)
@@ -300,10 +312,10 @@ end
     # The matrix on which the starts genuinely disagree: :geomean reaches a better
     # AbsLinear{2} minimum than :hardcover, so a driver that tried only the latter
     # would report the worse of the two.
-    Abasin = [6.609216272192496 1.032613546278995 55.276094662396076 0.5076927138328724;
-              1.032613546278995 3.1390835186570034 11.658167585612446 38.315826566607555;
-              55.276094662396076 11.658167585612446 0.001705708114264713 21.68951642774627;
-              0.5076927138328724 38.315826566607555 21.68951642774627 0.006443251375371587]
+    Abasin = [81.892035218799 1.06622031288736 29.4700945830419 0.0181293142917846;
+              1.06622031288736 0.243512973596586 38.0236584552296 0.0279078887878805;
+              29.4700945830419 38.0236584552296 8.96405068596511 26.5775238859338;
+              0.0181293142917846 0.0279078887878805 26.5775238859338 42.6650094474717]
     Aasym = [1.0 2.0 3.0; 40.0 5.0 0.6]
 
     for ϕ in (AbsLinear{1}(), AbsLinear{2}())
@@ -339,7 +351,7 @@ end
     @test symcover_min(ϕ, Abasin; strategies=(:hardcover,)) ≈
           symcover_min!(ϕ, initialize_symcover(Abasin; strategy=:hardcover), Abasin)
     @test cover_objective(ϕ, symcover_min(ϕ, Abasin), Abasin) <
-          cover_objective(ϕ, symcover_min(ϕ, Abasin; strategies=(:hardcover,)), Abasin) - 1e-3
+          cover_objective(ϕ, symcover_min(ϕ, Abasin; strategies=(:hardcover,)), Abasin) - 0.5
 
     # A matrix whose every row carries a single support entry admits no :leaveout start;
     # that strategy forfeits its slot rather than failing the solve.
@@ -349,7 +361,14 @@ end
     @test_throws "unknown strategy :banana" symcover_min(ϕ, Abasin; strategies=(:banana,))
     @test_throws "no strategy in (:leaveout,)" symcover_min(ϕ, Adiag; strategies=(:leaveout,))
     @test_throws "has no asymmetric formulation" cover_min(ϕ, Aasym; strategies=(:leaveout,))
+    # An empty menu is reported as such by all four drivers, rather than as the
+    # unrelated "no strategy yields a start" that a fall-through would produce.
     @test_throws "at least one starting cover" cover_min(ϕ, Aasym; strategies=())
+    @test_throws "at least one starting cover" symcover_min(ϕ, Abasin; strategies=())
+    @test_throws "at least one starting cover" soft_cover_min(ϕ, Aasym; strategies=())
+    @test_throws "at least one starting cover" soft_symcover_min(ϕ, Abasin; strategies=())
+    @test_throws "symcover_min:" symcover_min(ϕ, Abasin; strategies=())
+    @test_throws "soft_symcover_min:" soft_symcover_min(ϕ, Abasin; strategies=())
 end
 
 @testset "error hint gated on argument types" begin
@@ -453,4 +472,65 @@ end
     end
     @test e5 isa MethodError
     @test !occursin("loading JuMP", sprint(showerror, e5))
+end
+
+# `HookOnlyMatrix` (defined in soft_covers.jl) throws from `getindex`, so a model
+# builder that materialized `A` in position space could not get this far.
+@testset "the solver entry points read through the support hook" begin
+    entries = [(1, 1, 2.0), (1, 3, 1.5), (2, 2, 3.0), (2, 4, 0.5), (3, 4, 4.0), (4, 4, 1.0)]
+    M = HookOnlyMatrix(entries, 4)
+    dense = zeros(4, 4)
+    for (i, j, v) in entries
+        dense[i, j] = dense[j, i] = v
+    end
+
+    @test symcover_min(AbsLog{2}(), M) ≈ symcover_min(AbsLog{2}(), dense) rtol=1e-8
+    @test MatrixCovers.symcover_min_jump(AbsLog{2}(), M) ≈
+          MatrixCovers.symcover_min_jump(AbsLog{2}(), dense) rtol=1e-6
+    @test symcover_min(AbsLog{1}(), M) ≈ symcover_min(AbsLog{1}(), dense) rtol=1e-6
+    @test iscover(symcover_min(AbsLog{1}(), M), dense; rtol=1e-8)
+
+    for (fh, fd) in ((cover_min(AbsLog{1}(), M), cover_min(AbsLog{1}(), dense)),
+                     (MatrixCovers.cover_min_jump(AbsLog{2}(), M),
+                      MatrixCovers.cover_min_jump(AbsLog{2}(), dense)))
+        @test fh[1] ≈ fd[1] rtol=1e-6
+        @test fh[2] ≈ fd[2] rtol=1e-6
+    end
+
+    # Ipopt: the AbsLinear kernels, whose starts the caller supplies.
+    for p in (1, 2)
+        ϕ = AbsLinear{p}()
+        sh = symcover_min!(ϕ, symcover(ϕ, M), M)
+        sd = symcover_min!(ϕ, symcover(ϕ, dense), dense)
+        @test sh ≈ sd rtol=1e-5
+
+        ah, bh = cover_min!(ϕ, cover(ϕ, M)..., M)
+        ad, bd = cover_min!(ϕ, cover(ϕ, dense)..., dense)
+        @test ah ≈ ad rtol=1e-5
+        @test bh ≈ bd rtol=1e-5
+
+        @test soft_symcover_min!(ϕ, soft_symcover(ϕ, M), M) ≈
+              soft_symcover_min!(ϕ, soft_symcover(ϕ, dense), dense) rtol=1e-5
+
+        sah, sbh = soft_cover_min!(ϕ, soft_cover(ϕ, M)..., M)
+        sad, sbd = soft_cover_min!(ϕ, soft_cover(ϕ, dense)..., dense)
+        @test sah ≈ sad rtol=1e-5
+        @test sbh ≈ sbd rtol=1e-5
+    end
+end
+
+# The `sym` AbsLinear solvers minimize the full-grid objective — each off-diagonal
+# pair twice, each diagonal entry once — which is what `cover_objective` reports.
+# This matrix discriminates between that and weighting each unordered pair once:
+# the latter convention puts the optimum near [2.0, 3.177, 1.574] instead. Most
+# matrices do not discriminate, because the binding constraints have zero residual
+# at the optimum and a zero residual is weight-independent.
+@testset "the Ipopt sym objective uses the full-grid weighting" begin
+    A = Float64[4 1 0; 1 1 5; 0 5 2]
+    a0 = fill(sqrt(maximum(A)), 3)
+    a = symcover_min!(AbsLinear{2}(), copy(a0), A)
+    @test a ≈ [2.0, 1.0, 5.0] rtol=1e-6
+    @test iscover(a, A; rtol=1e-6)
+    # The objective reported for the result is the one that was minimized.
+    @test cover_objective(AbsLinear{2}(), a, A) ≈ cover_objective(AbsLinear{2}(), [2.0, 1.0, 5.0], A) rtol=1e-6
 end

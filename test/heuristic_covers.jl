@@ -45,6 +45,18 @@ end
             @test symcover(ϕ, A) == a
         end
     end
+
+    # Ignored is not the same as unchecked: the slot takes a penalty, so a wrong
+    # first argument fails rather than being silently dropped.
+    A = [4.0 1.5; 1.5 1.0]
+    a = symcover(A)
+    b = copy(a)
+    for bad in (42, "nope", :whatever)
+        @test_throws MethodError symcover(bad, A)
+        @test_throws MethodError symcover!(bad, copy(a), A)
+        @test_throws MethodError cover(bad, A)
+        @test_throws MethodError cover!(bad, copy(a), copy(b), A)
+    end
 end
 
 @testset "symcover with unequal row degrees" begin
@@ -207,13 +219,13 @@ end
     @test median(gaps) < 0.0195 * 1.5
 end
 
-@testset "boost feasibility: lower-dominant bands and extreme dynamic range" begin
-    # Lower-dominant bands: the symmetric-contract value is the max over both
-    # triangles, so the subdiagonal must be covered even when it dominates.
-    a = symcover(AbsLog{2}(), Bidiagonal([0.01, 0.01, 0.01], [100.0, 100.0], 'L'); maxiter=0)
+@testset "boost feasibility: dominant off-diagonal bands and extreme dynamic range" begin
+    # An off-diagonal band far larger than the diagonal: the boost must raise both
+    # endpoints of each band entry, not just the diagonal it started from.
+    a = symcover(AbsLog{2}(), SymTridiagonal([0.01, 0.01, 0.01], [100.0, 100.0]); maxiter=0)
     @test a[1] * a[2] >= 100 * (1 - 8eps())
     @test a[2] * a[3] >= 100 * (1 - 8eps())
-    T40 = Tridiagonal(fill(50.0, 39), fill(0.01, 40), fill(0.02, 39))
+    T40 = Tridiagonal(fill(50.0, 39), fill(0.01, 40), fill(50.0, 39))
     a = symcover(AbsLog{2}(), T40; maxiter=0)
     M = Matrix(T40)
     @test iscover(a, M; rtol=8eps())

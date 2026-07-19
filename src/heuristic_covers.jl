@@ -41,7 +41,7 @@ julia> a * a'   # covers |A|: a[i]*a[j] >= abs(A[i, j])
  4.0  4.0
 ```
 """
-symcover(ϕ, A::AbstractMatrix; kwargs...) = symcover(A; kwargs...)
+symcover(ϕ::AbstractCoverPenalty, A::AbstractMatrix; kwargs...) = symcover(A; kwargs...)
 
 function symcover(A::AbstractMatrix; kwargs...)
     axes(A, 2) == axes(A, 1) || throw(ArgumentError("symcover requires a square matrix"))
@@ -61,11 +61,12 @@ must match `axes(A, 1)` (and `A` must be square). `ϕ` has the same meaning as i
 
 See also: [`symcover`](@ref).
 """
-symcover!(ϕ, a::AbstractVector, A::AbstractMatrix; kwargs...) = symcover!(a, A; kwargs...)
+symcover!(ϕ::AbstractCoverPenalty, a::AbstractVector, A::AbstractMatrix; kwargs...) = symcover!(a, A; kwargs...)
 
 function symcover!(a::AbstractVector, A::AbstractMatrix; kwargs...)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("symcover! requires a square matrix"))
+    require_abs_symmetric(A, :symcover!)
     eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$ax"))
     unconstrained_min!(AbsLog{2}(), a, A)
     boost_feasible!(a, A)
@@ -107,7 +108,7 @@ julia> a * b'
  6.0      5.63709  8.31251
 ```
 """
-cover(ϕ, A::AbstractMatrix; kwargs...) = cover(A; kwargs...)
+cover(ϕ::AbstractCoverPenalty, A::AbstractMatrix; kwargs...) = cover(A; kwargs...)
 
 function cover(A::AbstractMatrix; kwargs...)
     T = float(real(eltype(A)))
@@ -138,7 +139,7 @@ covers.
 
 See also: [`cover`](@ref).
 """
-cover!(ϕ, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
+cover!(ϕ::AbstractCoverPenalty, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
     cover!(a, b, A; kwargs...)
 
 function cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
@@ -237,11 +238,12 @@ function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, A::AbstractMatrix
     return nza
 end
 
-function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix) where T
+function unconstrained_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
+    T = float(promote_type(eltype(a), eltype(b)))
     axes(A, 1) == eachindex(a) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, b, A)` requires row indices of `A` to match `a`, got axes(A, 1)=$(axes(A, 1)), axes(a)=$(axes(a))"))
     axes(A, 2) == eachindex(b) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, b, A)` requires column indices of `A` to match `b`, got axes(A, 2)=$(axes(A, 2)), axes(b)=$(axes(b))"))
-    loga = fill!(similar(a), zero(T))
-    logb = fill!(similar(b), zero(T))
+    loga = fill!(similar(a, T), zero(T))
+    logb = fill!(similar(b, T), zero(T))
     nza  = zeros(Int, axes(A, 1))
     nzb  = zeros(Int, axes(A, 2))
     foreach_support(A) do i, j, v
@@ -273,8 +275,13 @@ end
 # every diagonal-zero row is deferred until an off-diagonal neighbor supplies
 # a scale for it (see `boost_feasible_seq!`).
 function init_feasible_diag!(a::AbstractVector{T}, A::AbstractMatrix) where T
-    for k in eachindex(a)
-        a[k] = sqrt(T(abs(A[k, k])))
+    ax = eachindex(a)
+    axes(A) == (ax, ax) || throw(DimensionMismatch("`init_feasible_diag!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(axes(A)), axes(a)=$(axes(a)))"))
+    # A diagonal entry the traversal skips is zero, which is the "not yet resolved"
+    # value `boost_feasible_seq!` expects.
+    fill!(a, zero(T))
+    foreach_support_sym(A) do i, j, v
+        i == j && (a[i] = sqrt(T(v)))
     end
     return boost_feasible_seq!(a, A)
 end
@@ -287,10 +294,11 @@ end
 # every entry through it permanently uncoverable, whereas floatmin keeps it
 # representable and, being the smallest normal positive magnitude, changes the
 # resulting cover products negligibly.
-function _tighten_shrink(x::T, lr::T) where T
-    y = x / exp(lr / 2)
+function _tighten_shrink(x, lr)
+    T = float(promote_type(typeof(x), typeof(lr)))
+    y = T(x) / exp(T(lr) / 2)
     if iszero(y) && !iszero(x)
-        y = max(exp(log(x) - lr / 2), floatmin(T))
+        y = max(exp(log(T(x)) - T(lr) / 2), floatmin(T))
     end
     return y
 end
@@ -325,12 +333,13 @@ function tighten_cover!(a::AbstractVector{T}, A::AbstractMatrix; maxiter::Int=3)
     return a
 end
 
-function tighten_cover!(a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix; maxiter::Int=3) where T
+function tighten_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; maxiter::Int=3)
+    T = float(promote_type(eltype(a), eltype(b)))
     eachindex(a) == axes(A, 1) || throw(DimensionMismatch("indices of a must match row-indexing of A"))
     eachindex(b) == axes(A, 2) || throw(DimensionMismatch("indices of b must match column-indexing of A"))
     lratioa = fill(T(Inf), eachindex(a))
     lratiob = fill(T(Inf), eachindex(b))
-    la, lb = similar(a), similar(b)
+    la, lb = similar(a, T), similar(b, T)
     for _ in 1:maxiter
         map!(log, la, a)   # log(0) = -Inf marks zero scales; see below
         map!(log, lb, b)
@@ -362,11 +371,11 @@ function tighten_cover!(a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractM
 end
 
 # Adjoint/Transpose wrappers for tighten_cover!.
-function tighten_cover!(a::AbstractVector{T}, b::AbstractVector{T}, A::Adjoint; kwargs...) where T
+function tighten_cover!(a::AbstractVector, b::AbstractVector, A::Adjoint; kwargs...)
     tighten_cover!(b, a, parent(A); kwargs...)
     return a, b
 end
-function tighten_cover!(a::AbstractVector{T}, b::AbstractVector{T}, A::Transpose; kwargs...) where T
+function tighten_cover!(a::AbstractVector, b::AbstractVector, A::Transpose; kwargs...)
     tighten_cover!(b, a, parent(A); kwargs...)
     return a, b
 end
@@ -486,7 +495,8 @@ end
 # for every entry visited by `foreach_support`. The
 # diagonal is treated as an ordinary entry. Requires a start with strictly
 # positive scale on every supported row of `a` and column of `b`.
-function boost_feasible!(a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix) where T
+function boost_feasible!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
+    T = float(promote_type(eltype(a), eltype(b)))
     IdxA, IdxB = eltype(eachindex(a)), eltype(eachindex(b))
     # `la`/`lb` cache log.(a)/log.(b) and are updated alongside `a`/`b`; see
     # the symmetric method.
@@ -540,30 +550,32 @@ end
 # initialization, a heuristic guaranteed to be O(n^2) seems reasonable.
 function boost_feasible_seq!(a::AbstractVector{T}, A::AbstractMatrix) where T
     ax = eachindex(a)
-    n  = length(ax)
-    f  = first(ax)
+    axes(A) == (ax, ax) || throw(DimensionMismatch("`boost_feasible_seq!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(axes(A)), axes(a)=$(axes(a)))"))
+    I = eltype(ax)
 
-    deferred = Tuple{Int,Int,T}[]
-    for j in 1:n-1
-        for ik in 0:n-j-1
-            k   = f + ik
-            l   = k + j
-            Akl = T(abs(A[k, l]))
-            iszero(Akl) && continue
-            ak, al = a[k], a[l]
-            if !iszero(ak) && !iszero(al)
-                aprod = ak * al
-                if aprod < Akl
-                    s = sqrt(Akl / aprod)
-                    a[k] *= s; a[l] *= s
-                end
-            elseif !iszero(ak)
-                a[l] = Akl / ak
-            elseif !iszero(al)
-                a[k] = Akl / al
-            else
-                push!(deferred, (k, l, Akl))
+    # The support gathered as off-diagonal pairs, ordered by increasing offset and
+    # then by row, which is the propagation order the heuristic is defined by.
+    pairs = Tuple{I,I,T}[]
+    foreach_support_sym(A) do i, j, v
+        i == j || push!(pairs, (i, j, T(v)))
+    end
+    sort!(pairs; by = ((k, l, _),) -> (l - k, k))
+
+    deferred = Tuple{I,I,T}[]
+    for (k, l, Akl) in pairs
+        ak, al = a[k], a[l]
+        if !iszero(ak) && !iszero(al)
+            aprod = ak * al
+            if aprod < Akl
+                s = sqrt(Akl / aprod)
+                a[k] *= s; a[l] *= s
             end
+        elseif !iszero(ak)
+            a[l] = Akl / ak
+        elseif !iszero(al)
+            a[k] = Akl / al
+        else
+            push!(deferred, (k, l, Akl))
         end
     end
 
@@ -648,7 +660,8 @@ end
 # Requires a start with strictly positive scale on every supported row and column.
 # The shift is covariant under an independent row/column rescaling `D_r*A*D_c`,
 # and is accumulated in the log domain for the reasons given in the symmetric method.
-function inflate_feasible!(a::AbstractVector{T}, b::AbstractVector{T}, A::AbstractMatrix) where T
+function inflate_feasible!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
+    T = float(promote_type(eltype(a), eltype(b)))
     la, lb = map(log, a), map(log, b)
     tref = Ref(zero(T))
     foreach_support(A) do i, j, v

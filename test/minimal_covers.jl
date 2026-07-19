@@ -317,3 +317,24 @@ end
     end
     @test median(gen_ratios) < 1.02
 end
+
+# The `:lsqr` path is the intended solve when nnz ≪ n²; its working set must
+# therefore be sized by the support, not by `length(A)`. Doubling `n` at fixed
+# nnz-per-row doubles the support, so allocation must roughly double too — a
+# working set carrying any n×n array would quadruple instead.
+@testset ":lsqr allocates in proportion to the support" begin
+    function lsqr_alloc(n)
+        rng = StableRNG(4)
+        B = sprandn(rng, n, n, 3.5 / n)
+        A = Symmetric(B + transpose(B))
+        MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)   # compile before measuring
+        return @allocated MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
+    end
+    small, large = lsqr_alloc(200), lsqr_alloc(800)
+    # Measured ratio is ≈6: the support grows 4x, and the Newton continuation takes
+    # more LSQR iterations at the larger size. Quadratic growth would put it near 16.
+    # The bound discriminates sharply despite the gap, because one n×n Float64 array
+    # at n = 800 is 4.9 MB against a whole measured working set of ≈3.9 MB — a single
+    # reintroduced one lands the ratio above 13.
+    @test large < 10 * small
+end

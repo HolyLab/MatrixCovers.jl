@@ -526,3 +526,92 @@ end
         @test collect(ao) ≈ aref rtol=1e-6
     end
 end
+
+# A matrix readable only through the support hook: any full-grid scan hits the
+# throwing `getindex`. Both traversals are defined so the sym and asym kernels
+# can be driven from the same fixture.
+struct HookOnlyMatrix{T} <: AbstractMatrix{T}
+    entries::Vector{Tuple{Int,Int,T}}   # `i <= j` only; the transpose is implied
+    n::Int
+end
+Base.size(M::HookOnlyMatrix) = (M.n, M.n)
+Base.getindex(::HookOnlyMatrix, ::Int, ::Int) =
+    error("HookOnlyMatrix must be read through foreach_support")
+function MatrixCovers.foreach_support_sym(f, M::HookOnlyMatrix)
+    for (i, j, v) in M.entries
+        iszero(v) || f(i, j, abs(v))
+    end
+    return nothing
+end
+function MatrixCovers.foreach_support(f, M::HookOnlyMatrix)
+    for (i, j, v) in M.entries
+        iszero(v) && continue
+        f(i, j, abs(v))
+        i == j || f(j, i, abs(v))
+    end
+    return nothing
+end
+# Storing one member of each pair makes `abs`-symmetry structural, so the
+# precondition check is a no-op — as it must be, since it cannot index `M`.
+MatrixCovers.require_abs_symmetric(::HookOnlyMatrix, fname) = nothing
+
+@testset "the soft-cover kernels read through the support hook" begin
+    entries = [(1, 1, 2.0), (1, 3, 1.5), (2, 2, 3.0), (2, 4, 0.5), (3, 4, 4.0), (4, 4, 1.0)]
+    M = HookOnlyMatrix(entries, 4)
+    dense = zeros(4, 4)
+    for (i, j, v) in entries
+        dense[i, j] = dense[j, i] = v
+    end
+    start() = [1.3, 0.7, 2.1, 0.9]
+
+    # Reaching a result at all proves the kernel never indexed `M`; matching the
+    # dense run proves the gathered support is the same set of entries carrying the
+    # same full-grid multiplicity.
+    for kernel! in (MatrixCovers._abslog1_iter!, MatrixCovers._abslinear1_iter!,
+                    MatrixCovers._abslinear2_iter!)
+        @test kernel!(start(), M, 50) ≈ kernel!(start(), dense, 50) rtol=1e-10
+    end
+    for kernel! in (MatrixCovers._abslog1_iter_asym!, MatrixCovers._abslinear1_iter_asym!,
+                    MatrixCovers._mscm_als!)
+        ah, bh = kernel!(start(), start(), M, 50)
+        ad, bd = kernel!(start(), start(), dense, 50)
+        @test ah ≈ ad rtol=1e-10
+        @test bh ≈ bd rtol=1e-10
+    end
+end
+
+# The kernels above are only half the path: the public entry points reach them
+# through the initializers, so a full-grid scan in either one would surface here.
+@testset "the cover entry points read through the support hook" begin
+    entries = [(1, 1, 2.0), (1, 3, 1.5), (2, 2, 3.0), (2, 4, 0.5), (3, 4, 4.0), (4, 4, 1.0)]
+    M = HookOnlyMatrix(entries, 4)
+    dense = zeros(4, 4)
+    for (i, j, v) in entries
+        dense[i, j] = dense[j, i] = v
+    end
+
+    # `:diagfeasible` runs `init_feasible_diag!` and `boost_feasible_seq!`;
+    # `:leaveout` runs `_leaveout_logmean_init!`.
+    for strategy in (:geomean, :hardcover, :leaveout, :diagfeasible)
+        for feasible in (:none, :boost, :inflate)
+            @test initialize_symcover(M; strategy, feasible) ≈
+                  initialize_symcover(dense; strategy, feasible) rtol=1e-10
+        end
+    end
+
+    for ϕ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{1}(), AbsLog{2}())
+        @test symcover(ϕ, M) ≈ symcover(ϕ, dense) rtol=1e-10
+        @test soft_symcover(ϕ, M) ≈ soft_symcover(ϕ, dense) rtol=1e-6
+        @test iscover(symcover(ϕ, M), dense; rtol=8eps())
+        @test cover_objective(ϕ, symcover(ϕ, M), M) ≈
+              cover_objective(ϕ, symcover(ϕ, dense), dense) rtol=1e-10
+    end
+
+    for ϕ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{1}(), AbsLog{2}())
+        ah, bh = cover(ϕ, M)
+        ad, bd = cover(ϕ, dense)
+        @test ah ≈ ad rtol=1e-10
+        @test bh ≈ bd rtol=1e-10
+        @test iscover(ah, bh, dense; rtol=8eps())
+    end
+end

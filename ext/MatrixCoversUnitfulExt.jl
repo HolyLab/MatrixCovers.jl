@@ -10,6 +10,12 @@ const MC = MatrixCovers
 # Exponents of a unit, keyed by atomic unit. Rational, because a symmetric cover
 # halves the diagonal's exponents.
 const UnitExps = Dict{FreeUnits,Rational{Int}}
+
+# A cover objective is dimensionless, so it accumulates in the quantity's own
+# numeric type. This is stated for `Quantity{T}` rather than a concrete quantity
+# type because a matrix whose entries carry different units has exactly that
+# abstract element type.
+MC.scalar_type(::Type{<:Quantity{T}}) where {T} = MC.scalar_type(T)
 const QMatrix = AbstractMatrix{<:Quantity}
 const QVector = AbstractVector{<:Quantity}
 
@@ -17,19 +23,43 @@ const QVector = AbstractVector{<:Quantity}
 # Unit algebra
 # ============================================================
 
+# Unitful exposes no public accessor for the atomic units of a `FreeUnits`, and no
+# supported way to iterate them, so the code below reads its representation
+# directly: `FreeUnits{N,D,A}` carries `N` as a tuple of `Unit{U,D}`, each with
+# fields `tens::Int` and `power::Rational{Int}`. That layout is what the
+# `Unitful.Unit` and `Unitful.FreeUnits` docstrings specify. The decomposition
+# cannot be replaced by unit arithmetic: `gauge` takes a per-atom median over
+# rational exponents, which `*`, `/`, and `^` cannot express.
+
 # An atomic unit at the first power. A prefix belongs to the atom -- `mm` and `m`
 # are distinct -- so a coordinate named in `mm` keeps `mm` in its cover.
 atomic(x::Unit{N,D}) where {N,D} = FreeUnits{(Unit{N,D}(x.tens, 1//1),), D, nothing}()
 
-function exps(u::FreeUnits)
+# The third parameter of `FreeUnits` is the affine offset, `nothing` for an
+# ordinary unit. An affine unit measures from a shifted origin, so `a[i]*b[j]`
+# does not scale it and there is no cover to find; Unitful likewise refuses to
+# multiply affine units.
+function exps(u::FreeUnits{N,D,A}) where {N,D,A}
+    A === nothing || throw(ArgumentError("""
+    affine units are not supported: `$u` measures from a shifted origin, so no \
+    product `a[i]*b[j]` covers an entry in it. Convert to a unit with a true zero \
+    first (`u"K"` for `u"°C"`, `u"Ra"` for `u"°F"`)."""))
     d = UnitExps()
-    for x in typeof(u).parameters[1]
+    for x in N
         a = atomic(x)
         p = get(d, a, 0//1) + x.power
         iszero(p) ? delete!(d, a) : (d[a] = p)
     end
     return d
 end
+
+# `ContextUnits` and `FixedUnits` carry a conversion context this code does not
+# read, so they are refused by name rather than reaching `atomic` as a
+# `MethodError` on an unexported internal.
+exps(u::Unitful.Units) = throw(ArgumentError(
+    "unsupported unit type $(nameof(typeof(u))) for `$u`: MatrixCovers reads `FreeUnits`. " *
+    "Convert with `uconvert(FreeUnits(u), x)`."))
+
 exps(q::Quantity) = exps(unit(q))
 
 # Zero exponents are pruned throughout so that `==` on a `UnitExps` compares
@@ -244,24 +274,24 @@ function asymstart!(f, a::QVector, b::QVector, A::QMatrix, ϕ...; kwargs...)
     return a, b
 end
 
-# Every penalty slot below mirrors MatrixCovers's own method table: where
-# it leaves `ϕ` untyped these do too, and where it dispatches on concrete penalties
-# these enumerate the same ones. Each method is then strictly more specific than the
+# Every penalty slot below mirrors MatrixCovers's own method table: where it
+# accepts any `AbstractCoverPenalty` these do too, and where it dispatches on
+# concrete penalties these enumerate the same ones. Each method is then strictly more specific than the
 # one it shadows -- including those in the JuMP and Ipopt extensions, which leave the
 # matrix slot untyped -- so no ambiguity arises. A penalty the package does not
 # support raises a `MethodError` here exactly as it does on a unitless matrix.
 const PENALTIES = (:(AbsLog{1}), :(AbsLog{2}), :(AbsLinear{1}), :(AbsLinear{2}))
 
-# Heuristic covers and initializers: `ϕ` is untyped upstream and ignored.
+# Heuristic covers and initializers: `ϕ` is checked but not consulted.
 MC.symcover(A::QMatrix; kwargs...) = sym(MC.symcover, A; kwargs...)
-MC.symcover(ϕ, A::QMatrix; kwargs...) = sym(MC.symcover, A, ϕ; kwargs...)
+MC.symcover(ϕ::MC.AbstractCoverPenalty, A::QMatrix; kwargs...) = sym(MC.symcover, A, ϕ; kwargs...)
 MC.symcover!(a::QVector, A::QMatrix; kwargs...) = sym!(MC.symcover!, a, A; kwargs...)
-MC.symcover!(ϕ, a::QVector, A::QMatrix; kwargs...) = sym!(MC.symcover!, a, A, ϕ; kwargs...)
+MC.symcover!(ϕ::MC.AbstractCoverPenalty, a::QVector, A::QMatrix; kwargs...) = sym!(MC.symcover!, a, A, ϕ; kwargs...)
 
 MC.cover(A::QMatrix; kwargs...) = asym(MC.cover, A; kwargs...)
-MC.cover(ϕ, A::QMatrix; kwargs...) = asym(MC.cover, A, ϕ; kwargs...)
+MC.cover(ϕ::MC.AbstractCoverPenalty, A::QMatrix; kwargs...) = asym(MC.cover, A, ϕ; kwargs...)
 MC.cover!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover!, a, b, A; kwargs...)
-MC.cover!(ϕ, a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover!, a, b, A, ϕ; kwargs...)
+MC.cover!(ϕ::MC.AbstractCoverPenalty, a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover!, a, b, A, ϕ; kwargs...)
 
 # `cover`/`cover!` dispatch on `Adjoint`/`Transpose` upstream without an eltype
 # bound, so a wrapped `Quantity` matrix needs these to stay unambiguous.

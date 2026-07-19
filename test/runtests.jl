@@ -24,6 +24,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
     include("initializers.jl")      # initialize_symcover/initialize_cover strategies
     include("minimal_covers.jl")    # the *_min family (native solvers)
     include("storage_types.jl")     # sparse/structured/wrapped storage vs dense reference
+    include("element_types.jl")     # Float32/BigFloat: eltype-scaled internal tolerances
     include("extensions.jl")        # JuMP/HiGHS and Ipopt solvers, missing-extension hints
     include("unitful.jl")           # dimensional covers via the Unitful extension
     include("invariants.jl")        # shared conventions checked across every notion
@@ -42,12 +43,16 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
                      :_prepare_cover_start!, :_prepare_symcover_start!,
                      :_prepare_soft_cover_start!, :_prepare_soft_symcover_start!,
                      :foreach_support, :foreach_support_sym,
-                     :cover_min_jump, :symcover_min_jump)
+                     :cover_min_jump, :symcover_min_jump, :check_solved,
+                     :require_abs_symmetric,
+                     :_edge_list, :_sym_edge_list, :_degrees)
         # Non-public names owned by other packages, each with no public equivalent:
-        # `FreeUnits`/`Unit` are Unitful's unit representation, `Optimizer` is the
-        # solver handle JuMP's own documented `Model(HiGHS.Optimizer)` entry point
-        # names, and `register_error_hint` is Base-internal.
-        foreign = (:FreeUnits, :Unit, :Optimizer, :Experimental, :register_error_hint)
+        # `FreeUnits`/`Unit` are Unitful's unit representation and `Units` their
+        # abstract supertype, needed to reject the unit types this package cannot
+        # read; `Optimizer` is the solver handle JuMP's own documented
+        # `Model(HiGHS.Optimizer)` entry point names; and `register_error_hint` is
+        # Base-internal.
+        foreign = (:FreeUnits, :Unit, :Units, :Optimizer, :Experimental, :register_error_hint)
         test_explicit_imports(
             MatrixCovers;
             all_explicit_imports_are_public = VERSION >= v"1.11" ?

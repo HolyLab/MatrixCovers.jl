@@ -97,3 +97,103 @@
         end
     end
 end
+
+@testset "the symmetry precondition" begin
+    # A genuinely asymmetric matrix is refused rather than covered as some
+    # unspecified symmetrization of itself.
+    for A in ([0.0 0.0; 1.0 0.0], [1.0 2.0; 3.0 1.0], [4.0 1.0; -1.5 4.0])
+        @test_throws "abs.(A)` to be symmetric" symcover(A)
+        @test_throws "abs.(A)` to be symmetric" soft_symcover(A)
+        @test_throws "abs.(A)` to be symmetric" symcover_min(AbsLog{2}(), A)
+        @test_throws "abs.(A)` to be symmetric" initialize_symcover(A)
+        @test_throws "abs.(A)` to be symmetric" sparse(A) |> symcover
+        # Every solver family, including the ones behind the extensions.
+        @test_throws "abs.(A)` to be symmetric" symcover_min(AbsLog{1}(), A)
+        @test_throws "abs.(A)` to be symmetric" symcover_min(AbsLinear{2}(), A)
+        @test_throws "abs.(A)` to be symmetric" soft_symcover_min(AbsLinear{2}(), A)
+    end
+    # The message names the offending pair and the entry point.
+    @test_throws "symcover!" symcover([0.0 0.0; 1.0 0.0])
+    @test_throws "abs(A[2,1])" symcover([0.0 0.0; 1.0 0.0])
+
+    # Only the magnitudes must agree, so a sign flip is fine and a complex
+    # Hermitian — where A[i,j] == conj(A[j,i]) — is a legitimate input.
+    @test iscover(symcover([4.0 1.0; -1.0 4.0]), [4.0 1.0; -1.0 4.0]; rtol=8eps())
+    P = sparse([1, 2, 1], [1, 2, 2], ComplexF64[4.0, 2.0, 0.5+0.5im], 2, 2)
+    @test symcover_min(AbsLog{2}(), Hermitian(P, :U)) isa AbstractVector
+
+    # Exact symmetry is not required: a symmetric matrix that has been through
+    # floating-point arithmetic lands a ULP or so off, and must still be accepted.
+    rng = StableRNG(7)
+    B = randn(rng, 12, 12); S = B + B'
+    d = exp.(randn(rng, 12))
+    Sd = (d .* S) .* d'          # symmetric in exact arithmetic only
+    @test !issymmetric(Sd)
+    @test symcover(Sd) isa AbstractVector
+
+    # Wrapper types are exempt because their storage makes the property structural.
+    M = [4.0 1.0; 2.0 4.0]       # asymmetric as written
+    @test symcover(Symmetric(M, :U)) isa AbstractVector
+    @test symcover(Symmetric(M, :L)) isa AbstractVector
+    @test symcover(Diagonal([1.0, 2.0])) isa AbstractVector
+
+    # Banded storage earns no exemption. A `Bidiagonal` reads one of its
+    # off-diagonals as a structural zero, so any nonzero band makes it asymmetric;
+    # a `Tridiagonal` stores both bands and qualifies only when they agree.
+    for A in (Bidiagonal([3.0, 2.0, 1.0], [6.0, 0.5], :U),
+              Bidiagonal([3.0, 2.0, 1.0], [6.0, 0.5], :L),
+              Tridiagonal([1.0, 0.5], [3.0, 2.0, 1.0], [4.0, 0.5]))
+        @test_throws "abs.(A)` to be symmetric" symcover(A)
+        @test_throws "abs.(A)` to be symmetric" symcover_min(AbsLog{2}(), A)
+        # The asymmetric family covers them as stored.
+        @test iscover(cover(A)..., Matrix(A); rtol=8eps())
+    end
+    # Bands that do agree are ordinary symmetric input.
+    @test iscover(symcover(Tridiagonal([2.0, 0.5], [3.0, 2.0, 1.0], [2.0, 0.5])),
+                  Matrix(Tridiagonal([2.0, 0.5], [3.0, 2.0, 1.0], [2.0, 0.5])); rtol=8eps())
+    @test symcover(Bidiagonal([3.0, 2.0, 1.0], [0.0, 0.0], :U)) isa AbstractVector
+end
+
+# The kernels that gather the support into per-group neighbor lists read those
+# lists in place of the matrix, so the gather must reproduce the matrix exactly —
+# including multiplicity. `_sym_support` in particular enters each off-diagonal
+# pair in both orientations, which is what gives a kernel accumulating over its
+# groups the full-grid weighting of `cover_objective` (each off-diagonal pair
+# twice, each diagonal entry once) rather than a halved one.
+@testset "grouped support reproduces the matrix" begin
+    function regroup(S, groups_are_rows::Bool, sz)
+        R = zeros(Float64, sz)
+        for g in S.ax, s in MatrixCovers._slots(S, g)
+            i, j = groups_are_rows ? (g, S.idx[s]) : (S.idx[s], g)
+            R[i, j] = S.val[s]
+        end
+        return R
+    end
+
+    mats = Any[[2.0 1.0 0.0; 1.0 0.0 3.0; 0.0 3.0 4.0],       # zeros on and off the diagonal
+               [0.0 0.0; 0.0 0.0],                             # empty support
+               Diagonal([2.0, 0.0, 5.0]),
+               SymTridiagonal([4.0, 3.0, 1.0], [2.0, 0.5])]
+    rng = StableRNG(7)
+    for _ in 1:4
+        n = rand(rng, 2:6)
+        B = randn(rng, n, n) .* (rand(rng, n, n) .< 0.5)
+        push!(mats, B + transpose(B))
+    end
+    for M in mats
+        S = MatrixCovers._sym_support(M, Float64)
+        @test regroup(S, true, size(M)) == abs.(Matrix(M))
+    end
+
+    # The asymmetric gathers need no multiplicity rule: one entry, one slot.
+    for M in Any[[1.0 0.0 2.0; 0.0 0.0 0.0; 3.0 4.0 0.0], randn(StableRNG(9), 4, 6)]
+        @test regroup(MatrixCovers._row_support(M, Float64), true, size(M)) == abs.(M)
+        @test regroup(MatrixCovers._col_support(M, Float64), false, size(M)) == abs.(M)
+    end
+
+    # Offset axes: groups are addressed by the matrix's own indices.
+    O = OffsetArray([2.0 1.0; 1.0 3.0], -1:0, -1:0)
+    SO = MatrixCovers._sym_support(O, Float64)
+    @test SO.ax == -1:0
+    @test sort([(SO.idx[s], SO.val[s]) for s in MatrixCovers._slots(SO, -1)]) == [(-1, 2.0), (0, 1.0)]
+end
