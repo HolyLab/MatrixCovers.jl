@@ -1,6 +1,6 @@
 module MatrixCoversIpoptExt
 
-using JuMP: JuMP, @variable, @objective, @constraint, @NLobjective, @NLconstraint
+using JuMP: JuMP, @variable, @objective, @constraint
 using Ipopt: Ipopt
 using MatrixCovers
 using MatrixCovers: AbsLinear
@@ -60,7 +60,7 @@ function MatrixCovers.symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
     JuMP.set_silent(model)
     start0 = [supported[k] && !iszero(a[pr[k]]) ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
-    @NLobjective(model, Min,
+    @objective(model, Min,
         sum(tw[k] * (1 - exp(tlog[k] - α[ti[k]] - α[tj[k]]))^2 for k in eachindex(ti)))
     for k in eachindex(ti)
         @constraint(model, α[ti[k]] + α[tj[k]] >= tlog[k])
@@ -90,8 +90,8 @@ function MatrixCovers.symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
     # |1 - exp(lA - αi - αj)| via auxiliary variables t ≥ 0 and slack s
     @variable(model, t[eachindex(ti)] >= 0)
     for k in eachindex(ti)
-        @NLconstraint(model,  1 - exp(tlog[k] - α[ti[k]] - α[tj[k]]) <= t[k])
-        @NLconstraint(model, -1 + exp(tlog[k] - α[ti[k]] - α[tj[k]]) <= t[k])
+        @constraint(model,  1 - exp(tlog[k] - α[ti[k]] - α[tj[k]]) <= t[k])
+        @constraint(model, -1 + exp(tlog[k] - α[ti[k]] - α[tj[k]]) <= t[k])
     end
     @objective(model, Min, sum(tw[k] * t[k] for k in eachindex(ti)))
     for k in eachindex(ti)
@@ -132,7 +132,7 @@ function MatrixCovers.cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractV
     β0 = [nzb[j] > 0 ? log(T(b[pc[j]])) : zero(T) for j in 1:n]
     @variable(model, α[i=1:m], start = α0[i])
     @variable(model, β[j=1:n], start = β0[j])
-    @NLobjective(model, Min,
+    @objective(model, Min,
         sum((1 - exp(elog[e] - α[ei[e]] - β[ej[e]]))^2 for e in eachindex(ei)))
     for e in eachindex(ei)
         @constraint(model, α[ei[e]] + β[ej[e]] >= elog[e])
@@ -167,8 +167,8 @@ function MatrixCovers.cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractV
     @variable(model, β[j=1:n], start = β0[j])
     @variable(model, t[eachindex(ei)] >= 0)
     for e in eachindex(ei)
-        @NLconstraint(model,  1 - exp(elog[e] - α[ei[e]] - β[ej[e]]) <= t[e])
-        @NLconstraint(model, -1 + exp(elog[e] - α[ei[e]] - β[ej[e]]) <= t[e])
+        @constraint(model,  1 - exp(elog[e] - α[ei[e]] - β[ej[e]]) <= t[e])
+        @constraint(model, -1 + exp(elog[e] - α[ei[e]] - β[ej[e]]) <= t[e])
     end
     @objective(model, Min, sum(t))
     for e in eachindex(ei)
@@ -208,7 +208,7 @@ function MatrixCovers.soft_symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
     JuMP.set_silent(model)
     start0 = [supported[k] ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
-    @NLobjective(model, Min,
+    @objective(model, Min,
         sum(tw[k] * (1 - exp(tlog[k] - α[ti[k]] - α[tj[k]]))^2 for k in eachindex(ti)) + n_zeros)
     JuMP.optimize!(model)
     check_solved(model, "soft_symcover_min!")
@@ -235,8 +235,8 @@ function MatrixCovers.soft_symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
     @variable(model, α[k=1:n], start = start0[k])
     @variable(model, t[eachindex(ti)] >= 0)
     for k in eachindex(ti)
-        @NLconstraint(model,  1 - exp(tlog[k] - α[ti[k]] - α[tj[k]]) <= t[k])
-        @NLconstraint(model, -1 + exp(tlog[k] - α[ti[k]] - α[tj[k]]) <= t[k])
+        @constraint(model,  1 - exp(tlog[k] - α[ti[k]] - α[tj[k]]) <= t[k])
+        @constraint(model, -1 + exp(tlog[k] - α[ti[k]] - α[tj[k]]) <= t[k])
     end
     @objective(model, Min, sum(tw[k] * t[k] for k in eachindex(ti)) + n_zeros)
     JuMP.optimize!(model)
@@ -272,7 +272,7 @@ function MatrixCovers.soft_cover_min!(::AbsLinear{2}, a::AbstractVector, b::Abst
     β0 = [nzb[j] > 0 ? log(T(b[pc[j]])) : zero(T) for j in 1:n]
     @variable(model, α[i=1:m], start = α0[i])
     @variable(model, β[j=1:n], start = β0[j])
-    @NLobjective(model, Min,
+    @objective(model, Min,
         sum((1 - exp(elog[e] - α[ei[e]] - β[ej[e]]))^2 for e in eachindex(ei)) + n_zeros)
     @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
     JuMP.optimize!(model)
@@ -305,8 +305,8 @@ function MatrixCovers.soft_cover_min!(::AbsLinear{1}, a::AbstractVector, b::Abst
     @variable(model, β[j=1:n], start = β0[j])
     @variable(model, t[eachindex(ei)] >= 0)
     for e in eachindex(ei)
-        @NLconstraint(model,  1 - exp(elog[e] - α[ei[e]] - β[ej[e]]) <= t[e])
-        @NLconstraint(model, -1 + exp(elog[e] - α[ei[e]] - β[ej[e]]) <= t[e])
+        @constraint(model,  1 - exp(elog[e] - α[ei[e]] - β[ej[e]]) <= t[e])
+        @constraint(model, -1 + exp(elog[e] - α[ei[e]] - β[ej[e]]) <= t[e])
     end
     @objective(model, Min, sum(t) + n_zeros)
     @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
