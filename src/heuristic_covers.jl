@@ -86,7 +86,8 @@ entries are covered first), and `maxiter` tightening iterations are applied.
 Only the products `a[i] * b[j]` are determined by the problem: `a -> c*a`, `b -> b/c`
 leaves every one of them unchanged. The split is fixed by the balance convention
 `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` (`nzaᵢ`, `nzbⱼ` = nonzero counts of row `i`,
-column `j`), as it is throughout the package; see [`cover_min`](@ref).
+column `j`), imposed within each connected component of the support (the gauge acts
+independently on each), as it is throughout the package; see [`cover_min`](@ref).
 
 `ϕ` names the penalty the caller would like the cover to do well on. Currently,
 the heuristic covers ignore `ϕ`, although this behavior may change in future versions.
@@ -179,30 +180,49 @@ end
 # the objective cannot see it, so without a convention the split between `a` and `b` would
 # be an artifact of whichever pass last touched them.
 #
+# The gauge acts independently on each connected component of the bipartite
+# support graph (`_support_components`), so the convention is imposed per
+# component: within every component, the row-side and column-side weighted log
+# sums agree. This makes the split a well-defined function of the support and
+# the products — block-diagonal assembly commutes with balancing — rather than
+# pinning only the global scalar and leaving the per-component splits to
+# whichever solver internals ran last. Rows and columns with empty support
+# belong to no component and are left untouched.
+#
 # Two points differing only by the gauge land on the same point here, so a refiner given
 # either start cannot tell them apart. The uniform inflation to feasibility raises every
-# supported scale of `a` and `b` alike, and `∑ nzaᵢ = ∑ nzbⱼ = nnz`, so it preserves the
-# balance it finds.
+# supported scale of `a` and `b` alike, and within each component
+# `∑ nzaᵢ = ∑ nzbⱼ = nnz`, so it preserves the balance it finds.
 function _balance_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
     T = float(promote_type(eltype(a), eltype(b)))
-    Lα = Ref(zero(T))
-    Lβ = Ref(zero(T))
-    nnz = Ref(0)
+    rowcomp, colcomp, ncomp = _support_components(A)
+    iszero(ncomp) && return a, b
+    Lα = zeros(T, ncomp)
+    Lβ = zeros(T, ncomp)
+    nnz = zeros(Int, ncomp)
+    or = first(axes(A, 1)) - 1
+    oc = first(axes(A, 2)) - 1
     foreach_support(A) do i, j, v
-        Lα[] += log(T(a[i]))
-        Lβ[] += log(T(b[j]))
-        nnz[] += 1
+        c = rowcomp[i-or]
+        Lα[c] += log(T(a[i]))
+        Lβ[c] += log(T(b[j]))
+        nnz[c] += 1
     end
-    iszero(nnz[]) && return a, b
-    s = (Lβ[] - Lα[]) / (2 * nnz[])
-    iszero(s) && return a, b
+    s = Lβ
+    for c in 1:ncomp
+        s[c] = (Lβ[c] - Lα[c]) / (2 * nnz[c])
+    end
     # Grow the log-scales directly: `exp(s)` alone can overflow where the shifted
     # scale is perfectly representable.
     for i in eachindex(a)
-        iszero(a[i]) || (a[i] = exp(log(T(a[i])) + s))
+        c = rowcomp[i-or]
+        c == 0 && continue
+        iszero(s[c]) || iszero(a[i]) || (a[i] = exp(log(T(a[i])) + s[c]))
     end
     for j in eachindex(b)
-        iszero(b[j]) || (b[j] = exp(log(T(b[j])) - s))
+        c = colcomp[j-oc]
+        c == 0 && continue
+        iszero(s[c]) || iszero(b[j]) || (b[j] = exp(log(T(b[j])) - s[c]))
     end
     return a, b
 end

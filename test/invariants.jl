@@ -65,6 +65,8 @@ const GEN_NOTIONS = (
     Azgen = [1.0 0.0 2.0; 0.0 0.0 0.0; 3.0 0.0 4.0]      # row/column 2 unsupported
     Gc    = [1.0+1.0im 2.0 0.5; 0.25im 3.0 1.0-2.0im]
     dr, dc = [2.0, 0.5], [3.0, 0.25, 1.5]
+    # Two connected components, so the balance convention pins two independent gauges.
+    Ablk  = [1.0 2.0 0.0 0.0 0.0; 0.25 3.0 0.0 0.0 0.0; 0.0 0.0 1.5 2.5 0.75]
 
     @testset "gen: $(nt.name)" for nt in GEN_NOTIONS
         a, b = nt.f(Agen)
@@ -90,11 +92,17 @@ const GEN_NOTIONS = (
         # balance convention does, and every asymmetric cover reports its result in it.
         @test isbalanced(a, b, Agen)
         @test isbalanced(az, bz, Azgen)
+        # The balance convention is imposed per connected component: on a support with
+        # more than one component, `isbalanced` must hold within each rather than only
+        # in a single global sum.
+        ablk, bblk = nt.f(Ablk)
+        @test isbalanced(ablk, bblk, Ablk)
     end
 
     @testset "gen: initialize_cover($strategy, $feasible) is balanced" for
             strategy in (:hardcover, :geomean), feasible in (:inflate, :boost, :none)
         @test isbalanced(initialize_cover(Agen; strategy, feasible)..., Agen)
+        @test isbalanced(initialize_cover(Ablk; strategy, feasible)..., Ablk)
     end
 
     # The sym objective is summed over the full grid: each off-diagonal pair counts

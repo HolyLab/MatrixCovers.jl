@@ -107,8 +107,8 @@ formulation and raise an `ArgumentError`, as does any unrecognized `strategy` or
 Under every `feasible` setting the result is strictly positive on every
 supported row and column and exactly zero on the unsupported ones, and the split
 between `a` and `b` is fixed by the balance convention
-`∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` that every asymmetric cover in the package
-uses (see [`cover_min`](@ref)).
+`∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]`, imposed within each connected component of the
+support, that every asymmetric cover in the package uses (see [`cover_min`](@ref)).
 
 See also: [`initialize_cover!`](@ref), [`initialize_symcover`](@ref), [`cover`](@ref), [`cover_min`](@ref).
 """

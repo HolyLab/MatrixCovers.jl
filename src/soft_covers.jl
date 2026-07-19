@@ -192,7 +192,8 @@ Supported penalty functions:
 
 Rows or columns of `A` that are entirely zero receive scale `0`. As with [`cover`](@ref),
 only the products `a[i] * b[j]` are determined by the problem; the split is fixed by the
-balance convention `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]`.
+balance convention `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]`, imposed within each connected
+component of the support (the gauge acts independently on each).
 
 The objective is non-convex, so `starts` starting points are tried and the lowest-objective
 result kept: the geometric mean boosted until it covers `A`, the tightened hard cover
@@ -421,8 +422,9 @@ matching [`soft_cover`](@ref).
 
 The row/column scales are pinned to the balance convention
 `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` (`nzaᵢ`, `nzbⱼ` = nonzero counts of row `i`, column
-`j`), as in [`cover_min`](@ref): the objective depends on `a` and `b` only through the
-products `a[i]*b[j]`, so without a convention the split between them would be arbitrary.
+`j`), imposed within each connected component of the support, as in [`cover_min`](@ref):
+the objective depends on `a` and `b` only through the products `a[i]*b[j]`, so without a
+convention the split between them would be arbitrary.
 
 Supported ϕ values and required extensions:
 - `AbsLog{2}()`: solved natively (no external solver) — the same analytic geometric-mean

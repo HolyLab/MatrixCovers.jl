@@ -525,6 +525,27 @@ end
 # the latter convention puts the optimum near [2.0, 3.177, 1.574] instead. Most
 # matrices do not discriminate, because the binding constraints have zero residual
 # at the optimum and a zero residual is weight-independent.
+@testset "cover_min balances a block-diagonal support (JuMP/HiGHS)" begin
+    # Two connected components: the model constraint pins only the global gauge
+    # direction, so the per-component balance must come from the post-solve
+    # `_balance_cover!` shift `cover_min!` applies after the JuMP solve.
+    B = [2.0 1.0; 0.5 3.0]
+    C = [1.5 4.0 2.0; 3.0 0.5 1.0]
+    A = [B zeros(2, 3); zeros(2, 2) C]
+    a, b = cover_min(AbsLog{1}(), A)
+    @test iscover(a, b, A; atol=1e-8)
+    @test isbalanced(a, b, A)
+end
+
+@testset "cover_min balances a block-diagonal support (Ipopt)" begin
+    B = [2.0 1.0; 0.5 3.0]
+    C = [1.5 4.0 2.0; 3.0 0.5 1.0]
+    A = [B zeros(2, 3); zeros(2, 2) C]
+    a, b = cover_min(AbsLinear{2}(), A)
+    @test iscover(a, b, A; atol=1e-8)
+    @test isbalanced(a, b, A)
+end
+
 @testset "the Ipopt sym objective uses the full-grid weighting" begin
     A = Float64[4 1 0; 1 1 5; 0 5 2]
     a0 = fill(sqrt(maximum(A)), 3)

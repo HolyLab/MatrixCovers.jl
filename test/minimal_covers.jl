@@ -165,6 +165,26 @@ end
     @test cover_objective(AbsLog{2}(), a, b, Matrix(D)) ≈ 0.0 atol = 1e-10
 end
 
+@testset "MCM block-diagonal assembly consistency" begin
+    # The balance convention is imposed per connected component, so the (a, b) split
+    # is a function of the support and the products alone: covering a block-diagonal
+    # matrix must reproduce the factors of covering each block separately.
+    rng = StableRNG(23)
+    for _ in 1:5
+        mB, nB = rand(rng, 2:5), rand(rng, 2:5)
+        mC, nC = rand(rng, 2:5), rand(rng, 2:5)
+        B = rand(rng, mB, nB) .+ 0.1
+        C = rand(rng, mC, nC) .+ 0.1
+        A = [B zeros(mB, nC); zeros(mC, nB) C]
+        aA, bA = cover_min(AbsLog{2}(), A)
+        aB, bB = cover_min(AbsLog{2}(), B)
+        aC, bC = cover_min(AbsLog{2}(), C)
+        @test aA ≈ vcat(aB, aC) rtol=1e-5
+        @test bA ≈ vcat(bB, bC) rtol=1e-5
+        @test isbalanced(aA, bA, A)
+    end
+end
+
 @testset "symcover_min(AbsLog{2}) on complex Hermitian/Symmetric input" begin
     # The cover problem only depends on abs.(A), so a complex Hermitian (real
     # diagonal, conjugate-symmetric off-diagonals) or complex Symmetric matrix

@@ -197,3 +197,62 @@ end
     @test SO.ax == -1:0
     @test sort([(SO.idx[s], SO.val[s]) for s in MatrixCovers._slots(SO, -1)]) == [(-1, 2.0), (0, 1.0)]
 end
+
+# The gauge freedom of an asymmetric cover (`a -> γ*a`, `b -> b/γ`) acts independently
+# on each connected component of the bipartite support graph, so the balance
+# convention that pins it must be imposed per component; these tests check the
+# labeling `_support_components` builds directly.
+@testset "_support_components" begin
+    rng = StableRNG(11)
+
+    @testset "dense: one component" begin
+        A = randn(rng, 4, 5)
+        rowcomp, colcomp, ncomp = MatrixCovers._support_components(A)
+        @test ncomp == 1
+        @test all(==(1), rowcomp)
+        @test all(==(1), colcomp)
+    end
+
+    @testset "block-diagonal: two components, correctly partitioned" begin
+        B = randn(rng, 3, 2)
+        C = randn(rng, 2, 4)
+        A = [B zeros(3, 4); zeros(2, 2) C]
+        rowcomp, colcomp, ncomp = MatrixCovers._support_components(A)
+        @test ncomp == 2
+        # Rows/columns of B share one label, rows/columns of C the other, and the
+        # two labels differ.
+        @test allequal(rowcomp[1:3])
+        @test allequal(colcomp[1:2])
+        @test allequal(rowcomp[4:5])
+        @test allequal(colcomp[3:6])
+        @test rowcomp[1] == colcomp[1]
+        @test rowcomp[4] == colcomp[3]
+        @test rowcomp[1] != rowcomp[4]
+    end
+
+    @testset "empty row and column labeled 0" begin
+        A = randn(rng, 4, 4)
+        A[2, :] .= 0   # empty row
+        A[:, 3] .= 0   # empty column
+        rowcomp, colcomp, ncomp = MatrixCovers._support_components(A)
+        @test rowcomp[2] == 0
+        @test colcomp[3] == 0
+        @test all(!=(0), rowcomp[[1, 3, 4]])
+        @test all(!=(0), colcomp[[1, 2, 4]])
+        # The rest of the support is still one connected component (row 2/col 3
+        # aside, every other row touches every other column through a nonzero).
+        @test ncomp == 1
+    end
+
+    @testset "OffsetArray: position-indexed results match the parent" begin
+        B = randn(rng, 3, 2)
+        C = randn(rng, 2, 4)
+        A = [B zeros(3, 4); zeros(2, 2) C]
+        O = OffsetArray(A, -1:3, 10:15)
+        rowcomp, colcomp, ncomp = MatrixCovers._support_components(A)
+        orowcomp, ocolcomp, oncomp = MatrixCovers._support_components(O)
+        @test oncomp == ncomp
+        @test orowcomp == rowcomp
+        @test ocolcomp == colcomp
+    end
+end

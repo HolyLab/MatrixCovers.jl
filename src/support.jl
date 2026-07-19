@@ -147,6 +147,60 @@ end
 # invariant already guarantees `abs(A[i,j]) == abs(A[j,i])`.
 require_abs_symmetric(::Union{Symmetric,Hermitian,Diagonal,SymTridiagonal}, fname) = nothing
 
+# Connected components of the bipartite support graph of `A`: one vertex per row
+# and one per column, one edge per stored nonzero. Returns `(rowcomp, colcomp,
+# ncomp)`, where `rowcomp` and `colcomp` are `Vector{Int}` indexed by *position*
+# within `axes(A, 1)` and `axes(A, 2)` (so offset axes need no special case, as
+# with `GroupedSupport.ptr`), holding the component id in `1:ncomp` — or 0 for
+# rows/columns with empty support, which belong to no component.
+#
+# The gauge orbit of an asymmetric cover has one dimension per component: the
+# rescaling `a -> γ*a`, `b -> b/γ` acts independently on each, because no
+# product `a[i]*b[j]` spans two components. Any convention that pins the split
+# between `a` and `b` must therefore be imposed per component; a single global
+# constraint leaves `ncomp - 1` directions to the whim of whichever pass ran
+# last.
+function _support_components(A::AbstractMatrix)
+    m = length(axes(A, 1))
+    n = length(axes(A, 2))
+    parent = collect(1:(m + n))
+    touched = falses(m + n)
+    function find(p)
+        while parent[p] != p
+            parent[p] = parent[parent[p]]   # path halving
+            p = parent[p]
+        end
+        return p
+    end
+    or = first(axes(A, 1)) - 1
+    oc = first(axes(A, 2)) - 1
+    foreach_support(A) do i, j, _
+        p = i - or
+        q = m + j - oc
+        touched[p] = touched[q] = true
+        rp, rq = find(p), find(q)
+        rp == rq || (parent[rp] = rq)
+    end
+    label = zeros(Int, m + n)
+    ncomp = 0
+    rowcomp = zeros(Int, m)
+    colcomp = zeros(Int, n)
+    for p in 1:(m + n)
+        touched[p] || continue
+        r = find(p)
+        if label[r] == 0
+            ncomp += 1
+            label[r] = ncomp
+        end
+        if p <= m
+            rowcomp[p] = label[r]
+        else
+            colcomp[p-m] = label[r]
+        end
+    end
+    return rowcomp, colcomp, ncomp
+end
+
 # Number of entries `foreach_support` reports, i.e. the size of the stored support.
 function _nsupport(A::AbstractMatrix)
     n = Ref(0)
