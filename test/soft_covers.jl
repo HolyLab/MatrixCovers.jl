@@ -572,7 +572,7 @@ MatrixCovers.require_abs_symmetric(::HookOnlyMatrix, fname) = nothing
         @test kernel!(start(), M, 50) ≈ kernel!(start(), dense, 50) rtol=1e-10
     end
     for kernel! in (MatrixCovers._abslog1_iter_asym!, MatrixCovers._abslinear1_iter_asym!,
-                    MatrixCovers._mscm_als!)
+                    MatrixCovers._msmc_als!)
         ah, bh = kernel!(start(), start(), M, 50)
         ad, bd = kernel!(start(), start(), dense, 50)
         @test ah ≈ ad rtol=1e-10

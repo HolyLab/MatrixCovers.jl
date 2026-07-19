@@ -71,8 +71,8 @@
         start = initialize_symcover(A; feasible=:none)
         u1, v1 = copy(start), copy(start)
         u2, v2 = copy(start), copy(start)
-        MatrixCovers._mscm_als!(u1, v1, A, 500)
-        MatrixCovers._mscm_als!(u2, v2, A, 500; tol=1e-14)
+        MatrixCovers._msmc_als!(u1, v1, A, 500)
+        MatrixCovers._msmc_als!(u2, v2, A, 500; tol=1e-14)
         @test cover_objective(AbsLinear{2}(), u1, v1, A) <
               cover_objective(AbsLinear{2}(), u2, v2, A)
     end

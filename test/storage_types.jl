@@ -198,10 +198,10 @@ end
 end
 
 @testset "native solvers on sparse and structured inputs" begin
-    # The native AbsLog{2} MCM solvers (`symcover_min`/`cover_min`) and the AbsLinear
+    # The native AbsLog{2} MMC solvers (`symcover_min`/`cover_min`) and the AbsLinear
     # soft covers must agree with the dense reference on `Matrix(A)` when handed a
-    # sparse-backed or structured input, and the hard MCM covers must stay feasible.
-    # On a `SparseMatrixCSC`/`Symmetric`/`Hermitian`-sparse the MCM solvers default to
+    # sparse-backed or structured input, and the hard MMC covers must stay feasible.
+    # On a `SparseMatrixCSC`/`Symmetric`/`Hermitian`-sparse the MMC solvers default to
     # the matrix-free LSQR inner solve; structured inputs use the generic dense path.
 
     symdenses = [[2.0 1.0 0.0; 1.0 3.0 2.0; 0.0 2.0 5.0],
