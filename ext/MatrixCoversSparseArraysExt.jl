@@ -79,10 +79,10 @@ function MatrixCovers.foreach_support(f,
 end
 
 # ============================================================
-# Native minimal-cover (MCM) solvers
+# Native minimal-cover (MMC) solvers
 # ============================================================
 
-# Native AbsLog{2} MCM solvers on sparse supports default to the matrix-free LSQR
+# Native AbsLog{2} MMC solvers on sparse supports default to the matrix-free LSQR
 # inner solve, whose per-iteration cost is O(nnz) and whose accuracy tracks the
 # conditioning of √W·R (≈ √κ) rather than that of the normal equations (≈ κ). This
 # is the intended path when nnz ≪ n²; pass `linsolve=:auto`/`:dense` to force the

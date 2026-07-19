@@ -312,7 +312,7 @@ function _prepare_cover_start!(a::AbstractVector, b::AbstractVector, A::Abstract
 end
 
 
-# Inner linear solve for the AbsLog{2} MCM Newton steps. `:auto` (the default)
+# Inner linear solve for the AbsLog{2} MMC Newton steps. `:auto` (the default)
 # forms and factorizes the reweighted normal equations densely, which is fastest
 # for dense supports: an LAPACK Cholesky beats the matrix-free path because each
 # LSQR iteration costs O(nnz) = O(n²) there. `:lsqr` forces the matrix-free path,

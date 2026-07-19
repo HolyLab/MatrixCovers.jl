@@ -102,7 +102,7 @@ end
     @test cover_min(AbsLog{2}(), [1.0 2.0; 3.0 4.0]; κs=(1e2, 1e4, 1e6, 1e8, 1e10)) isa Tuple
 end
 
-@testset "MCM native AbsLog{2} matrix-free LSQR path" begin
+@testset "MMC native AbsLog{2} matrix-free LSQR path" begin
     # Invalid solver selection is rejected.
     @test_throws "linsolve must be :auto, :dense, or :lsqr" symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; linsolve=:qr)
     @test_throws "linsolve must be :auto, :dense, or :lsqr" cover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; linsolve=:qr)
@@ -143,7 +143,7 @@ end
     @test a[2] * b[1] ≈ 1.0
 end
 
-@testset "MCM disconnected-support gauge" begin
+@testset "MMC disconnected-support gauge" begin
     # A support graph that splits into k connected components carries k independent
     # (e; −e) gauges. The asymmetric dense normal equations pin only the global one
     # with v0*v0ᵀ; a minimal scale-relative ridge lifts the remaining k−1, so
@@ -165,7 +165,7 @@ end
     @test cover_objective(AbsLog{2}(), a, b, Matrix(D)) ≈ 0.0 atol = 1e-10
 end
 
-@testset "MCM block-diagonal assembly consistency" begin
+@testset "MMC block-diagonal assembly consistency" begin
     # The balance convention is imposed per connected component, so the (a, b) split
     # is a function of the support and the products alone: covering a block-diagonal
     # matrix must reproduce the factors of covering each block separately.

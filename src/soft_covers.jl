@@ -288,7 +288,7 @@ end
 
 function soft_cover!(::AbsLinear{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; maxiter::Int=200)
     _prepare_soft_cover_start!(a, b, A, :soft_cover!)
-    _mscm_als!(a, b, A, maxiter)
+    _msmc_als!(a, b, A, maxiter)
     return _balance_cover!(a, b, A)
 end
 
@@ -957,7 +957,7 @@ function _soft_cover_abslinear2_inits(A::AbstractMatrix, starts::Int, σ::Real, 
 end
 
 # Scale-covariant multistart for the asymmetric AbsLinear{2} soft cover. Runs the single-start
-# alternating least squares `_mscm_als!` from the candidate list built by
+# alternating least squares `_msmc_als!` from the candidate list built by
 # `_soft_cover_abslinear2_inits` and returns the pair `_multistart_select` picks. Every start
 # co-varies with an independent row/column rescaling `D_r*A*D_c` and the objective is
 # scale-invariant, so the selection is scale-covariant; passing the same `rng` state across the
@@ -965,7 +965,7 @@ end
 function _soft_cover_abslinear2(A::AbstractMatrix, iter::Int, starts::Int, σ::Real, rng;
                                 labels=nothing, objs=nothing)
     a, b = _multistart_run(_soft_cover_abslinear2_inits,
-                            ((a, b), A, iter) -> _mscm_als!(a, b, A, iter),
+                            ((a, b), A, iter) -> _msmc_als!(a, b, A, iter),
                             ((a, b), A) -> cover_objective(AbsLinear{2}(), a, b, A),
                             A, iter, starts, σ, rng; labels, objs)
     # The alternating half-sweeps rescale rows and columns independently, so they leave the
@@ -990,7 +990,7 @@ end
 #                                 = nnz[j] - num[j]²/den[j]
 # with nnz[j] the number of nonzeros in column j, which is that column's size in the
 # gather. An empty column has den[j] = nnz[j] = 0 and contributes nothing.
-function _mscm_als!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, iter::Int;
+function _msmc_als!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, iter::Int;
                     tol=nothing)
     axr, axc = axes(A, 1), axes(A, 2)
     eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axr) vs $(eachindex(a))"))
@@ -1007,7 +1007,7 @@ function _mscm_als!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, ite
     numu = similar(u)
     denu = similar(u)
     C = _col_support(A, T)
-    E = _mscm_objective(C, u, v)
+    E = _msmc_objective(C, u, v)
     for _ in 1:iter
         fill!(numu, zero(T))
         fill!(denu, zero(T))
@@ -1051,7 +1051,7 @@ end
 # Soft-cover objective in inverse-scale variables: ∑_{i,j: A[i,j]≠0} (1 - |A[i,j]| u[i] v[j])².
 # Takes the column-grouped support rather than the matrix, so the sweeps and the
 # objective share one gather.
-function _mscm_objective(C::GroupedSupport{T}, u::AbstractVector, v::AbstractVector) where T
+function _msmc_objective(C::GroupedSupport{T}, u::AbstractVector, v::AbstractVector) where T
     E = zero(T)
     for j in C.ax
         vj = v[j]
