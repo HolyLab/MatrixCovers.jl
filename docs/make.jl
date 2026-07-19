@@ -1,6 +1,6 @@
 using MatrixCovers
 using Documenter
-using JuMP, HiGHS
+using JuMP, HiGHS, Ipopt
 using Unitful   # loaded here so the doctests' own `using` cannot emit precompilation output
 
 DocMeta.setdocmeta!(MatrixCovers, :DocTestSetup, :(using MatrixCovers); recursive=true)

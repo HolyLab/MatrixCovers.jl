@@ -217,13 +217,29 @@ faster than a general-purpose convex solver.  The other penalties — `AbsLog{1}
 (a linear program) and the non-convex `AbsLinear` variants — are solved through
 [JuMP](https://jump.dev/) and are loaded on demand as a package extension:
 
-```julia
-using JuMP, HiGHS   # HiGHS for AbsLog penalties
-using MatrixCovers
+```jldoctest jumpmin
+julia> using MatrixCovers, JuMP, HiGHS   # HiGHS for the AbsLog penalties
 
-a    = symcover_min(AbsLog{1}(), A)   # L1-minimal symmetric hard cover
-a, b = cover_min(AbsLog{1}(), A)      # L1-minimal general hard cover
+julia> S = [4 1 0; 1 1 5; 0 5 2];      # symmetric
+
+julia> round.(symcover_min(AbsLog{1}(), S); digits=6)   # L1-minimal symmetric hard cover
+3-element Vector{Float64}:
+ 2.0
+ 1.0
+ 5.0
+
+julia> A = [1 2 3; 6 5 4];
+
+julia> a, b = cover_min(AbsLog{1}(), A);   # L1-minimal general hard cover
+
+julia> round.(a * b'; digits=6)            # tight on four of the six entries
+2×3 Matrix{Float64}:
+ 2.4  2.0  3.0
+ 6.0  5.0  7.5
 ```
+
+The solver returns values good to roughly solver tolerance, so these examples
+round before displaying.
 
 The soft `*_min` solvers divide along the same line, but not at the same place:
 [`soft_symcover_min`](@ref) and [`soft_cover_min`](@ref) solve `AbsLog{2}` natively and
@@ -291,15 +307,32 @@ from scratch rather than reading the vector passed in.
 
 For finer control, you can run these manually:
 
-```julia
-using JuMP, Ipopt   # Ipopt for the AbsLinear penalties
-using MatrixCovers
+```jldoctest manualstart
+julia> using MatrixCovers, JuMP, Ipopt   # Ipopt for the AbsLinear penalties
 
-a = symcover_min(AbsLinear{2}(), A)                      # multistart over the whole menu
-a = symcover_min(AbsLinear{2}(), A; strategies=(:geomean,))   # or commit to one start
+julia> S = [4 1 0; 1 1 5; 0 5 2];
 
-a0 = initialize_symcover(A; strategy=:geomean)           # or drive it yourself
-symcover_min!(AbsLinear{2}(), a0, A)
+julia> round.(symcover_min(AbsLinear{2}(), S); digits=6)   # multistart over the whole menu
+3-element Vector{Float64}:
+ 2.0
+ 1.0
+ 5.0
+
+julia> round.(symcover_min(AbsLinear{2}(), S; strategies=(:geomean,)); digits=6)   # or commit to one start
+3-element Vector{Float64}:
+ 2.0
+ 1.0
+ 5.0
+
+julia> a0 = initialize_symcover(S; strategy=:geomean);     # or drive it yourself
+
+julia> symcover_min!(AbsLinear{2}(), a0, S);
+
+julia> round.(a0; digits=6)
+3-element Vector{Float64}:
+ 2.0
+ 1.0
+ 5.0
 ```
 
 The same menu supplies the starting points of the [`soft_symcover`](@ref) and
