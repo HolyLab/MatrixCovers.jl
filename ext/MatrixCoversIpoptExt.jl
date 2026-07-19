@@ -27,6 +27,16 @@ using MatrixCovers: _edge_list, _sym_edge_list, _degrees
 check_solved(model, fname) =
     MatrixCovers.check_solved(JuMP.termination_status(model), "Ipopt", fname)
 
+# `set_silent` alone still lets Ipopt print its startup banner, once per session, from
+# its C++ core; `sb` ("suppress banner") is the option that covers it. Every model here
+# is solved for a caller who asked for a cover, not for solver output.
+function _ipopt_model()
+    model = JuMP.Model(Ipopt.Optimizer)
+    JuMP.set_silent(model)
+    JuMP.set_attribute(model, "sb", "yes")
+    return model
+end
+
 # The `i ≤ j` half of a symmetric gather, paired with the multiplicity `w` each entry
 # stands for in the full grid: an off-diagonal pair is two entries of `A`, a diagonal
 # entry one. Carrying the weight is equivalent to summing over both orientations and
@@ -56,8 +66,7 @@ function MatrixCovers.symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
     supported = _degrees(fi, n) .> 0
     ti, tj, tlog, tw = _triangle(fi, fj, flog)
 
-    model = JuMP.Model(Ipopt.Optimizer)
-    JuMP.set_silent(model)
+    model = _ipopt_model()
     start0 = [supported[k] && !iszero(a[pr[k]]) ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
     @objective(model, Min,
@@ -83,8 +92,7 @@ function MatrixCovers.symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
     supported = _degrees(fi, n) .> 0
     ti, tj, tlog, tw = _triangle(fi, fj, flog)
 
-    model = JuMP.Model(Ipopt.Optimizer)
-    JuMP.set_silent(model)
+    model = _ipopt_model()
     start0 = [supported[k] && !iszero(a[pr[k]]) ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
     # |1 - exp(lA - αi - αj)| via auxiliary variables t ≥ 0 and slack s
@@ -126,8 +134,7 @@ function MatrixCovers.cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractV
     nza = _degrees(ei, m)
     nzb = _degrees(ej, n)
 
-    model = JuMP.Model(Ipopt.Optimizer)
-    JuMP.set_silent(model)
+    model = _ipopt_model()
     α0 = [nza[i] > 0 ? log(T(a[pr[i]])) : zero(T) for i in 1:m]
     β0 = [nzb[j] > 0 ? log(T(b[pc[j]])) : zero(T) for j in 1:n]
     @variable(model, α[i=1:m], start = α0[i])
@@ -159,8 +166,7 @@ function MatrixCovers.cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractV
     nza = _degrees(ei, m)
     nzb = _degrees(ej, n)
 
-    model = JuMP.Model(Ipopt.Optimizer)
-    JuMP.set_silent(model)
+    model = _ipopt_model()
     α0 = [nza[i] > 0 ? log(T(a[pr[i]])) : zero(T) for i in 1:m]
     β0 = [nzb[j] > 0 ? log(T(b[pc[j]])) : zero(T) for j in 1:n]
     @variable(model, α[i=1:m], start = α0[i])
@@ -204,8 +210,7 @@ function MatrixCovers.soft_symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
     ti, tj, tlog, tw = _triangle(fi, fj, flog)
     n_zeros = n^2 - length(fi)   # a zero entry contributes (1-0)^2 = 1 regardless of α
 
-    model = JuMP.Model(Ipopt.Optimizer)
-    JuMP.set_silent(model)
+    model = _ipopt_model()
     start0 = [supported[k] ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
     @objective(model, Min,
@@ -229,8 +234,7 @@ function MatrixCovers.soft_symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
     ti, tj, tlog, tw = _triangle(fi, fj, flog)
     n_zeros = n^2 - length(fi)   # a zero entry contributes |1 - 0| = 1 regardless of α
 
-    model = JuMP.Model(Ipopt.Optimizer)
-    JuMP.set_silent(model)
+    model = _ipopt_model()
     start0 = [supported[k] ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
     @variable(model, t[eachindex(ti)] >= 0)
@@ -266,8 +270,7 @@ function MatrixCovers.soft_cover_min!(::AbsLinear{2}, a::AbstractVector, b::Abst
     nzb = _degrees(ej, n)
     n_zeros = m * n - length(ei)
 
-    model = JuMP.Model(Ipopt.Optimizer)
-    JuMP.set_silent(model)
+    model = _ipopt_model()
     α0 = [nza[i] > 0 ? log(T(a[pr[i]])) : zero(T) for i in 1:m]
     β0 = [nzb[j] > 0 ? log(T(b[pc[j]])) : zero(T) for j in 1:n]
     @variable(model, α[i=1:m], start = α0[i])
@@ -297,8 +300,7 @@ function MatrixCovers.soft_cover_min!(::AbsLinear{1}, a::AbstractVector, b::Abst
     nzb = _degrees(ej, n)
     n_zeros = m * n - length(ei)
 
-    model = JuMP.Model(Ipopt.Optimizer)
-    JuMP.set_silent(model)
+    model = _ipopt_model()
     α0 = [nza[i] > 0 ? log(T(a[pr[i]])) : zero(T) for i in 1:m]
     β0 = [nzb[j] > 0 ? log(T(b[pc[j]])) : zero(T) for j in 1:n]
     @variable(model, α[i=1:m], start = α0[i])
