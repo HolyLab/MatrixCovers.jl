@@ -145,6 +145,10 @@ function MatrixCovers.cover_min_jump(::AbsLog{2}, A)
         @constraint(model, α[ei[e]] + β[ej[e]] - elog[e] >= 0)
     end
     nza, nzb = _degrees(ei, m), _degrees(ej, n)
+    # Pins only the global gauge direction; a disconnected support carries one (e; -e)
+    # gauge per component (see MatrixCovers._support_components), so the remaining
+    # directions are left to whichever vertex HiGHS returns. The post-solve balance
+    # shift below fixes all of them, matching the native solver.
     @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
     JuMP.optimize!(model)
     check_solved(model, "cover_min_jump")
@@ -156,7 +160,8 @@ function MatrixCovers.cover_min_jump(::AbsLog{2}, A)
     for (j, k) in pairs(pc)
         b[k] = nzb[j] > 0 ? exp(JuMP.value(β[j])) : zero(T)
     end
-    return a, b
+    MatrixCovers._balance_cover!(a, b, A)
+    return MatrixCovers.inflate_feasible!(a, b, A)
 end
 
 MatrixCovers.cover_min(::AbsLog{1}, A) = _cover_min_abslog1(A, nothing)
@@ -170,8 +175,10 @@ function MatrixCovers.cover_min!(::AbsLog{1}, a::AbstractVector, b::AbstractVect
 end
 
 # Asymmetric counterpart of `_symcover_min_abslog1`, on the bipartite support: the
-# same LP over row scales α and column scales β, with the row/column gauge pinned by
-# the balance constraint so the split between `a` and `b` is deterministic.
+# same LP over row scales α and column scales β. The balance constraint below pins
+# the global row/column gauge; a support with more than one connected component
+# carries additional per-component gauges that the post-solve balance shift pins,
+# so the split between `a` and `b` is deterministic.
 function _cover_min_abslog1(A, start)
     axr = axes(A, 1)
     axc = axes(A, 2)
@@ -203,7 +210,9 @@ function _cover_min_abslog1(A, start)
     nza, nzb = rowcount, colcount
     # Gauge pin: the products a[i]*b[j] are unchanged by a -> c*a, b -> b/c, so without this
     # the split between `a` and `b` would be arbitrary. It is orthogonal to the AbsLog{1}
-    # degeneracy the second stage resolves, and stays in force there.
+    # degeneracy the second stage resolves, and stays in force there. It pins only the
+    # global gauge direction, one of possibly several (one per connected component of the
+    # support); the post-solve balance shift below pins the rest.
     @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
     JuMP.optimize!(model)
     check_solved(model, "cover_min")
@@ -217,7 +226,8 @@ function _cover_min_abslog1(A, start)
     for (j, k) in pairs(pc)
         b[k] = nzb[j] > 0 ? exp(JuMP.value(β[j])) : zero(T)
     end
-    return a, b
+    MatrixCovers._balance_cover!(a, b, A)
+    return MatrixCovers.inflate_feasible!(a, b, A)
 end
 
 

@@ -120,8 +120,11 @@ end
 # a[i]*b[j] is invariant under (α, β) → (α + s, β - s), so — unlike the symmetric
 # problem, which has no such freedom — the model is degenerate along that direction
 # until the balance constraint ∑ nzaᵢ αᵢ = ∑ nzbⱼ βⱼ pins it, exactly as
-# cover_min(::AbsLog{1}) does. Without it the split Ipopt reports between `a` and `b`
-# would be arbitrary.
+# cover_min(::AbsLog{1}) does. That constraint pins only the global gauge direction;
+# a support with more than one connected component carries one such gauge per
+# component (see MatrixCovers._support_components), so each kernel below finishes
+# with a post-solve balance shift (`_balance_cover!`, then `inflate_feasible!` to
+# restore exact coverage) that pins the rest.
 # ============================================================
 
 function MatrixCovers.cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractVector, A)
@@ -153,7 +156,8 @@ function MatrixCovers.cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractV
     for (j, k) in pairs(pc)
         b[k] = nzb[j] > 0 ? exp(JuMP.value(β[j])) : zero(T)
     end
-    return a, b
+    MatrixCovers._balance_cover!(a, b, A)
+    return MatrixCovers.inflate_feasible!(a, b, A)
 end
 
 function MatrixCovers.cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractVector, A)
@@ -189,7 +193,8 @@ function MatrixCovers.cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractV
     for (j, k) in pairs(pc)
         b[k] = nzb[j] > 0 ? exp(JuMP.value(β[j])) : zero(T)
     end
-    return a, b
+    MatrixCovers._balance_cover!(a, b, A)
+    return MatrixCovers.inflate_feasible!(a, b, A)
 end
 
 # ============================================================
@@ -254,8 +259,12 @@ end
 # ============================================================
 # Soft cover: soft_cover_min!(::AbsLinear{p}, a, b, A)
 # The bipartite analog of soft_symcover_min!, and the unconstrained analog of cover_min!:
-# no coverage constraints, but the same row/column gauge, pinned by the same balance
-# constraint ∑ nzaᵢ αᵢ = ∑ nzbⱼ βⱼ. A zero entry of `A` contributes ϕ(0) = 1 whatever the
+# no coverage constraints, but the same row/column gauge, pinned in the model by the same
+# balance constraint ∑ nzaᵢ αᵢ = ∑ nzbⱼ βⱼ. As in cover_min!, that constraint pins only the
+# global gauge direction, so each kernel below finishes with a post-solve `_balance_cover!`
+# that pins the rest (one per connected component of the support); unlike the hard-cover
+# kernels, no `inflate_feasible!` follows, since the soft objective imposes no coverage
+# constraint for it to restore. A zero entry of `A` contributes ϕ(0) = 1 whatever the
 # scales, so the count of zeros enters the objective as a constant, matching cover_objective.
 # ============================================================
 
@@ -286,7 +295,7 @@ function MatrixCovers.soft_cover_min!(::AbsLinear{2}, a::AbstractVector, b::Abst
     for (j, k) in pairs(pc)
         b[k] = nzb[j] > 0 ? exp(JuMP.value(β[j])) : zero(T)
     end
-    return a, b
+    return MatrixCovers._balance_cover!(a, b, A)
 end
 
 function MatrixCovers.soft_cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractVector, A)
@@ -320,7 +329,7 @@ function MatrixCovers.soft_cover_min!(::AbsLinear{1}, a::AbstractVector, b::Abst
     for (j, k) in pairs(pc)
         b[k] = nzb[j] > 0 ? exp(JuMP.value(β[j])) : zero(T)
     end
-    return a, b
+    return MatrixCovers._balance_cover!(a, b, A)
 end
 
 end  # module MatrixCoversIpoptExt

@@ -250,12 +250,15 @@ reach for JuMP with Ipopt only for the `AbsLinear` penalties.  They do not accep
 ### Uniqueness
 
 The `AbsLog{2}()` penalty generally has a unique minimum, with one exception:
-row/column scaling `a → γ*a`, `b → b/γ` does not affect `C` and thus invisible
-to the objective function. For non-symmetric (i.e., not `symcover`) problems,
-the scaling of each is pinned separately by the balance convention
-`∑ n_i log a[i] = ∑ m_j log b[j]`, where `n_i`, `m_j` are the the nonzero counts
-of row `i` and column `j`, respectively. This convention is not scale-invariant
-but has no impact on the cover itself.
+row/column scaling `a → γ*a`, `b → b/γ` does not affect `C` and is thus
+invisible to the objective function. For non-symmetric (i.e., not `symcover`) problems,
+the scaling of each is pinned by the balance convention
+`∑ n_i log a[i] = ∑ m_j log b[j]`, where `n_i`, `m_j` are the nonzero counts
+of row `i` and column `j`, respectively. The gauge freedom, and hence this
+convention, acts independently on each connected component of the bipartite
+support graph of `A` (rows and columns as vertices, stored nonzeros as edges),
+so the sums are taken within each component separately. This convention is not
+scale-invariant but has no impact on the cover itself.
 
 Other penalties may be more degenerate. The `AbsLog{1}()` penalty is identical
 over a whole face of the feasible polytope, and its members are genuinely

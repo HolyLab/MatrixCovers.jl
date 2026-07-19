@@ -54,10 +54,16 @@ symcover_min(A::AbstractMatrix; kwargs...) = symcover_min(AbsLog{2}(), A; kwargs
 
 Return the ϕ-minimal asymmetric hard cover of `A`: the vectors `a`, `b` minimizing
 `∑_{i,j} ϕ(|A[i,j]|/(a[i]*b[j]))` subject to `a[i]*b[j] >= |A[i,j]|` for every nonzero
-entry of `A`. The row/column scales are pinned to the balance convention
+entry of `A`. Only the products `a[i]*b[j]` are determined by the problem: the gauge
+`a -> γ*a`, `b -> b/γ` leaves every one of them unchanged, and acts independently on
+each connected component of the bipartite support graph of `A` (rows and columns as
+vertices, stored nonzeros as edges), since no product spans two components. The split
+is pinned by imposing, within each component, the balance convention
 `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` (`nzaᵢ`, `nzbⱼ` = nonzero counts of row `i`,
-column `j`) so the result is deterministic. The no-ϕ form defaults to `AbsLog{2}()`,
-matching [`cover`](@ref).
+column `j`, summed over that component's rows/columns) — so the result is a
+deterministic function of the support and the products, and block-diagonal assembly
+commutes with the split. The no-ϕ form defaults to `AbsLog{2}()`, matching
+[`cover`](@ref).
 
 Supported ϕ values:
 - `AbsLog{2}()`: solved natively (no external solver). Accepts keyword arguments
@@ -162,11 +168,13 @@ end
 # Asymmetric AbsLog{2} hard cover via the same one-sided quadratic penalty as
 # `symcover_min`, on stacked log-scales x = (α; β) (α = log a over rows, β = log b
 # over columns) with residuals z_ij = α_i + β_j - log|A_ij|. The row and column
-# scales share a gauge freedom (α_i, β_j) → (α_i + s, β_j - s) that leaves every
-# residual unchanged; during the solve it is fixed by adding v0*v0ᵀ,
-# v0 = [ones(m); -ones(n)], to the normal equations, and afterwards the result is
-# shifted along that gauge to the balance convention ∑ nzaᵢ αᵢ = ∑ nzbⱼ βⱼ
-# (nzaᵢ, nzbⱼ = nonzero counts of row i, column j) so it is deterministic.
+# scales share a gauge freedom (α_i, β_j) → (α_i + s, β_j - s), one dimension per
+# connected component of the support, that leaves every residual unchanged; during
+# the solve the global one is fixed by adding v0*v0ᵀ, v0 = [ones(m); -ones(n)], to
+# the normal equations, and afterwards the result is shifted, per component, to the
+# balance convention ∑ nzaᵢ αᵢ = ∑ nzbⱼ βⱼ (nzaᵢ, nzbⱼ = nonzero counts of row i,
+# column j, summed within the component) so it is deterministic — see
+# `_cover_min_abslog2` for how the remaining per-component gauges are lifted and shifted.
 function cover_min(::AbsLog{2}, A::AbstractMatrix; kwargs...)
     a, b, _ = _cover_min_abslog2(A; kwargs...)
     return a, b
@@ -272,7 +280,8 @@ end
 
 # Shared prologue of the `cover_min!` kernels; the asymmetric counterpart of
 # `_prepare_symcover_start!`. The start is additionally pinned to the balance
-# convention, so the refiners read it only up to the row/column gauge.
+# convention (imposed within each connected component of the support), so the
+# refiners read it only up to the per-component row/column gauge.
 function _prepare_cover_start!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
     axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$(axes(A, 1))"))
     axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
@@ -582,12 +591,14 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     end
     # Each Newton step solves the reweighted least-squares problem for the stacked
     # scales x = (α; β), residuals z_ij = α_i + β_j - log|A_ij|. Row and column scales
-    # share the (e; −e) gauge; both paths pin it. The dense path adds the rank-1 term
-    # v0*v0ᵀ to the normal equations `B x = f` and factorizes (support-free variables
-    # get an identity row). The LSQR path appends one gauge row `v0ᵀ x = 0` to the
-    # least-squares system so `√W R` has full column rank, applies it matrix-free, and
-    # warm-starts from the incoming iterate. After the solve a closed-form shift moves
-    # the result to the balance convention, so the pinned gauge is not observable.
+    # share the global (e; −e) gauge; both paths pin it. The dense path adds the rank-1
+    # term v0*v0ᵀ to the normal equations `B x = f` and factorizes (support-free
+    # variables get an identity row; a support with more than one connected component
+    # carries additional per-component gauges, lifted by the ridge below). The LSQR
+    # path appends one gauge row `v0ᵀ x = 0` to the least-squares system so `√W R` has
+    # full column rank, applies it matrix-free, and warm-starts from the incoming
+    # iterate. After the solve a closed-form shift, applied within each component,
+    # moves the result to the balance convention, so the pinned gauge is not observable.
     f = zeros(T, N)
     ws = zeros(T, ne)       # √weight per support entry (LSQR path)
     cv = zeros(T, ne + 1)   # √weight · log|A_ij|, with a trailing 0 gauge target
@@ -702,24 +713,37 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             x[p] += γ
         end
     end
-    # Shift along the (e; -e) gauge to the balance convention ∑ nzaᵢ αᵢ = ∑ nzbⱼ βⱼ.
-    Lα = zero(T)
-    Lβ = zero(T)
+    # Shift along the (e; -e) gauges to the balance convention ∑ nzaᵢ αᵢ = ∑ nzbⱼ βⱼ,
+    # imposed within each connected component of the support: the gauge acts
+    # independently on each component, so a single global shift would leave the
+    # per-component splits wherever the ridge (or LSQR's gauge row) put them.
+    rowcomp, colcomp, ncomp = _support_components(A)
+    Lα = zeros(T, ncomp)
+    Lβ = zeros(T, ncomp)
+    nec = zeros(Int, ncomp)
     for ip in 1:m
-        Lα += nzrow[ip] * x[ip]
+        c = rowcomp[ip]
+        c == 0 && continue
+        Lα[c] += nzrow[ip] * x[ip]
+        nec[c] += nzrow[ip]
     end
     for jp in 1:n
-        Lβ += nzcol[jp] * x[m+jp]
+        c = colcomp[jp]
+        c == 0 && continue
+        Lβ[c] += nzcol[jp] * x[m+jp]
     end
-    s = ne > 0 ? (Lβ - Lα) / (2 * ne) : zero(T)
+    s = Lβ
+    for c in 1:ncomp
+        s[c] = (Lβ[c] - Lα[c]) / (2 * nec[c])
+    end
     # Dense scale vectors matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     a = similar(Array{T}, axr)
     b = similar(Array{T}, axc)
     for (ip, i) in enumerate(axr)
-        a[i] = hasrow[ip] ? exp(x[ip] + s) : zero(T)
+        a[i] = hasrow[ip] ? exp(x[ip] + s[rowcomp[ip]]) : zero(T)
     end
     for (jp, j) in enumerate(axc)
-        b[j] = hascol[jp] ? exp(x[m+jp] - s) : zero(T)
+        b[j] = hascol[jp] ? exp(x[m+jp] - s[colcomp[jp]]) : zero(T)
     end
     return a, b, (; nsolves=nsolves[], lsqriters=nlsqr[], linsolve=(use_lsqr ? :lsqr : :dense))
 end
