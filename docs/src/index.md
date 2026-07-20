@@ -196,8 +196,8 @@ julia> a1 = symcover(A); a2 = symcover(D * A * D);
 
 julia> P1 = (d .* a1) * (d .* a1)'; P2 = a2 * a2';   # does scaling commute with cover-computation?
 
-julia> round.(extrema(P2 ./ P1); digits=3)
-(1.0, 1.077)    # not for the heuristic solver
+julia> round.(extrema(P2 ./ P1); digits=3)           # not for the heuristic solver
+(1.0, 1.077)
 ```
 
 The departure is small (bounded by the heuristic's own suboptimality) and both covers are valid, so it matters
