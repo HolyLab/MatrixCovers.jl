@@ -178,6 +178,33 @@ objective-minimal cover (see the quality tests involving
 requiring many iterations (and for non-convex cases, multiple start points by default) for convergence;
 still, they are much faster than their JuMP-counterparts, which are provided mainly as a reference.
 
+### Covariance of the heuristics
+
+[`symcover`](@ref) and [`cover`](@ref), the two heuristic solvers, *are not universally covariant*.  Both
+are covariant when every row and column of
+`A` has the same pattern of nonzeros, notably for any dense `A` lacking zero entries.  But on an *irregular* sparse support they are only
+approximately covariant. A symmetric three-node path is enough to show it:
+
+```jldoctest
+julia> using MatrixCovers, LinearAlgebra
+
+julia> A = [1.0 1 0; 1 1 1; 0 1 1];   # rows 1 and 3 supported on 2 columns, row 2 on all 3
+
+julia> d = [1.0, 6.0, 0.5]; D = Diagonal(d);
+
+julia> a1 = symcover(A); a2 = symcover(D * A * D);
+
+julia> P1 = (d .* a1) * (d .* a1)'; P2 = a2 * a2';   # does scaling commute with cover-computation?
+
+julia> round.(extrema(P2 ./ P1); digits=3)
+(1.0, 1.077)    # not for the heuristic solver
+```
+
+The departure is small (bounded by the heuristic's own suboptimality) and both covers are valid, so it matters
+mostly when the covariance itself is what you are relying on.  When it is, use
+[`symcover_min`](@ref) or [`cover_min`](@ref), whose minimizer is scale-covariant
+by construction.
+
 ### Objective-minimal covers
 
 [`symcover_min`](@ref) and [`cover_min`](@ref) return a cover that minimizes the
