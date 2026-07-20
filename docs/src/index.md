@@ -386,7 +386,7 @@ This has important implications for applications where you might estimate covers
 by composition. Let's take the example of the
 [Levenberg-Marquardt algorithm](https://en.wikipedia.org/wiki/Levenberg%E2%80%93Marquardt_algorithm),
 where you form products `J'*J` of the Jacobian matrix `J`. Suppose `a*b'` is
-a cover of `J`: then `(a'*a) * b * b'` is a cover of `J'*J` (note the `a`-factor
+a cover of `J`: then `(a'*a) * b * b'` is a cover of `J'*J` (note
 `a'*a` is a scalar). The *tightness* of this cover for `J'*J` depends on the convention
 used to balance `a` and `b`.
 
@@ -401,7 +401,7 @@ julia> J = [1.0 2; 3 4; 5 6];
 
 julia> D = Diagonal([100.0, 1.0]);        # reparametrize the second frame
 
-julia> a1, b1 = cover(J); a2, b2 = cover(J * D);
+julia> a1, b1 = cover(J); a2, b2 = cover(J * D);   # `cover` is covariant because J has no zeros; `cover_min` is safer
 
 julia> r = b2 ./ (D.diag .* b1); all(x -> x ≈ first(r), r)
 true
@@ -411,7 +411,7 @@ false
 
 julia> s1 = gramcover(a1, b1, J); s2 = gramcover(a2, b2, J * D);
 
-julia> s2 ≈ D.diag .* s1                  # the Gram cover transports exactly
+julia> s2 ≈ D.diag .* s1                  # the Gram cover co-varies exactly
 true
 ```
 

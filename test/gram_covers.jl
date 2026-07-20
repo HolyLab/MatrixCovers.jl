@@ -53,6 +53,25 @@
         a2[5:7] .*= 0.3; b2[4:5] ./= 0.3
         s2 = gramcover(a2, b2, J)
         @test isapprox(s, s2; rtol=1e-12)
+
+        # A `W` coupling the two components merges them, and the gauge then acts
+        # with a different `γ` on each half of every cross-block sum. The bound
+        # must still not depend on which gauge the solver happened to return.
+        m = size(J, 1)
+        for W in (Matrix(2.0I, m, m) + [i == 1 && ip == 5 for i in 1:m, ip in 1:m],
+                  fill(0.5, m, m) + Diagonal(1:m))
+            @test isapprox(gramcover(a, b, J, W), gramcover(a2, b2, J, W); rtol=1e-12)
+        end
+
+        # `W` with a vanishing diagonal block on one component: the gauge is
+        # propagated across the coupling rather than read off that block.
+        Wz = zeros(m, m)
+        Wz[1:4, 1:4] .= 1.0
+        Wz[1, 5] = Wz[5, 1] = 2.0
+        @test isapprox(gramcover(a, b, J, Wz), gramcover(a2, b2, J, Wz); rtol=1e-12)
+        sz = gramcover(a, b, J, Wz)
+        Gz = J' * Wz * J
+        @test all(sz * sz' .>= abs.(Gz) .- 1e-9 * maximum(abs, Gz))
     end
 
     @testset "diagonal weights: positive, zero, and negative" begin
@@ -91,6 +110,19 @@
         sc = gramcover(a, b, J, Wc)
         Gc = J' * Wc * J
         @test all(sc * sc' .>= abs.(Gc) .- 1e-9 * maximum(abs, Gc))
+
+        # Coupled components whose own blocks all vanish: the surviving data fixes
+        # the products `s[j]*s[k]` across the two but not the split between them,
+        # so `gramcover` covers, but `s` is not fixed by the products alone. Documented,
+        # not a bug.
+        Wo = zeros(m, m)
+        Wo[1, 5] = Wo[5, 1] = 2.0
+        so = gramcover(a, b, J, Wo)
+        Go = J' * Wo * J
+        @test all(so * so' .>= abs.(Go) .- 1e-9 * maximum(abs, Go))
+        a2, b2 = copy(a), copy(b)
+        a2[1:4] .*= 8; b2[1:3] ./= 8
+        @test !isapprox(so, gramcover(a2, b2, J, Wo); rtol=1e-6)
     end
 
     @testset "sparse J" begin

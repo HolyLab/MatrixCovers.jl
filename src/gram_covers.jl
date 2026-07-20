@@ -37,25 +37,49 @@ row, so for `W` diagonal the sum needed is exactly the one over the rows of
     s[j] = sqrt(Σ_{i ∈ rows(comp(j))} abs(w[i])*a[i]^2) * b[j]
 
 (the unweighted form is this with `w[i] = 1`). A nonzero off-diagonal
-`W[i,i']` can couple rows from two different components, which are merged
-(via a union-find over the components) before the analogous sum is taken over
-each merged component `c`:
+`W[i,i']` can couple rows from two different components; components joined by a
+chain of such couplings form a group. Within a group, writing
+`M[p,q] = Σ_{i ∈ rows(p), i' ∈ rows(q)} a[i]*abs(W[i,i'])*a[i']` for the block
+sum over components `p` and `q`, `abs(G[j,k]) <= M[p,q]*b[j]*b[k]` for `j ∈ p`
+and `k ∈ q`. Take `M` symmetric, as it is whenever `abs.(W)` is; the general
+case needs one substitution, made in the remark below. Then
 
-    s[j] = sqrt(Σ_{i,i' ∈ rows(c)} a[i]*abs(W[i,i'])*a[i']) * b[j],  j ∈ c
+    s[j] = sqrt(Σ_q M[p,q] * sqrt(M[p,p]/M[q,q])) * b[j],  j ∈ p
 
-Every term is nonnegative, so the merged-component sum dominates every
-sub-block sum it contains, and `G[j,k]` is exactly zero across distinct merged
-components. Columns with no support get `s[j] = 0`.
+meets every one of those bounds: the `q` term of the sum for `s[j]` and the `p`
+term of the one for `s[k]` already multiply to `M[p,q]*M[q,p] = M[p,q]^2`, and
+no term is negative. For a component that no `W` entry couples to another, the
+group is a single component and this reduces to the diagonal-`W` formula above.
+`G[j,k]` is exactly zero across distinct groups, and columns with no support get
+`s[j] = 0`.
 
-Rescaling `a -> γ*a`, `b -> b/γ` within any support component leaves `s`
-unchanged — unlike `b` alone, `s` is safe to use as an absolute scale, e.g. a
-Levenberg-Marquardt damping term `λ*Diagonal(s.^2)`: a caller should maintain
-the dimensionless `λ` against `s`, not against a quantity that depends on
-which gauge the cover solver happened to return.
+Rescaling `a -> γ*a`, `b -> b/γ` within any support component — independently
+per component — leaves `s` unchanged. Unlike `b` alone, `s` is therefore safe to
+use as an absolute scale, e.g. a Levenberg-Marquardt damping term
+`λ*Diagonal(s.^2)`: a caller should maintain the dimensionless `λ` against `s`,
+not against a quantity that depends on which gauge the cover solver happened to
+return. What pins the relative scale of coupled components is the ratio
+`M[p,p]/M[q,q]`, extended to a component whose own block vanishes (`abs.(W)` zero
+throughout it, though `W` couples it to a sibling) by propagating along the
+coupling. A group in which *every* component's own block vanishes is the one
+exception, and it is a genuine degeneracy rather than a shortcoming of the
+formula: the gauge acts on the surviving off-diagonal data as
+`M[p,q] -> γ[p]*γ[q]*M[p,q]`, which fixes each *product* `s[j]*s[k]` across two
+components but nothing about how it divides between them. Such a group falls back
+to the uniform total `sqrt(Σ_{p,q} M[p,q])`, which covers, but there `s` depends
+on the factorization and not on the products alone.
 
-With more than one component, `s[j] <= norm(a)*b[j]`, strictly tighter
-whenever another component carries weight — the naive global bound obtained
-by ignoring the block structure entirely.
+With more than one component and no coupling between them, `s[j] <= norm(a)*b[j]`,
+strictly tighter whenever another component carries weight — the naive global
+bound obtained by ignoring the block structure entirely. Coupled components admit
+no such uniform comparison: fixing the gauge redistributes tightness among them,
+resulting in an `s` that depends only on the products at the cost of individual entries
+that a gauge-dependent global sum can beat.
+
+When `abs.(W)` is not symmetric, neither is `G`, and since `s[j]*s[k]` is a
+single number bounding both `abs(G[j,k])` and `abs(G[k,j])`, `M[p,q]` is
+replaced throughout by `max(M[p,q], M[q,p])`; nothing else changes, the gauge
+included, since that replacement is itself symmetric.
 
 When a positive-semidefinite `W` is available only as an operator — `W[i,i]`
 readable, `W[i,i']` for `i != i'` not — `abs(W[i,i']) <= sqrt(W[i,i]*W[i',i'])`
@@ -182,6 +206,7 @@ function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::
         end
         return p
     end
+    merged = false
     for i in axes(A, 1)
         ci = rowcomp[i-or]
         iszero(ci) && continue
@@ -190,38 +215,70 @@ function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::
             (iszero(cip) || ci == cip) && continue
             iszero(abs(W[i, ip])) && continue
             ri, rip = find(ci), find(cip)
-            ri == rip || (parent[ri] = rip)
+            ri == rip && continue
+            parent[ri] = rip
+            merged = true
         end
     end
 
-    # Accumulate `m[c] = Σ_{i,i' merged into c} a[i]*abs(W[i,i'])*a[i']` at each
-    # merged component's root; `n[c]` tracks the term count for the roundoff
-    # inflation below.
-    m = zeros(typeof(_gc_term(a, W)), ncomp)
-    n = zeros(Int, ncomp)
+    # With every component still its own group, each needs only its own block sum,
+    # and the group bookkeeping below would allocate per component to say so.
+    if !merged
+        m = zeros(typeof(_gc_term(a, W)), ncomp)
+        n = zeros(Int, ncomp)
+        for i in axes(A, 1)
+            ci = rowcomp[i-or]
+            iszero(ci) && continue
+            for ip in axes(A, 1)
+                rowcomp[ip-or] == ci || continue
+                m[ci] += a[i] * abs(W[i, ip]) * a[ip]
+                n[ci] += 1
+            end
+        end
+        return _write_gramcover!(s, b, colcomp, first(axes(A, 2)) - 1, m, n)
+    end
+
+    # Components merged into a common root, listed at that root; `local_idx` is a
+    # component's position within its group, indexing the block sums below.
+    members = [Int[] for _ in 1:ncomp]
+    for c in 1:ncomp
+        push!(members[find(c)], c)
+    end
+    local_idx = zeros(Int, ncomp)
+    for r in 1:ncomp, (p, c) in enumerate(members[r])
+        local_idx[c] = p
+    end
+
+    # Block sums `M[r][p,q] = Σ_{i ∈ comp p, i' ∈ comp q} a[i]*abs(W[i,i'])*a[i']`
+    # over the components merged into root `r`; `nterm` counts the terms of each,
+    # for the roundoff inflation in `_gc_group_scales!`.
+    T = typeof(_gc_term(a, W))
+    M = Vector{Matrix{T}}(undef, ncomp)
+    nterm = Vector{Matrix{Int}}(undef, ncomp)
+    for r in 1:ncomp
+        k = length(members[r])
+        iszero(k) && continue
+        M[r] = zeros(T, k, k)
+        nterm[r] = zeros(Int, k, k)
+    end
     for i in axes(A, 1)
         ci = rowcomp[i-or]
         iszero(ci) && continue
-        ri = find(ci)
+        r = find(ci)
+        p = local_idx[ci]
         for ip in axes(A, 1)
             cip = rowcomp[ip-or]
             iszero(cip) && continue
-            find(cip) == ri || continue
-            m[ri] += a[i] * abs(W[i, ip]) * a[ip]
-            n[ri] += 1
+            find(cip) == r || continue
+            q = local_idx[cip]
+            M[r][p, q] += a[i] * abs(W[i, ip]) * a[ip]
+            nterm[r][p, q] += 1
         end
     end
-    # `colcomp` reports the original (pre-merge) component id, so roll each
-    # merged total down to every id that was merged into it.
-    for c in 1:ncomp
-        r = find(c)
-        r == c && continue
-        m[c] = m[r]
-        n[c] = n[r]
-    end
 
+    sq = _gc_group_scales!(members, M, nterm)
     oc = first(axes(A, 2)) - 1
-    return _write_gramcover!(s, b, colcomp, oc, m, n)
+    return _write_gramcover_sq!(s, b, colcomp, oc, sq)
 end
 
 # ============================================================
@@ -253,21 +310,120 @@ _gc_term(a::AbstractVector, W::AbstractMatrix) = zero(eltype(a)) * abs(zero(elty
 # `_gc_term` times a `b`-scale, matching what `_write_gramcover!` actually computes.
 _gc_eltype(a, b, args...) = typeof(sqrt(_gc_term(a, args...)) * zero(eltype(b)))
 
-# Turn per-(merged-)component sums `m[c]`, each accumulated from `n[c]`
-# nonnegative terms, into `s`: `s[j] = sqrt(m[c])*b[j]` for `j` in component
-# `c` (`colcomp[j - oc]`), `s[j] = 0` for a column with no support.
-function _write_gramcover!(s::AbstractVector{T}, b::AbstractVector, colcomp::Vector{Int}, oc, m::AbstractVector, n::AbstractVector{Int}) where T
+# Turn per-component sums `m[c]`, each accumulated from `n[c]` nonnegative terms,
+# into per-component scales: the uncoupled case, where component `c`'s cover is
+# just `sqrt(m[c])`.
+#
+# Naive summation of `n` nonnegative terms computes `fl(Σ) >= Σ/(1+γ)` with
+# `γ = n*ulp/(1-n*ulp)`, `ulp = eps(scalarT)/2`; inflating `sqrt(m[c])` by
+# `1 + (n[c]+3)*eps(scalarT)` absorbs that shortfall together with the roundoff of
+# the `sqrt` itself and of the multiply by `b[j]`, so the cover holds despite
+# `A'*W*A` never being formed to check it.
+function _write_gramcover!(s::AbstractVector, b::AbstractVector, colcomp::Vector{Int}, oc, m::AbstractVector, n::AbstractVector{Int})
     scalarT = scalar_type(eltype(m))
-    # `sqrt(m[c])` carries different units than `m[c]` itself (e.g. `m[c]` in `s`
-    # gives `sqrt(m[c])` in `s^(1/2)`), so `sq`'s element type is inferred from the
-    # computation rather than taken from `similar(m)`.
-    #
-    # Naive summation of `n[c]` nonnegative terms computes `fl(Σ) >= Σ/(1+γ)` with
-    # `γ = n*ulp/(1-n*ulp)`, `ulp = eps(scalarT)/2`; inflating `sqrt(m[c])` by
-    # `1 + (n[c]+3)*eps(scalarT)` absorbs that shortfall together with the roundoff
-    # of the `sqrt` itself and of the multiply by `b[j]` below, so the cover this
-    # writes holds despite never forming `A'*W*A` to check it.
     sq = [sqrt(m[c]) * (1 + (n[c] + 3) * eps(scalarT)) for c in eachindex(m)]
+    return _write_gramcover_sq!(s, b, colcomp, oc, sq)
+end
+
+# Per-component scales `sq[c]` from the block sums `M[r][p,q]` of each merged
+# group: `s[j] = sq[c]*b[j]` covers `A'*W*A` iff `sq[p]*sq[q] >= max(M[p,q], M[q,p])`
+# for every pair of components `p`, `q` in one group (the `max` because `W` need
+# not be symmetric, so the `(j,k)` and `(k,j)` entries of the Gram matrix are
+# bounded by different block sums).
+#
+# Writing `d[p] = M[p,p]`, the choice
+#
+#     sq[p] = sqrt(Σ_q max(M[p,q], M[q,p]) * sqrt(d[p]/d[q]))
+#
+# satisfies that: the `q` term of `sq[p]^2` and the `p` term of `sq[q]^2` alone
+# multiply to `max(M[p,q], M[q,p])^2`, and every term is nonnegative.
+#
+# The proof needs only that `d` be strictly positive, so `d` is purely a choice of
+# gauge, and it is the choice that makes `s` independent of the gauge `a -> γ*a`,
+# `b -> b/γ` applied independently per component. Under that gauge
+# `M[p,q] -> γ[p]*γ[q]*M[p,q]`, so any `d` with `d[p] -> γ[p]^2*d[p]` makes each
+# term `M[p,q]*sqrt(d[p]/d[q])` scale by `γ[p]^2`, leaving `sq[p]*b[j]` unchanged.
+# A uniform group total `sqrt(Σ_{p,q} M[p,q])`, which mixes blocks that scale by
+# different powers of `γ`, does not have that property.
+#
+# `d[p] = M[p,p]` transforms that way, and is the choice wherever it is nonzero.
+# Where it is zero — `abs.(W)` vanishing throughout a component even though `W`
+# couples it to a sibling — `d[p] = M[p,q]^2/d[q]` for an already-assigned
+# neighbor `q` transforms the same way, and `M[p,q] > 0` for every coupled pair,
+# so propagating outward from the nonzero diagonals covers the whole group.
+#
+# A group whose diagonal vanishes entirely leaves no pivot to propagate from, and
+# no choice of `d` would help: the gauge sends `M[p,q] -> γ[p]*γ[q]*M[p,q]`, so
+# with only off-diagonal blocks surviving it fixes the products `sq[p]*sq[q]` but
+# not the split between them. That group falls back to the uniform total.
+function _gc_group_scales!(members::Vector{Vector{Int}}, M::Vector{<:Matrix}, nterm::Vector{Matrix{Int}})
+    T = eltype(eltype(M))
+    scalarT = scalar_type(T)
+    sq = [sqrt(zero(T)) for _ in 1:length(members)]
+    for r in eachindex(members)
+        mems = members[r]
+        isempty(mems) && continue
+        Mr, nr = M[r], nterm[r]
+        k = length(mems)
+        if k == 1
+            sq[mems[1]] = sqrt(Mr[1, 1]) * (1 + (nr[1, 1] + 3) * eps(scalarT))
+            continue
+        end
+        Ms = [max(Mr[p, q], Mr[q, p]) for p in 1:k, q in 1:k]   # `W` need not be symmetric
+        d = _gc_gauge(Ms)
+        if d === nothing
+            v = sqrt(sum(Mr)) * (1 + (sum(nr) + 3) * eps(scalarT))
+            for p in 1:k
+                sq[mems[p]] = v
+            end
+            continue
+        end
+        for p in 1:k
+            acc = zero(T)
+            nt = 0
+            for q in 1:k
+                acc += Ms[p, q] * sqrt(d[p] / d[q])
+                nt += max(nr[p, q], nr[q, p])
+            end
+            # `nt` terms of naive summation, plus a division and a `sqrt` per term,
+            # plus the outer `sqrt` and the multiply by `b[j]`.
+            sq[mems[p]] = sqrt(acc) * (1 + (nt + 3k + 3) * eps(scalarT))
+        end
+    end
+    return sq
+end
+
+# Strictly positive gauge `d` for one group's symmetrized block sums `Ms`: the
+# diagonal where it is nonzero, propagated as `Ms[p,q]^2/d[q]` from an assigned
+# neighbor `q` where it is not. Returns `nothing` if the diagonal is entirely zero.
+# The propagation takes the lowest-indexed assigned neighbor, so `d` depends on
+# `Ms` and the component ordering alone — never on the gauge it is fixing.
+function _gc_gauge(Ms::Matrix)
+    k = size(Ms, 1)
+    d = [Ms[p, p] for p in 1:k]
+    any(!iszero, d) || return nothing
+    while any(iszero, d)
+        progress = false
+        for p in 1:k
+            iszero(d[p]) || continue
+            q = findfirst(q -> !iszero(d[q]) && !iszero(Ms[p, q]), 1:k)
+            q === nothing && continue
+            d[p] = Ms[p, q] * Ms[p, q] / d[q]
+            progress = true
+        end
+        # Every pair the union-find merged has `Ms[p,q] > 0`, so the group is
+        # connected and a sweep that assigns nothing cannot happen; guard anyway
+        # rather than spin.
+        progress || error("gramcover: group with $(count(iszero, d)) unreachable component(s); please report this with the inputs")
+    end
+    return d
+end
+
+# Write `s[j] = sq[c]*b[j]` for `j` in component `c` (`colcomp[j - oc]`), and
+# `s[j] = 0` for a column with no support. `sq` carries different units than the
+# sums it came from (e.g. sums in `s` give `sq` in `s^(1/2)`), so its element type
+# is inferred from the computation rather than taken from those sums.
+function _write_gramcover_sq!(s::AbstractVector{T}, b::AbstractVector, colcomp::Vector{Int}, oc, sq::AbstractVector) where T
     for j in eachindex(s)
         c = colcomp[j-oc]
         s[j] = iszero(c) ? zero(T) : sq[c] * b[j]
