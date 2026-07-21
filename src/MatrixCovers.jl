@@ -16,7 +16,7 @@ export soft_symcover_min, soft_symcover_min!, soft_cover_min, soft_cover_min!
 
 # `public` is parsed as a keyword only from Julia 1.11; this package supports 1.10.
 @static if VERSION >= v"1.11"
-    eval(Meta.parse("public AbstractCoverPenalty, foreach_support, foreach_support_sym, scalar_type"))
+    eval(Meta.parse("public AbstractCoverPenalty, foreach_support, foreach_support_sym, scalar_type, SupportComponents, support_components, ncomponents, rowcomponent, colcomponent"))
 end
 
 include("penalties.jl")

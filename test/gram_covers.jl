@@ -184,11 +184,55 @@
         @test rW === sWbuf
         @test sWbuf == gramcover(a, b, J, W)
 
-        @test_throws "indices of `s` must match column-indexing of `A`" gramcover!(zeros(3), a, b, J)
-        @test_throws "indices of `a` must match row-indexing of `A`" gramcover!(similar(b), zeros(4), b, J)
-        @test_throws "indices of `b` must match column-indexing of `A`" gramcover!(similar(b), a, zeros(4), J)
-        @test_throws "indices of `w` must match row-indexing of `A`" gramcover(a, b, J, zeros(4))
-        @test_throws "axes of `W` must equal" gramcover(a, b, J, zeros(4, 4))
+        @test_throws "`s` holds one Gram scale per support column" gramcover!(zeros(3), a, b, J)
+        @test_throws "`a` holds one scale per support row" gramcover!(similar(b), zeros(4), b, J)
+        @test_throws "`b` holds one scale per support column" gramcover!(similar(b), a, zeros(4), J)
+        @test_throws "`w` holds one weight per support row" gramcover(a, b, J, zeros(4))
+        @test_throws "`W` couples support rows" gramcover(a, b, J, zeros(4, 4))
+    end
+
+    @testset "SupportComponents form and Diagonal weights" begin
+        B = randn(StableRNG(2), 4, 3)
+        C = randn(StableRNG(3), 3, 2)
+        J = [B zeros(4, 2); zeros(3, 3) C]
+        a, b = cover(J)
+        w = [1.0, -2.0, 0.5, 3.0, -1.0, 2.0, 0.25]
+        sc = MatrixCovers.support_components(J)
+
+        # Passing the components in place of the matrix matches the matrix forms.
+        @test gramcover(a, b, sc) == gramcover(a, b, J)
+        @test gramcover(a, b, sc, w) == gramcover(a, b, J, w)
+
+        # `W::Diagonal` is the vector-weighted form, for every entry point.
+        @test gramcover(a, b, J, Diagonal(w)) == gramcover(a, b, J, w)
+        @test gramcover(a, b, sc, Diagonal(w)) == gramcover(a, b, sc, w)
+
+        sbuf = similar(b)
+        @test gramcover!(sbuf, a, b, sc) === sbuf
+        @test sbuf == gramcover(a, b, J)
+        @test gramcover!(sbuf, a, b, J, Diagonal(w)) === sbuf
+        @test sbuf == gramcover(a, b, J, w)
+        @test gramcover!(sbuf, a, b, sc, Diagonal(w)) === sbuf
+        @test sbuf == gramcover(a, b, sc, w)
+    end
+
+    @testset "general W leaves an uncoupled component as its own group" begin
+        # Three support components; `W` couples the first two and leaves the third
+        # alone, so that third component forms a singleton group of its own.
+        rng = StableRNG(5)
+        B = randn(rng, 2, 2); C = randn(rng, 2, 2); D = randn(rng, 2, 2)
+        J = [B zeros(2, 4); zeros(2, 2) C zeros(2, 2); zeros(2, 4) D]
+        a, b = cover(J)
+        @test MatrixCovers.ncomponents(MatrixCovers.support_components(J)) == 3
+
+        W = Matrix{Float64}(I, 6, 6)
+        W[1, 3] = W[3, 1] = 1.5      # couples component 1 (rows 1-2) to component 2 (rows 3-4)
+        s = gramcover(a, b, J, W)
+        G = J' * W * J
+        @test all(s * s' .>= abs.(G) .- 1e-9 * maximum(abs, G))
+        # The uncoupled third component (W is the identity there) reproduces the
+        # unweighted cover, up to the roundoff inflation.
+        @test s[5:6] ≈ gramcover(a, b, J)[5:6]
     end
 
 end

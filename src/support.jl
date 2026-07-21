@@ -201,6 +201,73 @@ function _support_components(A::AbstractMatrix)
     return rowcomp, colcomp, ncomp
 end
 
+"""
+    SupportComponents
+
+Connected components of a matrix's bipartite support graph, as returned by
+[`support_components`](@ref): one vertex per row and one per column, one edge per
+stored nonzero.
+
+Component ids run `1:ncomponents(sc)`. A row or column of empty support belongs
+to no component and reports `0`. Query an id with [`rowcomponent`](@ref) or
+[`colcomponent`](@ref), which take the matrix's own indices, so offset axes need
+no special case at the call site.
+
+The gauge orbit of an asymmetric cover has one dimension per component: the
+rescaling `a -> γ*a`, `b -> b/γ` acts independently on each, because no product
+`a[i]*b[j]` spans two components. Any convention pinning the split between `a`
+and `b` must therefore be imposed per component; a single global constraint
+leaves `ncomponents(sc) - 1` directions unpinned.
+
+Constructing this once and passing it to [`gramcover!`](@ref) lets a caller that
+already knows the component structure — or that obtains it by some route other
+than traversing a matrix — skip the traversal entirely.
+"""
+struct SupportComponents{R<:AbstractUnitRange,C<:AbstractUnitRange}
+    rowcomp::Vector{Int}
+    colcomp::Vector{Int}
+    ncomp::Int
+    rowax::R
+    colax::C
+end
+
+"""
+    support_components(A) -> sc::SupportComponents
+
+Connected components of the bipartite support graph of `A`, read through
+[`foreach_support`](@ref) so a sparse storage type costs its support rather than
+`length(A)`.
+
+See also: [`SupportComponents`](@ref).
+"""
+function support_components(A::AbstractMatrix)
+    rowcomp, colcomp, ncomp = _support_components(A)
+    return SupportComponents(rowcomp, colcomp, ncomp, axes(A, 1), axes(A, 2))
+end
+
+"""
+    ncomponents(sc::SupportComponents) -> Int
+
+Number of connected components, so component ids run `1:ncomponents(sc)`.
+"""
+ncomponents(sc::SupportComponents) = sc.ncomp
+
+"""
+    rowcomponent(sc::SupportComponents, i) -> Int
+
+Component id of row `i`, or `0` if that row has empty support. `i` is the
+matrix's own row index.
+"""
+rowcomponent(sc::SupportComponents, i) = sc.rowcomp[i - first(sc.rowax) + 1]
+
+"""
+    colcomponent(sc::SupportComponents, j) -> Int
+
+Component id of column `j`, or `0` if that column has empty support. `j` is the
+matrix's own column index.
+"""
+colcomponent(sc::SupportComponents, j) = sc.colcomp[j - first(sc.colax) + 1]
+
 # Number of entries `foreach_support` reports, i.e. the size of the stored support.
 function _nsupport(A::AbstractMatrix)
     n = Ref(0)

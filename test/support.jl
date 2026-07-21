@@ -255,4 +255,26 @@ end
         @test orowcomp == rowcomp
         @test ocolcomp == colcomp
     end
+
+    # The public `SupportComponents` wraps `_support_components` with accessors that
+    # take the matrix's own indices, so `gramcover` (and any other caller) can hold
+    # the structure and query it without re-traversing.
+    @testset "SupportComponents accessors" begin
+        B = randn(rng, 3, 2)
+        C = randn(rng, 2, 4)
+        A = [B zeros(3, 4); zeros(2, 2) C]
+        rowcomp, colcomp, ncomp = MatrixCovers._support_components(A)
+
+        sc = MatrixCovers.support_components(A)
+        @test sc isa MatrixCovers.SupportComponents
+        @test MatrixCovers.ncomponents(sc) == ncomp
+        @test [MatrixCovers.rowcomponent(sc, i) for i in axes(A, 1)] == rowcomp
+        @test [MatrixCovers.colcomponent(sc, j) for j in axes(A, 2)] == colcomp
+
+        # Offset axes: the accessors index by the matrix's own indices.
+        O = OffsetArray(A, -1:3, 10:15)
+        sco = MatrixCovers.support_components(O)
+        @test [MatrixCovers.rowcomponent(sco, i) for i in collect(axes(O, 1))] == rowcomp
+        @test [MatrixCovers.colcomponent(sco, j) for j in collect(axes(O, 2))] == colcomp
+    end
 end
