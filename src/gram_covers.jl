@@ -9,6 +9,9 @@
     s = gramcover(a, b, A)
     s = gramcover(a, b, A, w::AbstractVector)
     s = gramcover(a, b, A, W::AbstractMatrix)
+    s = gramcover(a, b, sc::SupportComponents)
+    s = gramcover(a, b, sc::SupportComponents, w::AbstractVector)
+    s = gramcover(a, b, sc::SupportComponents, W::AbstractMatrix)
 
 Given an asymmetric cover `a[i]*b[j] >= abs(A[i,j])` — from [`cover`](@ref),
 [`cover_min`](@ref), or any other solver producing such a pair — return a
@@ -23,6 +26,13 @@ symmetric; passing `W::Diagonal` is equivalent to passing `W.diag` as `w`.
 [`iscover`](@ref)`(a, b, A)` to check it beforehand. `gramcover` composes with
 any asymmetric cover this package produces: [`cover`](@ref), [`cover_min`](@ref),
 [`soft_cover`](@ref), and their mutating and `_min` forms.
+
+Only the connected components of `A`'s support enter the two- and
+vector-weighted forms, so a caller holding an
+[`support_components`](@ref)`(A)` result may pass it in place of `A`; the
+matrix forms are exactly that call followed by the `sc` form. `sc.rowax` and
+`sc.colax` then play the roles of `axes(A, 1)` and `axes(A, 2)` in the axis
+requirements on `a`, `b`, and `w`/`W`.
 
 # Extended help
 
@@ -113,91 +123,114 @@ julia> all(sw * sw' .>= abs.(J' * (w .* J)))
 true
 ```
 """
-function gramcover(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
-    T = _gc_eltype(a, b)
-    s = similar(Array{T}, axes(A, 2))
-    return gramcover!(s, a, b, A)
-end
+gramcover(a::AbstractVector, b::AbstractVector, A::AbstractMatrix) =
+    gramcover(a, b, support_components(A))
 
-function gramcover(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, w::AbstractVector)
-    T = _gc_eltype(a, b, w)
-    s = similar(Array{T}, axes(A, 2))
-    return gramcover!(s, a, b, A, w)
-end
+gramcover(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, w::AbstractVector) =
+    gramcover(a, b, support_components(A), w)
 
 gramcover(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, W::Diagonal) =
     gramcover(a, b, A, W.diag)
 
-function gramcover(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, W::AbstractMatrix)
+gramcover(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, W::AbstractMatrix) =
+    gramcover(a, b, support_components(A), W)
+
+function gramcover(a::AbstractVector, b::AbstractVector, sc::SupportComponents)
+    T = _gc_eltype(a, b)
+    s = similar(Array{T}, sc.colax)
+    return gramcover!(s, a, b, sc)
+end
+
+function gramcover(a::AbstractVector, b::AbstractVector, sc::SupportComponents, w::AbstractVector)
+    T = _gc_eltype(a, b, w)
+    s = similar(Array{T}, sc.colax)
+    return gramcover!(s, a, b, sc, w)
+end
+
+gramcover(a::AbstractVector, b::AbstractVector, sc::SupportComponents, W::Diagonal) =
+    gramcover(a, b, sc, W.diag)
+
+function gramcover(a::AbstractVector, b::AbstractVector, sc::SupportComponents, W::AbstractMatrix)
     T = _gc_eltype(a, b, W)
-    s = similar(Array{T}, axes(A, 2))
-    return gramcover!(s, a, b, A, W)
+    s = similar(Array{T}, sc.colax)
+    return gramcover!(s, a, b, sc, W)
 end
 
 """
     s = gramcover!(s, a, b, A)
     s = gramcover!(s, a, b, A, w::AbstractVector)
     s = gramcover!(s, a, b, A, W::AbstractMatrix)
+    s = gramcover!(s, a, b, sc::SupportComponents)
+    s = gramcover!(s, a, b, sc::SupportComponents, w::AbstractVector)
+    s = gramcover!(s, a, b, sc::SupportComponents, W::AbstractMatrix)
 
 Mutating counterpart of [`gramcover`](@ref): writes the symmetric cover of the
 (weighted) Gram matrix into `s` and returns it, rather than allocating a new
-vector. `eachindex(s)` must match `axes(A, 2)`, in addition to the axis
-requirements [`gramcover`](@ref) places on `a`, `b`, and `w`/`W`.
+vector. `eachindex(s)` must match `axes(A, 2)` — `sc.colax` for the
+[`SupportComponents`](@ref) forms — in addition to the axis requirements
+[`gramcover`](@ref) places on `a`, `b`, and `w`/`W`.
 
 See also: [`gramcover`](@ref).
 """
-function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
-    _check_gramcover_ab(a, b, A)
-    _check_gramcover_s(s, A)
-    rowcomp, colcomp, ncomp = _support_components(A)
-    m = zeros(typeof(_gc_term(a)), ncomp)
-    n = zeros(Int, ncomp)
-    or = first(axes(A, 1)) - 1
-    for i in axes(A, 1)
-        c = rowcomp[i-or]
-        iszero(c) && continue
-        m[c] += a[i] * a[i]
-        n[c] += 1
-    end
-    oc = first(axes(A, 2)) - 1
-    return _write_gramcover!(s, b, colcomp, oc, m, n)
-end
+gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::AbstractMatrix) =
+    gramcover!(s, a, b, support_components(A))
 
-function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::AbstractMatrix, w::AbstractVector)
-    _check_gramcover_ab(a, b, A)
-    _check_gramcover_s(s, A)
-    eachindex(w) == axes(A, 1) ||
-        throw(DimensionMismatch("indices of `w` must match row-indexing of `A`, got eachindex(w)=$(eachindex(w)), axes(A, 1)=$(axes(A, 1))"))
-    rowcomp, colcomp, ncomp = _support_components(A)
-    m = zeros(typeof(_gc_term(a, w)), ncomp)
-    n = zeros(Int, ncomp)
-    or = first(axes(A, 1)) - 1
-    for i in axes(A, 1)
-        c = rowcomp[i-or]
-        iszero(c) && continue
-        m[c] += abs(w[i]) * a[i] * a[i]
-        n[c] += 1
-    end
-    oc = first(axes(A, 2)) - 1
-    return _write_gramcover!(s, b, colcomp, oc, m, n)
-end
+gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::AbstractMatrix, w::AbstractVector) =
+    gramcover!(s, a, b, support_components(A), w)
 
 gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::AbstractMatrix, W::Diagonal) =
     gramcover!(s, a, b, A, W.diag)
 
-function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::AbstractMatrix, W::AbstractMatrix)
-    _check_gramcover_ab(a, b, A)
-    _check_gramcover_s(s, A)
-    axes(W) == (axes(A, 1), axes(A, 1)) ||
-        throw(DimensionMismatch("axes of `W` must equal (axes(A, 1), axes(A, 1)), got axes(W)=$(axes(W)), axes(A, 1)=$(axes(A, 1))"))
-    rowcomp, colcomp, ncomp = _support_components(A)
-    or = first(axes(A, 1)) - 1
+gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::AbstractMatrix, W::AbstractMatrix) =
+    gramcover!(s, a, b, support_components(A), W)
 
-    # Union-find over the ids `_support_components` assigned: merge two of them
-    # whenever a nonzero `W[i,i']` couples a supported row of one to a supported
-    # row of the other, a coupling `A`'s own support graph does not carry but the
-    # product `A'*W*A` does. Rows with no support (rowcomp == 0) contribute nothing
-    # to `A'*W*A` regardless of `W`, so they are skipped.
+function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc::SupportComponents)
+    _check_gramcover_ab(a, b, sc)
+    _check_gramcover_s(s, sc)
+    m = zeros(typeof(_gc_term(a)), ncomponents(sc))
+    n = zeros(Int, ncomponents(sc))
+    for i in sc.rowax
+        c = rowcomponent(sc, i)
+        iszero(c) && continue
+        m[c] += a[i] * a[i]
+        n[c] += 1
+    end
+    oc = first(sc.colax) - 1
+    return _write_gramcover!(s, b, sc.colcomp, oc, m, n)
+end
+
+function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc::SupportComponents, w::AbstractVector)
+    _check_gramcover_ab(a, b, sc)
+    _check_gramcover_s(s, sc)
+    eachindex(w) == sc.rowax ||
+        throw(DimensionMismatch("`w` holds one weight per support row: eachindex(w) must be $(sc.rowax), got $(eachindex(w))"))
+    m = zeros(typeof(_gc_term(a, w)), ncomponents(sc))
+    n = zeros(Int, ncomponents(sc))
+    for i in sc.rowax
+        c = rowcomponent(sc, i)
+        iszero(c) && continue
+        m[c] += abs(w[i]) * a[i] * a[i]
+        n[c] += 1
+    end
+    oc = first(sc.colax) - 1
+    return _write_gramcover!(s, b, sc.colcomp, oc, m, n)
+end
+
+gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc::SupportComponents, W::Diagonal) =
+    gramcover!(s, a, b, sc, W.diag)
+
+function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc::SupportComponents, W::AbstractMatrix)
+    _check_gramcover_ab(a, b, sc)
+    _check_gramcover_s(s, sc)
+    axes(W) == (sc.rowax, sc.rowax) ||
+        throw(DimensionMismatch("`W` couples support rows, so it must be square on the row axis: axes(W) must be $((sc.rowax, sc.rowax)), got $(axes(W))"))
+    ncomp = ncomponents(sc)
+
+    # Union-find over the component ids of `sc`: merge two of them whenever a
+    # nonzero `W[i,i']` couples a supported row of one to a supported row of the
+    # other, a coupling `A`'s own support graph does not carry but the product
+    # `A'*W*A` does. Rows with no support (component id 0) contribute nothing to
+    # `A'*W*A` regardless of `W`, so they are skipped.
     parent = collect(1:ncomp)
     function find(p)
         while parent[p] != p
@@ -207,11 +240,11 @@ function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::
         return p
     end
     merged = false
-    for i in axes(A, 1)
-        ci = rowcomp[i-or]
+    for i in sc.rowax
+        ci = rowcomponent(sc, i)
         iszero(ci) && continue
-        for ip in axes(A, 1)
-            cip = rowcomp[ip-or]
+        for ip in sc.rowax
+            cip = rowcomponent(sc, ip)
             (iszero(cip) || ci == cip) && continue
             iszero(abs(W[i, ip])) && continue
             ri, rip = find(ci), find(cip)
@@ -226,16 +259,16 @@ function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::
     if !merged
         m = zeros(typeof(_gc_term(a, W)), ncomp)
         n = zeros(Int, ncomp)
-        for i in axes(A, 1)
-            ci = rowcomp[i-or]
+        for i in sc.rowax
+            ci = rowcomponent(sc, i)
             iszero(ci) && continue
-            for ip in axes(A, 1)
-                rowcomp[ip-or] == ci || continue
+            for ip in sc.rowax
+                rowcomponent(sc, ip) == ci || continue
                 m[ci] += a[i] * abs(W[i, ip]) * a[ip]
                 n[ci] += 1
             end
         end
-        return _write_gramcover!(s, b, colcomp, first(axes(A, 2)) - 1, m, n)
+        return _write_gramcover!(s, b, sc.colcomp, first(sc.colax) - 1, m, n)
     end
 
     # Components merged into a common root, listed at that root; `local_idx` is a
@@ -261,13 +294,13 @@ function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::
         M[r] = zeros(T, k, k)
         nterm[r] = zeros(Int, k, k)
     end
-    for i in axes(A, 1)
-        ci = rowcomp[i-or]
+    for i in sc.rowax
+        ci = rowcomponent(sc, i)
         iszero(ci) && continue
         r = find(ci)
         p = local_idx[ci]
-        for ip in axes(A, 1)
-            cip = rowcomp[ip-or]
+        for ip in sc.rowax
+            cip = rowcomponent(sc, ip)
             iszero(cip) && continue
             find(cip) == r || continue
             q = local_idx[cip]
@@ -277,25 +310,25 @@ function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::
     end
 
     sq = _gc_group_scales!(members, M, nterm)
-    oc = first(axes(A, 2)) - 1
-    return _write_gramcover_sq!(s, b, colcomp, oc, sq)
+    oc = first(sc.colax) - 1
+    return _write_gramcover_sq!(s, b, sc.colcomp, oc, sq)
 end
 
 # ============================================================
 # Internal helpers
 # ============================================================
 
-function _check_gramcover_ab(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
-    eachindex(a) == axes(A, 1) ||
-        throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$(axes(A, 1))"))
-    eachindex(b) == axes(A, 2) ||
-        throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
+function _check_gramcover_ab(a::AbstractVector, b::AbstractVector, sc::SupportComponents)
+    eachindex(a) == sc.rowax ||
+        throw(DimensionMismatch("`a` holds one scale per support row: eachindex(a) must be $(sc.rowax), got $(eachindex(a))"))
+    eachindex(b) == sc.colax ||
+        throw(DimensionMismatch("`b` holds one scale per support column: eachindex(b) must be $(sc.colax), got $(eachindex(b))"))
     return nothing
 end
 
-function _check_gramcover_s(s::AbstractVector, A::AbstractMatrix)
-    eachindex(s) == axes(A, 2) ||
-        throw(DimensionMismatch("indices of `s` must match column-indexing of `A`, got eachindex(s)=$(eachindex(s)), axes(A, 2)=$(axes(A, 2))"))
+function _check_gramcover_s(s::AbstractVector, sc::SupportComponents)
+    eachindex(s) == sc.colax ||
+        throw(DimensionMismatch("`s` holds one Gram scale per support column: eachindex(s) must be $(sc.colax), got $(eachindex(s))"))
     return nothing
 end
 

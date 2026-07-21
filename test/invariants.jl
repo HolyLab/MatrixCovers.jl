@@ -105,6 +105,44 @@ const GEN_NOTIONS = (
         @test isbalanced(initialize_cover(Ablk; strategy, feasible)..., Ablk)
     end
 
+    # The gauge factor is a whole power of two, so imposing the convention is exact
+    # in binary floating point: every product the coverage constraints see is
+    # preserved bit for bit. A cover cannot be perturbed into infeasibility by the
+    # act of pinning its gauge. Products across two components are not preserved,
+    # and are not constrained either — the support is exactly where both hold.
+    @testset "balancing preserves on-support products exactly" begin
+        rng = StableRNG(11)
+        for A in (Agen, Ablk, Azgen)
+            a = exp.(randn(rng, size(A, 1)))
+            b = exp.(randn(rng, size(A, 2)))
+            before = Dict{Tuple{Int,Int},Float64}()
+            MatrixCovers.foreach_support(A) do i, j, v
+                before[(i, j)] = a[i] * b[j]
+            end
+            MatrixCovers._balance_cover!(a, b, A)
+            MatrixCovers.foreach_support(A) do i, j, v
+                @test a[i] * b[j] === before[(i, j)]
+            end
+        end
+    end
+
+    # The gauge is a function of the component alone, so balancing a block-diagonal
+    # assembly reproduces balancing each block on its own, entrywise.
+    @testset "balancing commutes with block-diagonal assembly" begin
+        rng = StableRNG(12)
+        A1 = [1.0 2.0; 3.0 0.5]
+        A2 = [4.0 0.0 1.0; 0.0 2.0 6.0]
+        Abd = [A1 zeros(2, 3); zeros(2, 2) A2]
+        a1, b1 = exp.(randn(rng, 2)), exp.(randn(rng, 2))
+        a2, b2 = exp.(randn(rng, 2)), exp.(randn(rng, 3))
+        abd, bbd = vcat(a1, a2), vcat(b1, b2)
+        MatrixCovers._balance_cover!(a1, b1, A1)
+        MatrixCovers._balance_cover!(a2, b2, A2)
+        MatrixCovers._balance_cover!(abd, bbd, Abd)
+        @test abd == vcat(a1, a2)
+        @test bbd == vcat(b1, b2)
+    end
+
     # The sym objective is summed over the full grid: each off-diagonal pair counts
     # twice, each diagonal entry once. `cover_objective` is the reference, and every
     # sym solver must minimize that same weighting even though its constraints live on

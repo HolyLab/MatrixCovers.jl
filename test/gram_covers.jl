@@ -184,11 +184,11 @@
         @test rW === sWbuf
         @test sWbuf == gramcover(a, b, J, W)
 
-        @test_throws "indices of `s` must match column-indexing of `A`" gramcover!(zeros(3), a, b, J)
-        @test_throws "indices of `a` must match row-indexing of `A`" gramcover!(similar(b), zeros(4), b, J)
-        @test_throws "indices of `b` must match column-indexing of `A`" gramcover!(similar(b), a, zeros(4), J)
-        @test_throws "indices of `w` must match row-indexing of `A`" gramcover(a, b, J, zeros(4))
-        @test_throws "axes of `W` must equal" gramcover(a, b, J, zeros(4, 4))
+        @test_throws "`s` holds one Gram scale per support column" gramcover!(zeros(3), a, b, J)
+        @test_throws "`a` holds one scale per support row" gramcover!(similar(b), zeros(4), b, J)
+        @test_throws "`b` holds one scale per support column" gramcover!(similar(b), a, zeros(4), J)
+        @test_throws "`w` holds one weight per support row" gramcover(a, b, J, zeros(4))
+        @test_throws "`W` couples support rows" gramcover(a, b, J, zeros(4, 4))
     end
 
 end

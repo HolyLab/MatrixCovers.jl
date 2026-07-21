@@ -4,7 +4,7 @@
 const PENALTIES = (AbsLog{1}(), AbsLog{2}(), AbsLinear{1}(), AbsLinear{2}())
 
 """
-    isbalanced(a, b, A; atol=1e-8)
+    isbalanced(a, b, A)
 
 The balance convention `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` (`nzaᵢ`, `nzbⱼ` = the
 nonzero counts of row `i` and column `j`), which fixes the row/column gauge
@@ -12,26 +12,37 @@ nonzero counts of row `i` and column `j`), which fixes the row/column gauge
 objective and no coverage constraint can see it; without a convention the split
 between `a` and `b` would be an artifact of whichever pass last touched them. It is
 imposed within each connected component of the bipartite support graph of `A`
-separately, since the gauge acts independently on each; this checks the sum on
-every component and returns `true` only if all of them balance. Every asymmetric
-cover the package returns satisfies this.
+separately, since the gauge acts independently on each; this checks every
+component and returns `true` only if all of them satisfy it.
+
+The gauge factor is restricted to whole powers of two, so that applying it is
+exact in binary floating point and leaves every product bit for bit unchanged.
+The convention is therefore met up to that rounding, and the sharp statement is
+that no further whole-power-of-two shift is warranted: the ideal log2 shift
+`(Lb - La) / (2*nnz)` already rounds to zero. Equivalently `|Lb - La| <= nnz` in
+log2 units — a residual of at most half a step, a factor of `√2` on any
+individual scale — a bound a correctly balanced cover can sit right at, since a
+half-integer ideal shift is a genuine two-way tie. This checks every component
+and returns `true` only if all of them satisfy it.
 
 Note it is *not* scale-invariant: rescaling `A` moves the balance point, which is why
 [`covaries`](@ref) compares outer products rather than the vectors themselves.
 """
-function isbalanced(a, b, A; atol=1e-8)
+function isbalanced(a, b, A)
     rowcomp, colcomp, ncomp = MatrixCovers._support_components(A)
     iszero(ncomp) && return true
     La = zeros(ncomp)
     Lb = zeros(ncomp)
+    nnz = zeros(Int, ncomp)
     or = first(axes(A, 1)) - 1
     oc = first(axes(A, 2)) - 1
     MatrixCovers.foreach_support(A) do i, j, v
         c = rowcomp[i-or]
-        La[c] += log(a[i])
-        Lb[c] += log(b[j])
+        La[c] += log2(a[i])
+        Lb[c] += log2(b[j])
+        nnz[c] += 1
     end
-    return all(isapprox(La[c], Lb[c]; atol=atol * max(1, abs(La[c]), abs(Lb[c]))) for c in 1:ncomp)
+    return all(round(Int, (Lb[c] - La[c]) / (2 * nnz[c])) == 0 for c in 1:ncomp)
 end
 
 """

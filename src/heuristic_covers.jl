@@ -183,11 +183,19 @@ end
 # The gauge acts independently on each connected component of the bipartite
 # support graph (`_support_components`), so the convention is imposed per
 # component: within every component, the row-side and column-side weighted log
-# sums agree. This makes the split a well-defined function of the support and
-# the products — block-diagonal assembly commutes with balancing — rather than
-# pinning only the global scalar and leaving the per-component splits to
-# whichever solver internals ran last. Rows and columns with empty support
-# belong to no component and are left untouched.
+# sums agree to within the rounding described below. This makes the split a
+# well-defined function of the support and the products — block-diagonal
+# assembly commutes with balancing — rather than pinning only the global scalar
+# and leaving the per-component splits to whichever solver internals ran last.
+# Rows and columns with empty support belong to no component and are left
+# untouched.
+#
+# The shift is rounded to a whole power of two before it is applied. Scaling `a`
+# by `2^k` and `b` by `2^-k` is exact in binary floating point, so every product
+# `a[i]*b[j]` is preserved bit for bit and no cover is perturbed into
+# infeasibility by the act of pinning its gauge. The balance is therefore met to
+# within a factor of `√2` rather than exactly — a bound on the residual
+# imbalance, traded for exactness of the quantity that carries the meaning.
 #
 # Two points differing only by the gauge land on the same point here, so a refiner given
 # either start cannot tell them apart. The uniform inflation to feasibility raises every
@@ -204,25 +212,22 @@ function _balance_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix
     oc = first(axes(A, 2)) - 1
     foreach_support(A) do i, j, v
         c = rowcomp[i-or]
-        Lα[c] += log(T(a[i]))
-        Lβ[c] += log(T(b[j]))
+        Lα[c] += log2(T(a[i]))
+        Lβ[c] += log2(T(b[j]))
         nnz[c] += 1
     end
-    s = Lβ
-    for c in 1:ncomp
-        s[c] = (Lβ[c] - Lα[c]) / (2 * nnz[c])
-    end
-    # Grow the log-scales directly: `exp(s)` alone can overflow where the shifted
-    # scale is perfectly representable.
+    # `Lα`, `Lβ` are log2 sums, so the shift is already an exponent: rounding it
+    # to an integer is what makes the rescaling below exact.
+    gamma = [exp2(round((Lβ[c] - Lα[c]) / (2 * nnz[c]))) for c in 1:ncomp]
     for i in eachindex(a)
         c = rowcomp[i-or]
         c == 0 && continue
-        iszero(s[c]) || iszero(a[i]) || (a[i] = exp(log(T(a[i])) + s[c]))
+        a[i] *= gamma[c]
     end
     for j in eachindex(b)
         c = colcomp[j-oc]
         c == 0 && continue
-        iszero(s[c]) || iszero(b[j]) || (b[j] = exp(log(T(b[j])) - s[c]))
+        b[j] /= gamma[c]
     end
     return a, b
 end
