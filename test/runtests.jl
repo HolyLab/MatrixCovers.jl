@@ -1,5 +1,6 @@
 using MatrixCovers
 using MatrixCovers: foreach_support, foreach_support_sym, unconstrained_min!, tighten_cover!
+using MatrixCovers: ncomponents, support_components
 using JuMP, HiGHS, Ipopt   # triggers MatrixCoversJuMPExt and MatrixCoversIpoptExt extensions
 using SparseArrays  # triggers MatrixCoversSparseArraysExt extension
 using Unitful       # triggers MatrixCoversUnitfulExt extension

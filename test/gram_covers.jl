@@ -17,6 +17,30 @@
         end
     end
 
+    @testset "one component: the global bound is attained" begin
+        # With a single support component there is nothing to accumulate separately, so the
+        # per-component construction returns exactly the global pair bound `norm(a)*b`. The
+        # agreement is two-sided: an inequality alone would also pass for a construction that
+        # gave up slack it did not have to.
+        #
+        # It is not bitwise, and the deviation is one-sided by design. Each `sqrt` is inflated by
+        # `1 + (n+3)*eps` so the cover holds despite naive summation; `norm` accumulates its own
+        # `n` terms with no such margin. So the tolerance is `(2n+3)*eps` — the declared inflation
+        # plus the reference's own roundoff — and `all(s .<= norm(a) .* b)` is *false* by a few
+        # ulps. That inequality is exposition, not a test.
+        for (seed, m, k) in ((3, 5, 4), (7, 4, 4), (11, 12, 3))
+            rng = StableRNG(seed)
+            J = randn(rng, m, k)
+            a, b = cover(J)
+            s = gramcover(a, b, J)
+            @test ncomponents(support_components(J)) == 1
+            @test s ≈ norm(a) .* b rtol = (2 * length(a) + 3) * eps(Float64)
+            @test !all(s .<= norm(a) .* b)
+            # Coverage, which the margin exists to deliver, is unconditional.
+            @test all(s * s' .>= abs.(J' * J))
+        end
+    end
+
     @testset "block-diagonal: per-component structure" begin
         rng = StableRNG(1)
         B = randn(rng, 4, 3)
