@@ -60,9 +60,10 @@ julia> round.(typeof.(a), a; digits=6)
 
 `A[i,j]` has units `1/(u[i]*u[j])` (modeling a Hessian matrix for functions of
 parameter vectors with units `u[i]`), so `a[i]` comes back with gradient-like
-units of `1/u[i]`: the cover names each variable's natural scale outright, here
-1 mm, 1 m/s, and 1 kN. Had we expressed the original matrix in those units
-directly, we would have gotten the equivalent cover stated in those units.
+units of `1/u[i]`: the cover provides each variable's natural scale inferred
+from `A`, here 1 mm, 1 m/s, and 1 kN. Had we expressed the original matrix in
+those units directly, we would have gotten the equivalent cover stated in those
+units.
 
 Normalizing by the cover cancels the units along with the magnitudes, leaving a
 matrix that is all-ones, dimensionless, and scale-invariant:
@@ -80,18 +81,18 @@ It is worth noting that this yields 1 only for entries where the cover bound is
 
 A cover exists only when the units of `A` factor as
 `unit(A[i,j]) == unit(a[i])*unit(b[j])`, and a matrix that fails this is rejected with a
-`DimensionMismatch` naming the entries that conflict.  The requirement is not one
-this package adds: without it the terms in a row of `A*x` carry different units,
-so `A*x` is undefined for every `x`. If a matrix can be used in matrix-vector
-multiplication, it has a cover.
+`DimensionMismatch`.  This requirement is not exhorbitant: without it, the terms
+in a row of `A*x` carry different units, so `A*x` is undefined for every `x`.
+If a matrix can be used in matrix-vector multiplication, it has a cover.
 
 ## Penalty functions
 
 A cover is valid as long as every constraint is satisfied, but tighter covers
 better capture the scaling of `A`.  Cover quality is measured through the ratios
-`r_{ij} = |A[i,j]| / (a[i] * b[j])`: a hard cover has every `r ≤ 1`, and `r = 1`
-means the constraint is exactly tight.  A **penalty function** `ϕ` combines those
-ratios into a scalar objective
+`r[i, j] = |A[i,j]| / (a[i] * b[j])`: a hard cover has every `0 ≤ r[i, j] ≤ 1`,
+and `r[i, j] == 1` means the constraint is exactly tight.
+
+A **penalty function** `ϕ` combines those ratios into a scalar objective
 
 ```math
 \sum_{i,j} \phi\!\left(\frac{|A_{ij}|}{a_i\, b_j}\right),
@@ -103,9 +104,9 @@ which the solvers minimize.  Two penalty families are provided:
   space, which makes them a favorable (and therefore default) penalty for *hard*
   covers, where `r ≤ 1` and `|log r|` is the log-excess of a constraint.
   `AbsLog{1}` sums the log-excesses (L1), `AbsLog{2}` sums their squares (L2).
-  Their principal disadvantage is the discontinuity at `r = 0`.
+  Their principal disadvantage is the divergence and discontinuity at `r = 0`.
 - [`AbsLinear`](@ref)`{p}` — `ϕ(r) = |1 - r|^p`.  Non-convex, but unlike
-  `AbsLog` these are continuous at `r = 0` (`ϕ(0) = 1`), so zero entries of `A`
+  `AbsLog` these are finite and continuous at `r = 0` (`ϕ(0) = 1`), so zero entries of `A`
   contribute a bounded penalty.  This is the penalty used by default for the
   *soft* covers, where `r > 1` (an uncovered entry) is allowed but penalized.
 

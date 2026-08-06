@@ -6,11 +6,16 @@
 [![Coverage](https://codecov.io/gh/HolyLab/MatrixCovers.jl/graph/badge.svg?token=trG4HXo9N4)](https://codecov.io/gh/HolyLab/MatrixCovers.jl)
 [![Aqua QA](https://juliatesting.github.io/Aqua.jl/dev/assets/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
 
-This package computes **covers** of matrices: non-negative vectors `a` (and `b`)
+This package computes **covers** of matrices: non-negative vectors `a` and `b`
 such that `a[i] * b[j] >= abs(A[i, j])` for all `i`, `j`.  Covers are the
 natural scale-covariant representation of a matrix — under row/column diagonal
 scaling they transform exactly as the matrix entries do — making them a useful
-building block for scale-invariant numerical analysis.
+building block for scale-invariant numerical analysis. In particular, 
+``\hat A = A ./ (a * b^T)`` is scale-invariant, and because ``|\hat A[i, j]| <= 1``
+for all `i` and `j`, this simple construct finds applications that range from
+[statistical normalization](https://en.wikipedia.org/wiki/Normalization_(statistics))
+of data to the design of well-behaved numerical algorithms (thanks, e.g., 
+to [bounds on ``\hat A``'s eigenvalues](https://en.wikipedia.org/wiki/Gershgorin_circle_theorem)).
 
 Fast O(mn) heuristics (`symcover`, `cover`) are provided for everyday use, along
 with *soft* covers (`soft_symcover`, `soft_cover`) that penalize under-coverage
