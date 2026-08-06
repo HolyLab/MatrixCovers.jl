@@ -11,7 +11,7 @@ such that `a[i] * b[j] >= abs(A[i, j])` for all `i`, `j`.  Covers are the
 natural scale-covariant representation of a matrix — under row/column diagonal
 scaling they transform exactly as the matrix entries do — making them a useful
 building block for scale-invariant numerical analysis. In particular, 
-$`\hat A = A ./ (a b^T)`$ is scale-invariant, and because $`|\hat A[i, j]| <= 1`$
+$`\hat A = A ./ (a b^T)`$ is scale-invariant, and because $`|\hat A[i, j]| \le 1`$
 for all `i` and `j`, this simple construct finds applications that range from
 [statistical normalization](https://en.wikipedia.org/wiki/Normalization_(statistics))
 of data to the design of well-behaved numerical algorithms (thanks, e.g., 
