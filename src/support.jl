@@ -96,7 +96,7 @@ See also: [`foreach_support`](@ref).
 """
 function foreach_support_sym(f, A::AbstractMatrix)
     ax = axes(A, 1)
-    axes(A, 2) == ax || throw(DimensionMismatch("foreach_support_sym requires a square matrix, got axes $(axes(A))"))
+    axes(A, 2) == ax || throw(DimensionMismatch("foreach_support_sym requires a square matrix, got axes $(string(axes(A)))"))
     for j in ax
         for i in first(ax):j
             v = abs(A[i, j])
@@ -131,13 +131,13 @@ the traversal reads and what admits a complex `Hermitian`.
 function require_abs_symmetric(A::AbstractMatrix, fname)
     ax = axes(A, 1)
     axes(A, 2) == ax ||
-        throw(DimensionMismatch("$fname requires a square matrix, got axes $(axes(A))"))
+        throw(DimensionMismatch("$fname requires a square matrix, got axes $(string(axes(A)))"))
     foreach_support(A) do i, j, v
         w = abs(A[j, i])
         m = max(v, w)
         abs(v - w) <= ASYMMETRY_ULPS * eps(float(real(typeof(m)))) * m || throw(ArgumentError("""
-        $fname requires `abs.(A)` to be symmetric, but abs(A[$i,$j]) = $v and \
-        abs(A[$j,$i]) = $w. Wrap `A` in `Symmetric` (or `Hermitian`) to name the \
+        $fname requires `abs.(A)` to be symmetric, but abs(A[$(string(i)),$(string(j))]) = $(string(v)) and \
+        abs(A[$(string(j)),$(string(i))]) = $(string(w)). Wrap `A` in `Symmetric` (or `Hermitian`) to name the \
         triangle to read; that also skips this check."""))
     end
     return nothing

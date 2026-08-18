@@ -349,7 +349,7 @@ function soft_symcover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=SYMCOVER
     built = [_initialize_symcover!(a, A, strategy, :none) for (a, strategy) in zip(starts, strategies)]
     covers = [soft_symcover_min!(ϕ, a, A) for (a, ok) in zip(starts, built) if ok]
     isempty(covers) &&
-        throw(ArgumentError("soft_symcover_min: no strategy in $strategies yields a starting cover of `A`"))
+        throw(ArgumentError("soft_symcover_min: no strategy in $(string(strategies)) yields a starting cover of `A`"))
     return covers[_multistart_select([cover_objective(ϕ, a, A) for a in covers])]
 end
 
@@ -394,7 +394,7 @@ function _prepare_soft_symcover_start!(a::AbstractVector, A::AbstractMatrix, fna
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("$fname requires a square matrix"))
     require_abs_symmetric(A, fname)
-    eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$ax"))
+    eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(ax))"))
     supp = fill!(similar(a, Bool), false)
     foreach_support_sym(A) do i, j, v
         supp[i] = true
@@ -406,7 +406,7 @@ function _prepare_soft_symcover_start!(a::AbstractVector, A::AbstractMatrix, fna
     for i in ax
         supp[i] || continue
         (isfinite(a[i]) && a[i] > zero(a[i])) ||
-            throw(ArgumentError("$fname requires a start with finite positive scale on every supported row, got a[$i] = $(a[i])"))
+            throw(ArgumentError("$fname requires a start with finite positive scale on every supported row, got a[$(string(i))] = $(string(a[i]))"))
     end
     return a
 end
@@ -508,8 +508,8 @@ end
 # actually called.
 function _prepare_soft_cover_start!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
                                     fname::Symbol=:soft_cover_min!)
-    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$(axes(A, 1))"))
-    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
+    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
+    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
     suppa = fill!(similar(a, Bool), false)
     suppb = fill!(similar(b, Bool), false)
     foreach_support(A) do i, j, v
@@ -525,12 +525,12 @@ function _prepare_soft_cover_start!(a::AbstractVector, b::AbstractVector, A::Abs
     for i in eachindex(a)
         suppa[i] || continue
         (isfinite(a[i]) && a[i] > zero(a[i])) ||
-            throw(ArgumentError("$fname requires a start with finite positive scale on every supported row, got a[$i] = $(a[i])"))
+            throw(ArgumentError("$fname requires a start with finite positive scale on every supported row, got a[$(string(i))] = $(string(a[i]))"))
     end
     for j in eachindex(b)
         suppb[j] || continue
         (isfinite(b[j]) && b[j] > zero(b[j])) ||
-            throw(ArgumentError("$fname requires a start with finite positive scale on every supported column, got b[$j] = $(b[j])"))
+            throw(ArgumentError("$fname requires a start with finite positive scale on every supported column, got b[$(string(j))] = $(string(b[j]))"))
     end
     return _balance_cover!(a, b, A)
 end
@@ -550,7 +550,7 @@ function _resolve_alias(primary, alias, default, primary_name::Symbol, alias_nam
     primary === nothing && return alias === nothing ? default : alias
     alias === nothing && return primary
     primary == alias ||
-        throw(ArgumentError("both `$primary_name` and `$alias_name` were given with different values ($primary vs $alias); specify only one"))
+        throw(ArgumentError("both `$primary_name` and `$alias_name` were given with different values ($(string(primary)) vs $(string(alias))); specify only one"))
     return primary
 end
 
@@ -676,7 +676,7 @@ end
 # multistart selection stays covariant.
 function _abslinear2_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol::Real=50_000_000 * eps(T)) where T
     ax = eachindex(a)
-    ax == axes(A, 1) || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axes(A, 1)) vs $(ax)"))
+    ax == axes(A, 1) || throw(DimensionMismatch("row indices of `A` must match `a`, got $(string(axes(A, 1))) vs $(string(ax))"))
     S = _sym_support(A, T)
     for _ in 1:iter
         maxres = zero(T)
@@ -765,7 +765,7 @@ end
 # restarts of a rescaled problem exit on the same sweep.
 function _abslinear1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol::Real=5000 * eps(T)) where T
     ax  = eachindex(a)
-    ax == axes(A, 1) || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axes(A, 1)) vs $(ax)"))
+    ax == axes(A, 1) || throw(DimensionMismatch("row indices of `A` must match `a`, got $(string(axes(A, 1))) vs $(string(ax))"))
     S   = _sym_support(A, T)
     buf = Vector{T}(undef, length(ax))   # reusable buffer for c_j values
     for _ in 1:iter
@@ -824,7 +824,7 @@ end
 # sweep.
 function _abslog1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; tol::Real=5000 * eps(T)) where T
     ax  = eachindex(a)
-    ax == axes(A, 1) || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axes(A, 1)) vs $(ax)"))
+    ax == axes(A, 1) || throw(DimensionMismatch("row indices of `A` must match `a`, got $(string(axes(A, 1))) vs $(string(ax))"))
     S   = _sym_support(A, T)
     buf = Vector{T}(undef, 2 * length(ax) + 1)   # off-diagonals (×1) + diagonal (×2)
     for _ in 1:iter
@@ -879,8 +879,8 @@ function _abslog1_iter_asym!(a::AbstractVector, b::AbstractVector, A::AbstractMa
     T = float(promote_type(eltype(a), eltype(b)))
     rtol = tol === nothing ? 5000 * eps(T) : T(tol)
     axr, axc = axes(A, 1), axes(A, 2)
-    eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axr) vs $(eachindex(a))"))
-    eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(axc) vs $(eachindex(b))"))
+    eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(string(axr)) vs $(string(eachindex(a)))"))
+    eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(string(axc)) vs $(string(eachindex(b)))"))
     R, C = _row_support(A, T), _col_support(A, T)
     bufc = Vector{T}(undef, length(axc))   # log-points for an a-row update
     bufr = Vector{T}(undef, length(axr))   # log-points for a b-column update
@@ -993,8 +993,8 @@ end
 function _msmc_als!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, iter::Int;
                     tol=nothing)
     axr, axc = axes(A, 1), axes(A, 2)
-    eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axr) vs $(eachindex(a))"))
-    eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(axc) vs $(eachindex(b))"))
+    eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(string(axr)) vs $(string(eachindex(a)))"))
+    eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(string(axc)) vs $(string(eachindex(b)))"))
     T = float(promote_type(eltype(a), eltype(b), real(eltype(A))))
     # The convergence test is on a relative movement, so its floor is set by the
     # precision of `T`: a fixed Float64-scaled literal can never be reached in
@@ -1077,8 +1077,8 @@ function _abslinear1_iter_asym!(a::AbstractVector, b::AbstractVector, A::Abstrac
     T = float(promote_type(eltype(a), eltype(b)))
     rtol = tol === nothing ? 5000 * eps(T) : T(tol)
     axr, axc = axes(A, 1), axes(A, 2)
-    eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(axr) vs $(eachindex(a))"))
-    eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(axc) vs $(eachindex(b))"))
+    eachindex(a) == axr || throw(DimensionMismatch("row indices of `A` must match `a`, got $(string(axr)) vs $(string(eachindex(a)))"))
+    eachindex(b) == axc || throw(DimensionMismatch("column indices of `A` must match `b`, got $(string(axc)) vs $(string(eachindex(b)))"))
     R, C = _row_support(A, T), _col_support(A, T)
     bufc = Vector{T}(undef, length(axc))   # c_j buffer for an a-row update
     bufr = Vector{T}(undef, length(axr))   # c_i buffer for a b-column update

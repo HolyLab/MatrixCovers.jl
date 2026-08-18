@@ -67,7 +67,7 @@ function symcover!(a::AbstractVector, A::AbstractMatrix; kwargs...)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("symcover! requires a square matrix"))
     require_abs_symmetric(A, :symcover!)
-    eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$ax"))
+    eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(ax))"))
     unconstrained_min!(AbsLog{2}(), a, A)
     boost_feasible!(a, A)
     return tighten_cover!(a, A; kwargs...)
@@ -144,8 +144,8 @@ cover!(ϕ::AbstractCoverPenalty, a::AbstractVector, b::AbstractVector, A::Abstra
     cover!(a, b, A; kwargs...)
 
 function cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
-    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$(axes(A, 1))"))
-    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
+    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
+    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
     unconstrained_min!(AbsLog{2}(), a, b, A)
     boost_feasible!(a, b, A)
     tighten_cover!(a, b, A; kwargs...)
@@ -240,7 +240,7 @@ end
 # This is the "rank-1 solution" described in manuscript section 5.2.
 function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, A::AbstractMatrix) where T
     ax = eachindex(a)
-    axes(A) == (ax, ax) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(axes(A)), axes(a)=$(axes(a))"))
+    axes(A) == (ax, ax) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(string(axes(A))), axes(a)=$(string(axes(a)))"))
     loga = fill!(similar(a), zero(T))
     nza  = zeros(Int, ax)
     foreach_support_sym(A) do i, j, v
@@ -265,8 +265,8 @@ end
 
 function unconstrained_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
     T = float(promote_type(eltype(a), eltype(b)))
-    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, b, A)` requires row indices of `A` to match `a`, got axes(A, 1)=$(axes(A, 1)), axes(a)=$(axes(a))"))
-    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, b, A)` requires column indices of `A` to match `b`, got axes(A, 2)=$(axes(A, 2)), axes(b)=$(axes(b))"))
+    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, b, A)` requires row indices of `A` to match `a`, got axes(A, 1)=$(string(axes(A, 1))), axes(a)=$(string(axes(a)))"))
+    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, b, A)` requires column indices of `A` to match `b`, got axes(A, 2)=$(string(axes(A, 2))), axes(b)=$(string(axes(b)))"))
     loga = fill!(similar(a, T), zero(T))
     logb = fill!(similar(b, T), zero(T))
     nza  = zeros(Int, axes(A, 1))
@@ -301,7 +301,7 @@ end
 # a scale for it (see `boost_feasible_seq!`).
 function init_feasible_diag!(a::AbstractVector{T}, A::AbstractMatrix) where T
     ax = eachindex(a)
-    axes(A) == (ax, ax) || throw(DimensionMismatch("`init_feasible_diag!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(axes(A)), axes(a)=$(axes(a)))"))
+    axes(A) == (ax, ax) || throw(DimensionMismatch("`init_feasible_diag!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(string(axes(A))), axes(a)=$(string(axes(a))))"))
     # A diagonal entry the traversal skips is zero, which is the "not yet resolved"
     # value `boost_feasible_seq!` expects.
     fill!(a, zero(T))
@@ -575,7 +575,7 @@ end
 # initialization, a heuristic guaranteed to be O(n^2) seems reasonable.
 function boost_feasible_seq!(a::AbstractVector{T}, A::AbstractMatrix) where T
     ax = eachindex(a)
-    axes(A) == (ax, ax) || throw(DimensionMismatch("`boost_feasible_seq!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(axes(A)), axes(a)=$(axes(a)))"))
+    axes(A) == (ax, ax) || throw(DimensionMismatch("`boost_feasible_seq!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(string(axes(A))), axes(a)=$(string(axes(a))))"))
     I = eltype(ax)
 
     # The support gathered as off-diagonal pairs, ordered by increasing offset and
