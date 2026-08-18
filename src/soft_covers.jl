@@ -637,10 +637,10 @@ end
 function _multistart_run(inits_builder::F, iterate!::G, objective::H, A::AbstractMatrix,
                           iter::Int, starts::Int, σ::Real, rng; labels=nothing, objs=nothing) where {F,G,H}
     labs, inits = inits_builder(A, starts, σ, rng)
-    E = map(inits) do x
+    for x in inits
         iterate!(x, A, iter)
-        objective(x, A)
     end
+    E = [objective(x, A) for x in inits]
     labels === nothing || append!(labels, labs)
     objs === nothing || append!(objs, E)
     return inits[_multistart_select(E)]
@@ -753,6 +753,12 @@ function _weighted_self_median!(c::AbstractVector{T}) where T
     return wm
 end
 
+# AbsLinear{1} coordinate objective at candidate `x`: |1 - d/x²| + ∑ᵢ |1 - cᵢ/x|.
+# This is a top-level function because a closure in `_abslinear1_iter!` would
+# capture and box the reassigned `d`, allocating in the inner loop and causing
+# juliac's trim verifier to report a dynamic call.
+_abslinear1_obj(x, d, c) = abs(1 - d/x^2) + sum(abs(1 - ci/x) for ci in c)
+
 # Coordinate-descent iteration for AbsLinear{1} soft cover.
 # Each coordinate a[k] is updated to minimize ∑_j |1 - |A[k,j]|/(a[k]*a[j])|.
 # For the off-diagonal sum, the minimizer is the weighted median of c_j with weights c_j,
@@ -795,8 +801,7 @@ function _abslinear1_iter!(a::AbstractVector{T}, A::AbstractMatrix, iter::Int; t
                 else
                     # Compare objective at weighted median vs sqrt(d)
                     sq_d = sqrt(d)
-                    obj_at(x) = abs(1 - d/x^2) + sum(abs(1 - ci/x) for ci in c)
-                    x = obj_at(wm) <= obj_at(sq_d) ? wm : sq_d
+                    x = _abslinear1_obj(wm, d, c) <= _abslinear1_obj(sq_d, d, c) ? wm : sq_d
                 end
             end
             ak  = a[k]
@@ -964,9 +969,11 @@ end
 # two frames (as the default fresh-seeded RNG does) makes it reproducible.
 function _soft_cover_abslinear2(A::AbstractMatrix, iter::Int, starts::Int, σ::Real, rng;
                                 labels=nothing, objs=nothing)
+    # Index the candidate pair in the body because juliac's trim verifier
+    # treats a tuple-destructuring lambda as a dynamic call.
     a, b = _multistart_run(_soft_cover_abslinear2_inits,
-                            ((a, b), A, iter) -> _msmc_als!(a, b, A, iter),
-                            ((a, b), A) -> cover_objective(AbsLinear{2}(), a, b, A),
+                            (ab, A, iter) -> _msmc_als!(ab[1], ab[2], A, iter),
+                            (ab, A) -> cover_objective(AbsLinear{2}(), ab[1], ab[2], A),
                             A, iter, starts, σ, rng; labels, objs)
     # The alternating half-sweeps rescale rows and columns independently, so they leave the
     # gauge where it falls; pin it to the package's convention. The objective cannot see the
