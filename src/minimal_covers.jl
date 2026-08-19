@@ -220,7 +220,7 @@ function symcover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=SYMCOVER_MIN_
     built = [_initialize_symcover!(a, A, strategy, :inflate) for (a, strategy) in zip(starts, strategies)]
     covers = [symcover_min!(ϕ, a, A) for (a, ok) in zip(starts, built) if ok]
     isempty(covers) &&
-        throw(ArgumentError("symcover_min: no strategy in $strategies yields a starting cover of `A`"))
+        throw(ArgumentError("symcover_min: no strategy in $(string(strategies)) yields a starting cover of `A`"))
     return covers[_multistart_select([cover_objective(ϕ, a, A) for a in covers])]
 end
 
@@ -256,7 +256,7 @@ function _prepare_symcover_start!(a::AbstractVector, A::AbstractMatrix, fname=:s
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("$fname requires a square matrix"))
     require_abs_symmetric(A, fname)
-    eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$ax"))
+    eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(ax))"))
     T = float(eltype(a))
     supp = fill!(similar(a, Bool), false)
     foreach_support_sym(A) do i, j, v
@@ -268,12 +268,12 @@ function _prepare_symcover_start!(a::AbstractVector, A::AbstractMatrix, fname=:s
     end
     foreach_support_sym(A) do i, j, v
         (isfinite(a[i]) && a[i] > zero(a[i])) ||
-            throw(ArgumentError("symcover_min! requires a start with finite positive scale on every supported row, got a[$i] = $(a[i])"))
+            throw(ArgumentError("symcover_min! requires a start with finite positive scale on every supported row, got a[$(string(i))] = $(string(a[i]))"))
         (isfinite(a[j]) && a[j] > zero(a[j])) ||
-            throw(ArgumentError("symcover_min! requires a start with finite positive scale on every supported row, got a[$j] = $(a[j])"))
+            throw(ArgumentError("symcover_min! requires a start with finite positive scale on every supported row, got a[$(string(j))] = $(string(a[j]))"))
         lv, li, lj = log(T(v)), log(T(a[i])), log(T(a[j]))
         lv - li - lj <= _start_slack(lv, li, lj) ||
-            throw(ArgumentError("symcover_min! requires a start that covers `A`, but a[$i]*a[$j] = $(a[i] * a[j]) < $v = abs(A[$i,$j]); see initialize_symcover"))
+            throw(ArgumentError("symcover_min! requires a start that covers `A`, but a[$(string(i))]*a[$(string(j))] = $(string(a[i] * a[j])) < $(string(v)) = abs(A[$(string(i)),$(string(j))]); see initialize_symcover"))
     end
     return inflate_feasible!(a, A)
 end
@@ -283,8 +283,8 @@ end
 # convention (imposed within each connected component of the support), so the
 # refiners read it only up to the per-component row/column gauge.
 function _prepare_cover_start!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
-    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$(axes(A, 1))"))
-    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
+    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
+    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
     T = float(promote_type(eltype(a), eltype(b)))
     suppa = fill!(similar(a, Bool), false)
     suppb = fill!(similar(b, Bool), false)
@@ -300,12 +300,12 @@ function _prepare_cover_start!(a::AbstractVector, b::AbstractVector, A::Abstract
     end
     foreach_support(A) do i, j, v
         (isfinite(a[i]) && a[i] > zero(a[i])) ||
-            throw(ArgumentError("cover_min! requires a start with finite positive scale on every supported row, got a[$i] = $(a[i])"))
+            throw(ArgumentError("cover_min! requires a start with finite positive scale on every supported row, got a[$(string(i))] = $(string(a[i]))"))
         (isfinite(b[j]) && b[j] > zero(b[j])) ||
-            throw(ArgumentError("cover_min! requires a start with finite positive scale on every supported column, got b[$j] = $(b[j])"))
+            throw(ArgumentError("cover_min! requires a start with finite positive scale on every supported column, got b[$(string(j))] = $(string(b[j]))"))
         lv, li, lj = log(T(v)), log(T(a[i])), log(T(b[j]))
         lv - li - lj <= _start_slack(lv, li, lj) ||
-            throw(ArgumentError("cover_min! requires a start that covers `A`, but a[$i]*b[$j] = $(a[i] * b[j]) < $v = abs(A[$i,$j]); see initialize_cover"))
+            throw(ArgumentError("cover_min! requires a start that covers `A`, but a[$(string(i))]*b[$(string(j))] = $(string(a[i] * b[j])) < $(string(v)) = abs(A[$(string(i)),$(string(j))]); see initialize_cover"))
     end
     _balance_cover!(a, b, A)
     return inflate_feasible!(a, b, A)

@@ -41,9 +41,9 @@ false
 """
 function iscover(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; rtol=0, atol=0)
     eachindex(a) == axes(A, 1) ||
-        throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$(axes(A, 1))"))
+        throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
     eachindex(b) == axes(A, 2) ||
-        throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
+        throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
     _require_nonneg(a, "a")
     _require_nonneg(b, "b")
     # Zero entries of `A` are skipped by `foreach_support`, and need no check: they demand
@@ -57,7 +57,7 @@ end
 
 function iscover(a::AbstractVector, A::AbstractMatrix; kwargs...)
     axes(A, 1) == axes(A, 2) ||
-        throw(DimensionMismatch("iscover(a, A) requires a square matrix, got axes $(axes(A))"))
+        throw(DimensionMismatch("iscover(a, A) requires a square matrix, got axes $(string(axes(A)))"))
     return iscover(a, a, A; kwargs...)
 end
 
@@ -69,7 +69,7 @@ function _require_nonneg(x::AbstractVector, name::String)
         # value, and `zero(Quantity{Float64})` is undefined. Also rejects NaN, which fails
         # every comparison.
         x[i] >= zero(x[i]) ||
-            throw(ArgumentError("iscover requires nonnegative scales, got $name[$i] = $(x[i])"))
+            throw(ArgumentError("iscover requires nonnegative scales, got $name[$(string(i))] = $(string(x[i]))"))
     end
     return nothing
 end

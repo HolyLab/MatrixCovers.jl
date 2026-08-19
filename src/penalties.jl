@@ -129,9 +129,9 @@ See also:
 """
 function cover_objective(ϕ, a, b, A)
     eachindex(a) == axes(A, 1) ||
-        throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$(axes(A, 1))"))
+        throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
     eachindex(b) == axes(A, 2) ||
-        throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
+        throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
     T = promote_type(objective_type(A), objective_type(a), objective_type(b))
     s = Ref(zero(T))
     nsupport = Ref(0)

@@ -203,7 +203,7 @@ function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc:
     _check_gramcover_ab(a, b, sc)
     _check_gramcover_s(s, sc)
     eachindex(w) == sc.rowax ||
-        throw(DimensionMismatch("`w` holds one weight per support row: eachindex(w) must be $(sc.rowax), got $(eachindex(w))"))
+        throw(DimensionMismatch("`w` holds one weight per support row: eachindex(w) must be $(string(sc.rowax)), got $(string(eachindex(w)))"))
     m = zeros(typeof(_gc_term(a, w)), ncomponents(sc))
     n = zeros(Int, ncomponents(sc))
     for i in sc.rowax
@@ -223,7 +223,7 @@ function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc:
     _check_gramcover_ab(a, b, sc)
     _check_gramcover_s(s, sc)
     axes(W) == (sc.rowax, sc.rowax) ||
-        throw(DimensionMismatch("`W` couples support rows, so it must be square on the row axis: axes(W) must be $((sc.rowax, sc.rowax)), got $(axes(W))"))
+        throw(DimensionMismatch("`W` couples support rows, so it must be square on the row axis: axes(W) must be $(string((sc.rowax, sc.rowax))), got $(string(axes(W)))"))
     ncomp = ncomponents(sc)
 
     # Union-find over the component ids of `sc`: merge two of them whenever a
@@ -320,15 +320,15 @@ end
 
 function _check_gramcover_ab(a::AbstractVector, b::AbstractVector, sc::SupportComponents)
     eachindex(a) == sc.rowax ||
-        throw(DimensionMismatch("`a` holds one scale per support row: eachindex(a) must be $(sc.rowax), got $(eachindex(a))"))
+        throw(DimensionMismatch("`a` holds one scale per support row: eachindex(a) must be $(string(sc.rowax)), got $(string(eachindex(a)))"))
     eachindex(b) == sc.colax ||
-        throw(DimensionMismatch("`b` holds one scale per support column: eachindex(b) must be $(sc.colax), got $(eachindex(b))"))
+        throw(DimensionMismatch("`b` holds one scale per support column: eachindex(b) must be $(string(sc.colax)), got $(string(eachindex(b)))"))
     return nothing
 end
 
 function _check_gramcover_s(s::AbstractVector, sc::SupportComponents)
     eachindex(s) == sc.colax ||
-        throw(DimensionMismatch("`s` holds one Gram scale per support column: eachindex(s) must be $(sc.colax), got $(eachindex(s))"))
+        throw(DimensionMismatch("`s` holds one Gram scale per support column: eachindex(s) must be $(string(sc.colax)), got $(string(eachindex(s)))"))
     return nothing
 end
 

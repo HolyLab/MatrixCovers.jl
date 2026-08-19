@@ -84,7 +84,7 @@ function initialize_symcover!(a::AbstractVector, A::AbstractMatrix;
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("initialize_symcover! requires a square matrix"))
     require_abs_symmetric(A, :initialize_symcover!)
-    eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$ax"))
+    eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(ax))"))
     _initialize_symcover!(a, A, strategy, feasible; kwargs...) ||
         throw(ArgumentError("strategy=:leaveout requires a support entry that can be dropped without emptying a row"))
     return a
@@ -131,8 +131,8 @@ See also: [`initialize_cover`](@ref).
 """
 function initialize_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
                            strategy::Symbol=:hardcover, feasible::Symbol=:inflate, kwargs...)
-    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(eachindex(a)), axes(A, 1)=$(axes(A, 1))"))
-    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(eachindex(b)), axes(A, 2)=$(axes(A, 2))"))
+    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
+    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
     if strategy === :hardcover
         cover!(a, b, A; kwargs...)
     elseif strategy === :geomean
@@ -200,7 +200,7 @@ end
 # which start was built.
 function _reject_kwargs(strategy::Symbol, kwargs)
     isempty(kwargs) && return nothing
-    throw(ArgumentError("strategy=:$strategy accepts no further keyword arguments, got $(join(keys(kwargs), ", "))"))
+    throw(ArgumentError("strategy=:$strategy accepts no further keyword arguments, got $(string(join(keys(kwargs), ", ")))"))
 end
 
 # Leave-one-out geometric mean. The geometric mean weights every nonzero entry equally, so
@@ -228,7 +228,7 @@ end
 # would empty some row's support.
 function _leaveout_logmean_init!(a::AbstractVector{T}, A::AbstractMatrix) where T
     ax = eachindex(a)
-    axes(A) == (ax, ax) || throw(DimensionMismatch("`_leaveout_logmean_init!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(axes(A)), axes(a)=$(axes(a)))"))
+    axes(A) == (ax, ax) || throw(DimensionMismatch("`_leaveout_logmean_init!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(string(axes(A))), axes(a)=$(string(axes(a))))"))
     nza = unconstrained_min!(AbsLog{2}(), a, A)
     sum(nza) == 0 && return false
     # One gather serves all three passes below: the two pair scans read the `j >= i`
