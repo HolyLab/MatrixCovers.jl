@@ -74,3 +74,28 @@ true
 
 See the [documentation](https://HolyLab.github.io/MatrixCovers.jl/dev/)
 for motivation, examples, and a full API reference.
+
+## Python
+
+A subset of MatrixCovers is available as a compiled Python package that does
+not require Julia. Install a wheel from a
+[GitHub release](https://github.com/HolyLab/MatrixCovers.jl/releases):
+
+```
+pip install https://github.com/HolyLab/MatrixCovers.jl/releases/download/vX.Y.Z/matrixcovers-X.Y.Z-py3-none-manylinux_2_35_x86_64.whl
+```
+
+Replace `X.Y.Z` with a released version. Wheels support Linux x86_64 with
+glibc >= 2.35 (Ubuntu 22.04+,
+Debian 12+, Fedora 36+; not RHEL/Rocky 9).
+
+```python
+import numpy as np
+import matrixcovers as mc
+
+A = np.array([[4.0, 2.0], [2.0, 16.0]])
+a = mc.symcover(A)          # a[i] * a[j] >= abs(A[i, j])
+print(mc.iscover(a, A))     # True
+```
+
+See `lib/python/_facade.py` for the Python API.
