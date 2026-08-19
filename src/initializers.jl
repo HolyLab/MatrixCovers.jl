@@ -184,7 +184,10 @@ end
 # every entry by one common factor, `boost_feasible!` raises only the rows touching a
 # violated entry — so which one is used is part of what names a start, not an
 # implementation detail of reaching feasibility.
-function _make_feasible!(feasible::Symbol, scales...)
+# Binding the argument count in `Vararg{Any,N}` lets Julia specialize the
+# splatted calls below. Otherwise, juliac's trim verifier treats them as
+# dynamic calls.
+function _make_feasible!(feasible::Symbol, scales::Vararg{Any,N}) where N
     if feasible === :inflate
         inflate_feasible!(scales...)
     elseif feasible === :boost
