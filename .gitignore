@@ -6,3 +6,6 @@
 /docs/Manifest*.toml
 /docs/build/
 /test/generator/Manifest*.toml
+/lib/out/
+/lib/Manifest.toml
+/lib/build-env/Manifest.toml
