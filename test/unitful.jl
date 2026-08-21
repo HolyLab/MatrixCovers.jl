@@ -294,6 +294,29 @@
         @test all(ustrip.(sw * sw') .>= ustrip.(abs.(Gw)))
     end
 
+    @testset "gramcover with a general W carries units" begin
+        # Coupled block sums have units `a^2*W`.
+        J = [4.0 1.0 0.0 0.0
+             1.0 3.0 0.0 0.0
+             0.0 0.0 2.0 1.0
+             0.0 0.0 0.5 4.0] .* u"N/m"
+        a, b = cover(J)
+        W = [1.0 0.0 0.3 0.0
+             0.0 2.0 0.0 0.0
+             0.3 0.0 1.5 0.0
+             0.0 0.0 0.0 0.5] .* u"s"
+        s = gramcover(a, b, J, W)
+        @test unit.(s) == unit(a[1]) .* unit.(b) .* unit(sqrt(1.0u"s"))
+        G = J' * (W * J)
+        @test all(ustrip.(s * s') .>= ustrip.(abs.(G)))
+
+        # Units do not alter gauge invariance.
+        a2, b2 = copy(a), copy(b)
+        a2[1:2] .*= 3; b2[1:2] ./= 3
+        a2[3:4] .*= 0.4; b2[3:4] ./= 0.4
+        @test isapprox(ustrip.(s), ustrip.(gramcover(a2, b2, J, W)); rtol=1e-6)
+    end
+
     @testset "unit types the cover cannot use" begin
         # An affine unit measures from a shifted origin, so no product a[i]*b[j]
         # scales it: refuse it rather than silently reducing it to its atom.

@@ -1,6 +1,9 @@
 # Symmetric covers of a (weighted) Gram matrix `A'*W*A`, computed directly from
 # an asymmetric cover of `A` — without ever forming the Gram matrix.
 
+# Default for the general-`W` methods.
+const GRAMCOVER_DEGENERATE = :error
+
 # ============================================================
 # Public interface
 # ============================================================
@@ -8,31 +11,26 @@
 """
     s = gramcover(a, b, A)
     s = gramcover(a, b, A, w::AbstractVector)
-    s = gramcover(a, b, A, W::AbstractMatrix)
+    s = gramcover(a, b, A, W::AbstractMatrix; degenerate=:$(GRAMCOVER_DEGENERATE))
     s = gramcover(a, b, sc::SupportComponents)
     s = gramcover(a, b, sc::SupportComponents, w::AbstractVector)
-    s = gramcover(a, b, sc::SupportComponents, W::AbstractMatrix)
+    s = gramcover(a, b, sc::SupportComponents, W::AbstractMatrix; degenerate=:$(GRAMCOVER_DEGENERATE))
 
-Given an asymmetric cover `a[i]*b[j] >= abs(A[i,j])` — from [`cover`](@ref),
-[`cover_min`](@ref), or any other solver producing such a pair — return a
-symmetric cover `s` of a (weighted) Gram matrix of `A`, without forming that
-Gram matrix: `s[j]*s[k] >= abs(G[j,k])` for every `j`, `k`, where `G = A'*A`
-for the two-argument form, `G = A'*Diagonal(w)*A` for the vector-weighted
-form, and `G = A'*W*A` for the general form. Only `abs.(W)` enters the bound,
-so `W` need not be positive definite, positive semidefinite, or even
-symmetric; passing `W::Diagonal` is equivalent to passing `W.diag` as `w`.
+Given an asymmetric cover `a[i]*b[j] >= abs(A[i,j])`, return a symmetric cover
+`s` of a weighted Gram matrix without forming it: `s[j]*s[k] >= abs(G[j,k])`,
+where `G` is `A'*A`, `A'*Diagonal(w)*A`, or `A'*W*A`. Only `abs.(W)` enters the
+bound, so `W` need not be symmetric or positive semidefinite. Passing
+`W::Diagonal` is equivalent to passing `W.diag`.
 
-`(a, b)` covering `A` is a precondition, not verified here — use
-[`iscover`](@ref)`(a, b, A)` to check it beforehand. `gramcover` composes with
-any asymmetric cover this package produces: [`cover`](@ref), [`cover_min`](@ref),
-[`soft_cover`](@ref), and their mutating and `_min` forms.
+`(a, b)` must cover `A`; use [`iscover`](@ref)`(a, b, A)` to check it.
 
-Only the connected components of `A`'s support enter the two- and
-vector-weighted forms, so a caller holding an
-[`support_components`](@ref)`(A)` result may pass it in place of `A`; the
-matrix forms are exactly that call followed by the `sc` form. `sc.rowax` and
-`sc.colax` then play the roles of `axes(A, 1)` and `axes(A, 2)` in the axis
-requirements on `a`, `b`, and `w`/`W`.
+The methods accepting [`SupportComponents`](@ref) reuse a previous
+[`support_components`](@ref)`(A)` computation. For these methods, `sc.rowax` and
+`sc.colax` replace `axes(A, 1)` and `axes(A, 2)` in the axis requirements.
+
+Equivalent componentwise rescalings of `(a, b)` produce the same `s`. Some
+coupling patterns make this impossible; the general form then throws an
+`ArgumentError`. Set `degenerate=:uniform` to return a gauge-dependent cover.
 
 # Extended help
 
@@ -51,45 +49,37 @@ row, so for `W` diagonal the sum needed is exactly the one over the rows of
 chain of such couplings form a group. Within a group, writing
 `M[p,q] = Σ_{i ∈ rows(p), i' ∈ rows(q)} a[i]*abs(W[i,i'])*a[i']` for the block
 sum over components `p` and `q`, `abs(G[j,k]) <= M[p,q]*b[j]*b[k]` for `j ∈ p`
-and `k ∈ q`. Take `M` symmetric, as it is whenever `abs.(W)` is; the general
-case needs one substitution, made in the remark below. Then
+and `k ∈ q`. When `abs.(W)` is not symmetric neither is `G`, and since
+`s[j]*s[k]` is a single number bounding both `abs(G[j,k])` and `abs(G[k,j])`, the
+block sums enter only through their symmetrization
+`Ms[p,q] = max(M[p,q], M[q,p])`. What remains is to divide each bound between its
+two components: any `σ` with `σ[p]*σ[q] >= Ms[p,q]` for every `p`, `q` yields
 
-    s[j] = sqrt(Σ_q M[p,q] * sqrt(M[p,p]/M[q,q])) * b[j],  j ∈ p
+    s[j] = σ[p]*b[j],  j ∈ p
 
-meets every one of those bounds: the `q` term of the sum for `s[j]` and the `p`
-term of the one for `s[k]` already multiply to `M[p,q]*M[q,p] = M[p,q]^2`, and
-no term is negative. For a component that no `W` entry couples to another, the
-group is a single component and this reduces to the diagonal-`W` formula above.
-`G[j,k]` is exactly zero across distinct groups, and columns with no support get
-`s[j] = 0`.
+This is a symmetric cover of the `k×k` matrix `Ms`, where `k` is the number of
+components in the group. The implementation computes
+[`symcover_min`](@ref)`(AbsLog{2}(), Ms)`. For a component that no `W` entry
+couples to another, this reduces to the diagonal-`W` formula. Entries of `G`
+across distinct groups vanish, and unsupported columns get `s[j] = 0`.
 
-Rescaling `a -> γ*a`, `b -> b/γ` within any support component — independently
-per component — leaves `s` unchanged. Unlike `b` alone, `s` is therefore safe to
-use as an absolute scale, e.g. a Levenberg-Marquardt damping term
-`λ*Diagonal(s.^2)`: a caller should maintain the dimensionless `λ` against `s`,
-not against a quantity that depends on which gauge the cover solver happened to
-return. What pins the relative scale of coupled components is the ratio
-`M[p,p]/M[q,q]`, extended to a component whose own block vanishes (`abs.(W)` zero
-throughout it, though `W` couples it to a sibling) by propagating along the
-coupling. A group in which *every* component's own block vanishes is the one
-exception, and it is a genuine degeneracy rather than a shortcoming of the
-formula: the gauge acts on the surviving off-diagonal data as
-`M[p,q] -> γ[p]*γ[q]*M[p,q]`, which fixes each *product* `s[j]*s[k]` across two
-components but nothing about how it divides between them. Such a group falls back
-to the uniform total `sqrt(Σ_{p,q} M[p,q])`, which covers, but there `s` depends
-on the factorization and not on the products alone.
+Rescaling `a -> γ*a`, `b -> b/γ` within each support component leaves `s`
+unchanged. Under this rescaling, `Ms[p,q] -> γ[p]*γ[q]*Ms[p,q]` and the minimal
+cover changes as `σ[p] -> γ[p]*σ[p]`; therefore `σ[p]*b[j]` is invariant. This
+makes `s` suitable as an absolute scale, such as in a Levenberg-Marquardt term
+`λ*Diagonal(s.^2)`.
 
-With more than one component and no coupling between them, `s[j] <= norm(a)*b[j]`,
-strictly tighter whenever another component carries weight — the naive global
-bound obtained by ignoring the block structure entirely. Coupled components admit
-no such uniform comparison: fixing the gauge redistributes tightness among them,
-resulting in an `s` that depends only on the products at the cost of individual entries
-that a gauge-dependent global sum can beat.
+The invariant cover does not exist when a connected part of `Ms`'s support graph
+has an edge, no loop, and is bipartite. Scaling one color class by `t` and the
+other by `1/t` leaves `Ms` unchanged but changes the individual `σ` values.
+`gramcover` throws an `ArgumentError` in this case. With
+`degenerate=:uniform`, it instead uses
+`σ[p] = sqrt(Σ_{p,q} Ms[p,q])`, which depends on the gauge of `(a, b)`. A loop
+or odd cycle removes this degeneracy.
 
-When `abs.(W)` is not symmetric, neither is `G`, and since `s[j]*s[k]` is a
-single number bounding both `abs(G[j,k])` and `abs(G[k,j])`, `M[p,q]` is
-replaced throughout by `max(M[p,q], M[q,p])`; nothing else changes, the gauge
-included, since that replacement is itself symmetric.
+For uncoupled components, `s[j] <= norm(a)*b[j]`, with a strict inequality when
+another component carries weight. There is no uniform comparison for coupled
+components because changing the gauge redistributes tightness among them.
 
 When a positive-semidefinite `W` is available only as an operator — `W[i,i]`
 readable, `W[i,i']` for `i != i'` not — `abs(W[i,i']) <= sqrt(W[i,i]*W[i',i'])`
@@ -98,8 +88,11 @@ yields the looser diagonal-only bound
 from `diag(W)`. The methods here always compute the tighter entrywise form
 above, which requires `W`'s entries.
 
-The accumulation feeding each `sqrt` is inflated to guarantee coverage despite
-naive-summation roundoff, without ever forming `G` to check it.
+The minimal-cover solve has size `k`, the number of support components coupled
+by `W`. Constructing `Ms` also costs `O(k^2)` and usually dominates the solve.
+
+Roundoff margins on the block sums and a final feasibility check preserve the
+cover in floating-point arithmetic.
 
 See also: [`gramcover!`](@ref), [`symcover`](@ref), [`cover`](@ref), [`iscover`](@ref).
 
@@ -129,11 +122,12 @@ gramcover(a::AbstractVector, b::AbstractVector, A::AbstractMatrix) =
 gramcover(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, w::AbstractVector) =
     gramcover(a, b, support_components(A), w)
 
-gramcover(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, W::Diagonal) =
-    gramcover(a, b, A, W.diag)
+# Accept and validate `degenerate` consistently for every matrix weight.
+gramcover(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, W::Diagonal; degenerate::Symbol=GRAMCOVER_DEGENERATE) =
+    (_gc_check_degenerate(degenerate); gramcover(a, b, A, W.diag))
 
-gramcover(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, W::AbstractMatrix) =
-    gramcover(a, b, support_components(A), W)
+gramcover(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, W::AbstractMatrix; kwargs...) =
+    gramcover(a, b, support_components(A), W; kwargs...)
 
 function gramcover(a::AbstractVector, b::AbstractVector, sc::SupportComponents)
     T = _gc_eltype(a, b)
@@ -147,28 +141,29 @@ function gramcover(a::AbstractVector, b::AbstractVector, sc::SupportComponents, 
     return gramcover!(s, a, b, sc, w)
 end
 
-gramcover(a::AbstractVector, b::AbstractVector, sc::SupportComponents, W::Diagonal) =
-    gramcover(a, b, sc, W.diag)
+gramcover(a::AbstractVector, b::AbstractVector, sc::SupportComponents, W::Diagonal; degenerate::Symbol=GRAMCOVER_DEGENERATE) =
+    (_gc_check_degenerate(degenerate); gramcover(a, b, sc, W.diag))
 
-function gramcover(a::AbstractVector, b::AbstractVector, sc::SupportComponents, W::AbstractMatrix)
+function gramcover(a::AbstractVector, b::AbstractVector, sc::SupportComponents, W::AbstractMatrix; kwargs...)
     T = _gc_eltype(a, b, W)
     s = similar(Array{T}, sc.colax)
-    return gramcover!(s, a, b, sc, W)
+    return gramcover!(s, a, b, sc, W; kwargs...)
 end
 
 """
     s = gramcover!(s, a, b, A)
     s = gramcover!(s, a, b, A, w::AbstractVector)
-    s = gramcover!(s, a, b, A, W::AbstractMatrix)
+    s = gramcover!(s, a, b, A, W::AbstractMatrix; degenerate=:$(GRAMCOVER_DEGENERATE))
     s = gramcover!(s, a, b, sc::SupportComponents)
     s = gramcover!(s, a, b, sc::SupportComponents, w::AbstractVector)
-    s = gramcover!(s, a, b, sc::SupportComponents, W::AbstractMatrix)
+    s = gramcover!(s, a, b, sc::SupportComponents, W::AbstractMatrix; degenerate=:$(GRAMCOVER_DEGENERATE))
 
 Mutating counterpart of [`gramcover`](@ref): writes the symmetric cover of the
 (weighted) Gram matrix into `s` and returns it, rather than allocating a new
 vector. `eachindex(s)` must match `axes(A, 2)` — `sc.colax` for the
 [`SupportComponents`](@ref) forms — in addition to the axis requirements
-[`gramcover`](@ref) places on `a`, `b`, and `w`/`W`.
+[`gramcover`](@ref) places on `a`, `b`, and `w`/`W`, and shares its
+`degenerate` keyword.
 
 See also: [`gramcover`](@ref).
 """
@@ -178,11 +173,11 @@ gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::AbstractM
 gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::AbstractMatrix, w::AbstractVector) =
     gramcover!(s, a, b, support_components(A), w)
 
-gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::AbstractMatrix, W::Diagonal) =
-    gramcover!(s, a, b, A, W.diag)
+gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::AbstractMatrix, W::Diagonal; degenerate::Symbol=GRAMCOVER_DEGENERATE) =
+    (_gc_check_degenerate(degenerate); gramcover!(s, a, b, A, W.diag))
 
-gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::AbstractMatrix, W::AbstractMatrix) =
-    gramcover!(s, a, b, support_components(A), W)
+gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, A::AbstractMatrix, W::AbstractMatrix; kwargs...) =
+    gramcover!(s, a, b, support_components(A), W; kwargs...)
 
 function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc::SupportComponents)
     _check_gramcover_ab(a, b, sc)
@@ -216,10 +211,11 @@ function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc:
     return _write_gramcover!(s, b, sc.colcomp, oc, m, n)
 end
 
-gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc::SupportComponents, W::Diagonal) =
-    gramcover!(s, a, b, sc, W.diag)
+gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc::SupportComponents, W::Diagonal; degenerate::Symbol=GRAMCOVER_DEGENERATE) =
+    (_gc_check_degenerate(degenerate); gramcover!(s, a, b, sc, W.diag))
 
-function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc::SupportComponents, W::AbstractMatrix)
+function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc::SupportComponents, W::AbstractMatrix; degenerate::Symbol=GRAMCOVER_DEGENERATE)
+    _gc_check_degenerate(degenerate)
     _check_gramcover_ab(a, b, sc)
     _check_gramcover_s(s, sc)
     axes(W) == (sc.rowax, sc.rowax) ||
@@ -284,7 +280,7 @@ function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc:
 
     # Block sums `M[r][p,q] = Σ_{i ∈ comp p, i' ∈ comp q} a[i]*abs(W[i,i'])*a[i']`
     # over the components merged into root `r`; `nterm` counts the terms of each,
-    # for the roundoff inflation in `_gc_group_scales!`.
+    # for the roundoff inflation in `_gc_group_scales`.
     T = typeof(_gc_term(a, W))
     M = Vector{Matrix{T}}(undef, ncomp)
     nterm = Vector{Matrix{Int}}(undef, ncomp)
@@ -309,7 +305,7 @@ function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc:
         end
     end
 
-    sq = _gc_group_scales!(members, M, nterm)
+    sq = _gc_group_scales(members, M, nterm, degenerate)
     oc = first(sc.colax) - 1
     return _write_gramcover_sq!(s, b, sc.colcomp, oc, sq)
 end
@@ -326,26 +322,27 @@ function _check_gramcover_ab(a::AbstractVector, b::AbstractVector, sc::SupportCo
     return nothing
 end
 
+function _gc_check_degenerate(degenerate::Symbol)
+    degenerate in (:error, :uniform) ||
+        throw(ArgumentError("`degenerate` must be :error or :uniform, got :$degenerate"))
+    return degenerate
+end
+
 function _check_gramcover_s(s::AbstractVector, sc::SupportComponents)
     eachindex(s) == sc.colax ||
         throw(DimensionMismatch("`s` holds one Gram scale per support column: eachindex(s) must be $(string(sc.colax)), got $(string(eachindex(s)))"))
     return nothing
 end
 
-# The per-term type of the sum accumulated into `m[c]`, computed from `zero`
-# values so it tracks the units and precision of `a` (and `w`/`W`) without
-# hardcoding a numeric type.
+# Infer the accumulator type while preserving units and precision.
 _gc_term(a::AbstractVector) = zero(eltype(a)) * zero(eltype(a))
 _gc_term(a::AbstractVector, w::AbstractVector) = abs(zero(eltype(w))) * zero(eltype(a)) * zero(eltype(a))
 _gc_term(a::AbstractVector, W::AbstractMatrix) = zero(eltype(a)) * abs(zero(eltype(W))) * zero(eltype(a))
 
-# The element type `gramcover` allocates `s` at: the type of `sqrt` of a
-# `_gc_term` times a `b`-scale, matching what `_write_gramcover!` actually computes.
+# Element type of the output scale.
 _gc_eltype(a, b, args...) = typeof(sqrt(_gc_term(a, args...)) * zero(eltype(b)))
 
-# Turn per-component sums `m[c]`, each accumulated from `n[c]` nonnegative terms,
-# into per-component scales: the uncoupled case, where component `c`'s cover is
-# just `sqrt(m[c])`.
+# Convert uncoupled component sums to scales.
 #
 # Naive summation of `n` nonnegative terms computes `fl(Σ) >= Σ/(1+γ)` with
 # `γ = n*ulp/(1-n*ulp)`, `ulp = eps(scalarT)/2`; inflating `sqrt(m[c])` by
@@ -358,38 +355,9 @@ function _write_gramcover!(s::AbstractVector, b::AbstractVector, colcomp::Vector
     return _write_gramcover_sq!(s, b, colcomp, oc, sq)
 end
 
-# Per-component scales `sq[c]` from the block sums `M[r][p,q]` of each merged
-# group: `s[j] = sq[c]*b[j]` covers `A'*W*A` iff `sq[p]*sq[q] >= max(M[p,q], M[q,p])`
-# for every pair of components `p`, `q` in one group (the `max` because `W` need
-# not be symmetric, so the `(j,k)` and `(k,j)` entries of the Gram matrix are
-# bounded by different block sums).
-#
-# Writing `d[p] = M[p,p]`, the choice
-#
-#     sq[p] = sqrt(Σ_q max(M[p,q], M[q,p]) * sqrt(d[p]/d[q]))
-#
-# satisfies that: the `q` term of `sq[p]^2` and the `p` term of `sq[q]^2` alone
-# multiply to `max(M[p,q], M[q,p])^2`, and every term is nonnegative.
-#
-# The proof needs only that `d` be strictly positive, so `d` is purely a choice of
-# gauge, and it is the choice that makes `s` independent of the gauge `a -> γ*a`,
-# `b -> b/γ` applied independently per component. Under that gauge
-# `M[p,q] -> γ[p]*γ[q]*M[p,q]`, so any `d` with `d[p] -> γ[p]^2*d[p]` makes each
-# term `M[p,q]*sqrt(d[p]/d[q])` scale by `γ[p]^2`, leaving `sq[p]*b[j]` unchanged.
-# A uniform group total `sqrt(Σ_{p,q} M[p,q])`, which mixes blocks that scale by
-# different powers of `γ`, does not have that property.
-#
-# `d[p] = M[p,p]` transforms that way, and is the choice wherever it is nonzero.
-# Where it is zero — `abs.(W)` vanishing throughout a component even though `W`
-# couples it to a sibling — `d[p] = M[p,q]^2/d[q]` for an already-assigned
-# neighbor `q` transforms the same way, and `M[p,q] > 0` for every coupled pair,
-# so propagating outward from the nonzero diagonals covers the whole group.
-#
-# A group whose diagonal vanishes entirely leaves no pivot to propagate from, and
-# no choice of `d` would help: the gauge sends `M[p,q] -> γ[p]*γ[q]*M[p,q]`, so
-# with only off-diagonal blocks surviving it fixes the products `sq[p]*sq[q]` but
-# not the split between them. That group falls back to the uniform total.
-function _gc_group_scales!(members::Vector{Vector{Int}}, M::Vector{<:Matrix}, nterm::Vector{Matrix{Int}})
+# Compute a minimal symmetric cover of each symmetrized block matrix. Minimality
+# makes the result invariant under componentwise rescaling of `(a, b)`.
+function _gc_group_scales(members::Vector{Vector{Int}}, M::Vector{<:Matrix}, nterm::Vector{Matrix{Int}}, degenerate::Symbol)
     T = eltype(eltype(M))
     scalarT = scalar_type(T)
     sq = [sqrt(zero(T)) for _ in 1:length(members)]
@@ -402,54 +370,76 @@ function _gc_group_scales!(members::Vector{Vector{Int}}, M::Vector{<:Matrix}, nt
             sq[mems[1]] = sqrt(Mr[1, 1]) * (1 + (nr[1, 1] + 3) * eps(scalarT))
             continue
         end
-        Ms = [max(Mr[p, q], Mr[q, p]) for p in 1:k, q in 1:k]   # `W` need not be symmetric
-        d = _gc_gauge(Ms)
-        if d === nothing
-            v = sqrt(sum(Mr)) * (1 + (sum(nr) + 3) * eps(scalarT))
+        # Account for summation and multiplication roundoff in each block.
+        Ms = [max(Mr[p, q], Mr[q, p]) * (1 + (max(nr[p, q], nr[q, p]) + 1) * eps(scalarT))
+              for p in 1:k, q in 1:k]
+        if _loopless_bipartite(Ms)
+            degenerate === :uniform || throw(ArgumentError(
+                "gramcover: $k coupled support components have a loopless bipartite support graph, so no gauge-invariant cover exists; pass `degenerate=:uniform` to allow a gauge-dependent cover"))
+            v = sqrt(sum(Ms)) * (1 + (k * k + 3) * eps(scalarT))
             for p in 1:k
                 sq[mems[p]] = v
             end
             continue
         end
+        σ = _gc_inflate_to_cover(symcover_min(AbsLog{2}(), Ms), Ms, scalarT)
         for p in 1:k
-            acc = zero(T)
-            nt = 0
-            for q in 1:k
-                acc += Ms[p, q] * sqrt(d[p] / d[q])
-                nt += max(nr[p, q], nr[q, p])
-            end
-            # `nt` terms of naive summation, plus a division and a `sqrt` per term,
-            # plus the outer `sqrt` and the multiply by `b[j]`.
-            sq[mems[p]] = sqrt(acc) * (1 + (nt + 3k + 3) * eps(scalarT))
+            # The extra factor is for the multiply by `b[j]` in `_write_gramcover_sq!`.
+            sq[mems[p]] = σ[p] * (1 + 3 * eps(scalarT))
         end
     end
     return sq
 end
 
-# Strictly positive gauge `d` for one group's symmetrized block sums `Ms`: the
-# diagonal where it is nonzero, propagated as `Ms[p,q]^2/d[q]` from an assigned
-# neighbor `q` where it is not. Returns `nothing` if the diagonal is entirely zero.
-# The propagation takes the lowest-indexed assigned neighbor, so `d` depends on
-# `Ms` and the component ordering alone — never on the gauge it is fixing.
-function _gc_gauge(Ms::Matrix)
-    k = size(Ms, 1)
-    d = [Ms[p, p] for p in 1:k]
-    any(!iszero, d) || return nothing
-    while any(iszero, d)
-        progress = false
-        for p in 1:k
-            iszero(d[p]) || continue
-            q = findfirst(q -> !iszero(d[q]) && !iszero(Ms[p, q]), 1:k)
-            q === nothing && continue
-            d[p] = Ms[p, q] * Ms[p, q] / d[q]
-            progress = true
+# Uniformly inflate `σ` until it covers `Ms` in floating-point arithmetic. The
+# retry guards against a downward-rounded inflation factor.
+function _gc_inflate_to_cover(σ::AbstractVector, Ms::AbstractMatrix, ::Type{scalarT}) where {scalarT}
+    for _ in 1:8
+        ρ = one(scalarT)
+        for q in axes(Ms, 2), p in axes(Ms, 1)
+            iszero(Ms[p, q]) && continue
+            pq = σ[p] * σ[q]
+            iszero(pq) &&
+                throw(ErrorException("gramcover: zero scale on a coupled component; please report this with the inputs"))
+            ρ = max(ρ, scalarT(Ms[p, q] / pq))
         end
-        # Every pair the union-find merged has `Ms[p,q] > 0`, so the group is
-        # connected and a sweep that assigns nothing cannot happen; guard anyway
-        # rather than spin.
-        progress || error("gramcover: group with $(count(iszero, d)) unreachable component(s); please report this with the inputs")
+        ρ <= 1 && return σ
+        σ = σ .* (sqrt(ρ) * (1 + 4 * eps(scalarT)))
     end
-    return d
+    throw(ErrorException("gramcover: group cover did not reach feasibility; please report this with the inputs"))
+end
+
+# True when a nontrivial connected component of `Ms`'s support graph is
+# loopless and bipartite.
+#
+# Zero-weight components are isolated and do not create a degeneracy.
+function _loopless_bipartite(Ms::AbstractMatrix)
+    k = size(Ms, 1)
+    color = zeros(Int8, k)
+    stack = Int[]
+    for root in 1:k
+        iszero(color[root]) || continue
+        color[root] = 1
+        push!(stack, root)
+        hasedge = hasloop = false
+        bipartite = true
+        while !isempty(stack)
+            p = pop!(stack)
+            iszero(Ms[p, p]) || (hasloop = true)
+            for q in 1:k
+                (q == p || iszero(Ms[p, q])) && continue
+                hasedge = true
+                if iszero(color[q])
+                    color[q] = -color[p]
+                    push!(stack, q)
+                elseif color[q] == color[p]
+                    bipartite = false
+                end
+            end
+        end
+        hasedge && !hasloop && bipartite && return true
+    end
+    return false
 end
 
 # Write `s[j] = sq[c]*b[j]` for `j` in component `c` (`colcomp[j - oc]`), and
