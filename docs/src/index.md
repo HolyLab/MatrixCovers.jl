@@ -15,30 +15,26 @@ C_{ij} \;\geq\; |A_{ij}| \quad \text{for all } i, j.
 For a symmetric matrix the cover is symmetric (`b = a`), so a single vector
 suffices: `a[i] * a[j] >= abs(A[i, j])`.
 
-An *optimal cover* is one for which `C` is "as tight as possible" in bounding
-`A` (equivalently, no larger than strictly necessary), by criteria that will be
-described below.
+A *minimal cover* chooses `C` "as tight as possible" in bounding `A`, by
+criteria that will be described below.
 
-This package also supports *soft covers*: these satisfy
-`C[i, j] ⪆ abs(A[i, j])`, meaning that `C` matches or exceeds `A` at most indexes
-but not necessarily all; this intuitive notion will be made concrete
-below.
+The package also supports *soft covers*, which penalize uncovered entries instead
+of requiring every inequality to hold.
 
 ## Why covers?
 
 Covers provide a natural **scale-covariant** "summary" of a matrix.  If you
 rescale rows by a positive diagonal factor `D_r` and columns by `D_c`, the
-optimal cover transforms as `a → D_r * a`, `b → D_c * b`, exactly mirroring
-how the matrix entries change.  Scalar summaries like `norm(A)` or
+optimal cover transforms as `a → D_r * a`, `b → D_c * b`, so the product `a * b'`
+transforms identically to `A`.  Scalar summaries like `norm(A)` or
 `maximum(abs, A)` do not have this property and therefore implicitly encode an
 arbitrary choice of units.
 
-Most users will employ matrices that store pure numbers, and this package works
-well with such matrices. But to emphasize the scale-covariance, we'll start with
-an example of a 3×3 matrix whose rows and columns correspond to physical
-variables with different units — position in meters, velocity in m/s, force in
+While most users will employ matrices that store pure numbers, we'll start with
+an example of a 3×3 matrix whose rows and columns correspond to *physical
+variables with different units* — position in meters, velocity in m/s, force in
 Newtons.  Loading [Unitful](https://github.com/PainterQubits/Unitful.jl) lets
-the matrix carry those units itself:
+the matrix express those units directly:
 
 ```jldoctest coverunits
 julia> using MatrixCovers, Unitful
@@ -58,12 +54,9 @@ julia> round.(typeof.(a), a; digits=6)
     0.001 N^-1
 ```
 
-`A[i,j]` has units `1/(u[i]*u[j])` (modeling a Hessian matrix for functions of
-parameter vectors with units `u[i]`), so `a[i]` comes back with gradient-like
-units of `1/u[i]`: the cover provides each variable's natural scale inferred
-from `A`, here 1 mm, 1 m/s, and 1 kN. Had we expressed the original matrix in
-those units directly, we would have gotten the equivalent cover stated in those
-units.
+`A[i,j]` has units `1/(u[i]*u[j])`, as in a Hessian whose parameters have units
+`u[i]`. The cover has units `1/u[i]` and identifies scales of 1 mm, 1 m/s, and
+1 kN. Had we expressed `A` in those units, we would have gotten the equivalent cover.
 
 Normalizing by the cover cancels the units along with the magnitudes, leaving a
 matrix that is all-ones, dimensionless, and scale-invariant:
@@ -76,13 +69,13 @@ julia> round.(A ./ (a .* a'); digits=6)
  1.0  1.0  1.0
 ```
 
-It is worth noting that this yields 1 only for entries where the cover bound is
-*tight*; had `A` been, say, diagonal, then `A ./ (a .* a')` would also be diagonal.
+An entry is 1 only where the cover bound is tight, and this is not guaranteed for all matrices.
+For example, given diagonal `A`, the normalized matrix is also diagonal.
 
 A cover exists only when the units of `A` factor as
 `unit(A[i,j]) == unit(a[i])*unit(b[j])`, and a matrix that fails this is rejected with a
-`DimensionMismatch`.  This requirement is not exhorbitant: without it, the terms
-in a row of `A*x` carry different units, so `A*x` is undefined for every `x`.
+`DimensionMismatch`. Without it, the terms in a row of `A*x` have incommensurate
+units and cannot be added, so `A*x` is undefined for every `x`.
 If a matrix can be used in matrix-vector multiplication, it has a cover.
 
 ## Penalty functions
@@ -146,38 +139,26 @@ You can override the default penalty by supplying it as an argument to the solve
 | [`soft_symcover_min`](@ref) | yes | soft (penalized) | `AbsLog{2}`, `AbsLinear` | native for `AbsLog{2}`; else JuMP |
 | [`soft_cover_min`](@ref) | no | soft (penalized) | `AbsLog{2}`, `AbsLinear` | native for `AbsLog{2}`; else JuMP |
 
-The two soft tiers are separated by a different axis than the two hard ones.  For hard
-covers, [`symcover`](@ref) trades optimality for speed while guaranteeing feasibility, and
-[`symcover_min`](@ref) is optimal.  Both soft tiers minimize the same unconstrained
-objective, and differ instead in what they promise about reaching its minimum:
+For hard covers, [`symcover`](@ref) trades optimality for speed while
+[`symcover_min`](@ref) minimizes the selected objective. The soft solvers differ
+in their convergence guarantees:
 
-- [`soft_symcover`](@ref) and [`soft_cover`](@ref) are **always native and best-effort.**
-  They require no extension for any penalty, and they own their multistart — but what they
-  return is a coordinate-descent fixed point, which for the non-convex and nonsmooth
-  penalties need not be a minimizer.
-- [`soft_symcover_min`](@ref) and [`soft_cover_min`](@ref) return a **true minimizer of the
-  basin they start in, and may require an extension.**  `AbsLog{2}` is native; the
-  `AbsLinear` penalties need JuMP and Ipopt; `AbsLog{1}` is not implemented.
+- [`soft_symcover`](@ref) and [`soft_cover`](@ref) use native coordinate descent
+  and multistart. For nonconvex or nonsmooth penalties they may stop at a fixed
+  point that is not a local minimum.
+- [`soft_symcover_min`](@ref) and [`soft_cover_min`](@ref) find a local minimum.
+  `AbsLog{2}` is native; `AbsLinear` requires JuMP and Ipopt; `AbsLog{1}` is not
+  implemented.
 
-Both reduce to the same trade: cheap and always available, against best quality and
-possibly an extra dependency.
+Under `AbsLog{2}` the objective is convex with a unique minimizer, so both soft
+tiers return the same result. Under `AbsLog{1}`, only the native coordinate-descent
+solvers are available.
 
-Under `AbsLog{2}` the objective is convex with a single minimizer, so the tiers coincide —
-[`soft_symcover`](@ref) *is* [`soft_symcover_min`](@ref) there, and likewise for the
-asymmetric pair.  That is the degenerate case of the contract rather than an exception to
-it: with one minimizer there is nothing for a best-effort descent and a minimizer to
-disagree about.  Under `AbsLog{1}` they part company most sharply — the soft `AbsLog{1}`
-covers are coordinate descents that reach a deterministic fixed point rather than a
-minimizer, and `soft_symcover_min`/`soft_cover_min` do not accept `AbsLog{1}` at all.
-
-**[`symcover`](@ref), [`cover`](@ref), and any native implementation can be recommended for production use,**
-possibly with relaxed convergence bounds.
-The heuristic solvers are particularly fast: they run in ``O(mn)`` time for an
-``m\times n`` matrix and often land within a few percent of the
-objective-minimal cover (see the quality tests involving
-`test/testmatrices.jl`). Native solvers (both hard and soft) are intermediate, still roughly ``O(mn)`` but
-requiring many iterations (and for non-convex cases, multiple start points by default) for convergence;
-still, they are much faster than their JuMP-counterparts, which are provided mainly as a reference.
+The heuristic solvers run in ``O(mn)`` time for an ``m\times n`` matrix and
+often come within a few percent of the minimum objective. Native iterative
+solvers are also roughly ``O(mn)`` per iteration. JuMP-based methods are slower
+and primarily useful when the native methods do not support the selected
+penalty.
 
 ### Covariance of the heuristics
 
@@ -201,10 +182,8 @@ julia> round.(extrema(P2 ./ P1); digits=3)           # not for the heuristic sol
 (1.0, 1.077)
 ```
 
-The departure is small (bounded by the heuristic's own suboptimality) and both covers are valid, so it matters
-mostly when the covariance itself is what you are relying on.  When it is, use
+Both covers are valid, but the difference matters when covariance is required. Use
 [`symcover_min`](@ref) or [`cover_min`](@ref), whose minimizer is scale-covariant
-by construction.
 
 ### Objective-minimal covers
 
@@ -239,9 +218,8 @@ julia> round(cover_objective(AbsLog{2}(), aq, bq, A); digits=6)
 1.141281
 ```
 
-The native solver is near-exact (relative objective excess typically a few
-``\times 10^{-7}``, growing slowly with problem size) and orders of magnitude
-faster than a general-purpose convex solver.  The other penalties — `AbsLog{1}`
+The native solver typically has relative objective error of a few
+``\times 10^{-7}``, growing slowly with problem size. The other penalties — `AbsLog{1}`
 (a linear program) and the non-convex `AbsLinear` variants — are solved through
 [JuMP](https://jump.dev/) and are loaded on demand as a package extension:
 
@@ -269,9 +247,8 @@ julia> round.(a * b'; digits=6)            # tight on four of the six entries
 The solver returns values good to roughly solver tolerance, so these examples
 round before displaying.
 
-The soft `*_min` solvers divide along the same line, but not at the same place:
-[`soft_symcover_min`](@ref) and [`soft_cover_min`](@ref) solve `AbsLog{2}` natively and
-reach for JuMP with Ipopt only for the `AbsLinear` penalties.  They do not accept
+[`soft_symcover_min`](@ref) and [`soft_cover_min`](@ref) solve `AbsLog{2}`
+natively and use JuMP with Ipopt for `AbsLinear`. They do not accept
 `AbsLog{1}`; the soft `AbsLog{1}` covers are available through [`soft_symcover`](@ref) and
 [`soft_cover`](@ref), which are native.
 
@@ -288,11 +265,9 @@ support graph of `A` (rows and columns as vertices, stored nonzeros as edges),
 so the sums are taken within each component separately. This convention is not
 scale-invariant but has no impact on the cover itself.
 
-Other penalties may be more degenerate. The `AbsLog{1}()` penalty is identical
-over a whole face of the feasible polytope, and its members are genuinely
-different covers — the products `a[i]*b[j]` differ — that merely happen to score
-the same objective. To make the result deterministic, we select the one that
-additionally minimizes the `AbsLog{2}` objective.
+The `AbsLog{1}()` minimum can be a face of the feasible polytope containing
+different covers with the same objective. The implementation returns the member
+that also minimizes the `AbsLog{2}` objective.
 
 `AbsLinear` penalties typically have isolated minima, so are not as degenerate
 as `AbsLog{1}()`, but these minima occur in separate basins. There is no
@@ -300,41 +275,34 @@ guarantee of global optimality.
 
 ### Starting points: initialize and refine
 
-For objectives with multiple minima, the solver starts from a specified point and descends.
-At a lower level, this package's interface is organized in three layers:
+For objectives with multiple minima, the result can depend on the starting
+point. The interface has three layers:
 
-- **Initializers** name the starting points.  [`initialize_symcover`](@ref) and
+- **Initializers** construct starting points. [`initialize_symcover`](@ref) and
   [`initialize_cover`](@ref) take a `strategy` — `:geomean`, `:leaveout`, `:diagfeasible`,
   or `:hardcover` — and return that point.  Each is a property of `A` alone; no objective
-  is involved, so an initializer takes no penalty.  A second keyword, `feasible`, says how
-  the point is brought up to covering `A`: `:inflate` (the default) scales it bodily by one
+  is involved, so an initializer takes no penalty. A second keyword, `feasible`,
+  controls how the point is made to cover `A`: `:inflate` (the default) applies one
   common factor, `:boost` raises only the rows touching a violated entry, and `:none`
-  leaves it as it is.  The hard-cover solvers need a cover, so they take one of the first
-  two; the soft covers want `:none`, since forcing the geometric mean to cover `A` would
-  spoil the very property that makes it the soft `AbsLog{2}` optimum.
+  leaves it unchanged. Hard-cover solvers use one of the first two; soft-cover
+  solvers use `:none`.
 
-  The two feasible routes land on the boundary at different points, hence in different
-  basins — which is why the choice is a named part of the start rather than an internal
-  detail.  The heuristic [`cover`](@ref) is itself a composition of these: the geometric
-  mean, boosted, then tightened.
+  The two feasible routes reach different points on the boundary and can enter
+  different basins. The heuristic [`cover`](@ref) computes the geometric mean,
+  boosts it, and then tightens it.
 - **Refiners** improve a starting point in place, and are the `!`-suffixed forms of the
   solvers: [`symcover_min!`](@ref), [`cover_min!`](@ref), [`soft_symcover!`](@ref),
   [`soft_cover!`](@ref), [`soft_symcover_min!`](@ref), and [`soft_cover_min!`](@ref)
-  validate the start, then optimize from it.  Which basin they reach is the caller's
-  choice, by construction, and supplying the start is the caller's job.  The hard refiners
-  require a start that covers `A`; the soft ones do not, since their objective constrains
-  nothing — build theirs with `feasible=:none`.
+  validate a caller-provided start, then optimize from it. Hard refiners require
+  a cover; soft refiners accept starts built with `feasible=:none`.
 - **Solvers** bundle the two.  [`symcover_min`](@ref), [`cover_min`](@ref),
   [`soft_symcover`](@ref), [`soft_cover`](@ref), [`soft_symcover_min`](@ref), and
-  [`soft_cover_min`](@ref) refine every start on a menu (the `strategies` keyword, or the
-  multistart's own list) and return the best cover by [`cover_objective`](@ref), so their
-  result depends on `A` and not on an initialization the caller never chose.
+  [`soft_cover_min`](@ref) refine a set of starts (the `strategies` keyword or the
+  multistart list) and return the best result by [`cover_objective`](@ref).
 
-That is the rule for the whole grid: **the plain form owns the menu, so its result is a
-property of `A`; the `!` form refines the one start you give it, so its result is a
-property of `A` and that start.**  [`symcover!`](@ref) and [`cover!`](@ref) are the
-exception that proves it — they are initializers, not refiners, and construct their cover
-from scratch rather than reading the vector passed in.
+In general, a plain form chooses among several starts, while a `!` form refines
+the supplied start. [`symcover!`](@ref) and [`cover!`](@ref) are initializers and
+overwrite their vector arguments.
 
 For finer control, you can run these manually:
 
@@ -343,19 +311,19 @@ julia> using MatrixCovers, JuMP, Ipopt   # Ipopt for the AbsLinear penalties
 
 julia> S = [4 1 0; 1 1 5; 0 5 2];
 
-julia> round.(symcover_min(AbsLinear{2}(), S); digits=6)   # multistart over the whole menu
+julia> round.(symcover_min(AbsLinear{2}(), S); digits=6)   # use all default starts
 3-element Vector{Float64}:
  2.0
  1.0
  5.0
 
-julia> round.(symcover_min(AbsLinear{2}(), S; strategies=(:geomean,)); digits=6)   # or commit to one start
+julia> round.(symcover_min(AbsLinear{2}(), S; strategies=(:geomean,)); digits=6)   # use one strategy
 3-element Vector{Float64}:
  2.0
  1.0
  5.0
 
-julia> a0 = initialize_symcover(S; strategy=:geomean);     # or drive it yourself
+julia> a0 = initialize_symcover(S; strategy=:geomean);     # construct a start explicitly
 
 julia> symcover_min!(AbsLinear{2}(), a0, S);
 
@@ -383,13 +351,11 @@ rescaling: if `a*b'` covers `A`, then `a*(D*b)'` covers `A*D` — but the
 balanced representative of the rescaled problem is `(γ*a, D*b/γ)` for a
 per-component constant `γ ≠ 1` that depends on `D`.
 
-This has important implications for applications where you might estimate covers
-by composition. Let's take the example of the
-[Levenberg-Marquardt algorithm](https://en.wikipedia.org/wiki/Levenberg%E2%80%93Marquardt_algorithm),
-where you form products `J'*J` of the Jacobian matrix `J`. Suppose `a*b'` is
-a cover of `J`: then `(a'*a) * b * b'` is a cover of `J'*J` (note
-`a'*a` is a scalar). The *tightness* of this cover for `J'*J` depends on the convention
-used to balance `a` and `b`.
+This matters when covers are composed. For example, the
+[Levenberg-Marquardt algorithm](https://en.wikipedia.org/wiki/Levenberg%E2%80%93Marquardt_algorithm)
+uses products `J'*J` of a Jacobian `J`. If `a*b'` covers `J`, then
+`(a'*a) * b * b'` covers `J'*J`, but its tightness and invariance depends on the balance
+convention for `a` and `b`.
 
 To do better, this package provides the Gram cover `s = ` [`gramcover`](@ref)`(a, b, J[, W])`,
 a symmetric cover of `J'*W*J` built from the asymmetric cover of `J`.
@@ -418,8 +384,8 @@ true
 
 ## Worked example: roundoff in `A \ b`
 
-Because a cover names each variable's natural scale, it also says how to measure a
-solution in units that do not depend on how the problem was parameterized.
+A cover provides scales for each variable with which to measure a solution independently
+of the parameterization.
 
 Solving `x = A \ b` is *contravariant*: rescaling `A → D*A*D` and `b → D*b` sends
 `x → x ./ d`, while the cover is covariant, `a → d .* a`.  The products `x .* a` are

@@ -212,9 +212,7 @@ end
 end
 
 @testset "soft_cover_min native AbsLog{2}" begin
-    # `A` has no zero entry, the case in which the geometric mean coincides with the
-    # minimum; the two compute it differently, so they agree to roundoff, not bitwise.
-    # On a sparse support they part company -- see the oracle in `test/soft_covers.jl`.
+    # On dense support, the geometric mean equals the minimum up to roundoff.
     A = [1.0 2.0 3.0; 6.0 5.0 4.0]
     a, b = soft_cover_min(AbsLog{2}(), A)
     a_ref, b_ref = similar(a), similar(b)

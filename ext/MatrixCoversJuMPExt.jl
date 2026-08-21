@@ -62,19 +62,10 @@ end
 # bounds how far the reported AbsLog{1} objective can drift above its true optimum.
 const LEX_L1_SLACK = 1e-9
 
-# Second stage of the lexicographic AbsLog{1} solve, run on the just-optimized `model`.
-# The AbsLog{1} optimum is a whole face of the feasible polytope rather than a point: its
-# members are genuinely different covers — the products a[i]*a[j] differ — that happen to
-# score the same objective, so the solver would otherwise return whichever vertex it landed
-# on. Pinning the AbsLog{1} objective at its optimum and minimizing the AbsLog{2} objective
-# over what remains selects one canonical member: the strictly convex quadratic has a unique
-# minimizer over the face, and both objectives are functions of the residuals alone (which a
-# rescaling A -> D*A*D leaves invariant), so the choice is scale-covariant. This is what makes
-# the result independent of the start.
+# Select a unique point on the optimal AbsLog{1} face by minimizing AbsLog{2}
+# over it. Both objectives depend only on scale-invariant residuals.
 #
-# `lin` is the AbsLog{1} objective and `residuals` the expressions α[i]+α[j]-log|A[i,j]| over
-# the support, one per stored entry — the same convention `cover_objective` sums over, so the
-# quadratic minimized here is the AbsLog{2} objective it reports.
+# `residuals` uses the same support weighting as `cover_objective`.
 function _minimize_l2_over_l1_face!(model, lin, residuals, fname)
     isempty(residuals) && return nothing
     linopt = JuMP.value(lin)

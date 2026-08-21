@@ -13,14 +13,10 @@ Given a square matrix `A` assumed to be symmetric, return a vector `a`
 representing a symmetric hard cover of `A`: `a[i] * a[j] >= abs(A[i, j])` for
 all `i`, `j`.
 
-The initialization is the AbsLog{2} unconstrained minimum (geometric mean of
-nonzero entries per row). It is then boosted to feasibility by a greedy
-max-deficit rule (the most-violated entries are covered first), and `maxiter`
-iterations of the tightening algorithm (Algorithm 1 of the manuscript) are
-applied.
+The method initializes from per-row geometric means, covers the most-violated
+entries first, then applies `maxiter` tightening iterations.
 
-`ϕ` names the penalty the caller would like the cover to do well on.  Currently,
-the heuristic covers ignore `ϕ`, although this behavior may change in future versions.
+`ϕ` is accepted for API compatibility but is currently ignored.
 For a cover that provably minimizes a given `ϕ`, use [`symcover_min`](@ref).
 
 See also: [`symcover!`](@ref), [`symcover_min`](@ref), [`soft_symcover`](@ref), [`cover`](@ref).
@@ -77,11 +73,10 @@ end
     a, b = cover(ϕ, A; maxiter=3)
     a, b = cover(A; maxiter=3)
 
-Given a matrix `A`, return vectors `a` and `b` such that `a[i] * b[j] >= abs(A[i, j])`
-for all `i`, `j`. The initialization is the AbsLog{2}
-unconstrained minimum (geometric mean of nonzero entries per row/column). It is
-then boosted to feasibility by a greedy max-deficit rule (the most-violated
-entries are covered first), and `maxiter` tightening iterations are applied.
+Given a matrix `A`, return vectors `a` and `b` such that
+`a[i] * b[j] >= abs(A[i, j])` for all `i`, `j`. The method initializes from row
+and column geometric means, covers the most-violated entries first, then applies
+`maxiter` tightening iterations.
 
 Only the products `a[i] * b[j]` are determined by the problem: `a -> c*a`, `b -> b/c`
 leaves every one of them unchanged. The split is fixed by the balance convention
@@ -89,8 +84,7 @@ leaves every one of them unchanged. The split is fixed by the balance convention
 column `j`), imposed within each connected component of the support (the gauge acts
 independently on each), as it is throughout the package; see [`cover_min`](@ref).
 
-`ϕ` names the penalty the caller would like the cover to do well on. Currently,
-the heuristic covers ignore `ϕ`, although this behavior may change in future versions.
+`ϕ` is accepted for API compatibility but is currently ignored.
 For a cover that provably minimizes a given `ϕ`, use [`cover_min`](@ref).
 
 See also: [`cover!`](@ref), [`cover_min`](@ref), [`symcover`](@ref).
@@ -149,12 +143,7 @@ function cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs.
     unconstrained_min!(AbsLog{2}(), a, b, A)
     boost_feasible!(a, b, A)
     tighten_cover!(a, b, A; kwargs...)
-    # The boost and the tightening raise and shrink rows and columns independently, so they
-    # leave the gauge wherever they happen to land it. Pin it, so the split reported between
-    # `a` and `b` is the package's convention rather than a residue of the passes above.
-    # The shift is exact in the log-scales but rounds in the products, which the tightening
-    # has driven onto the coverage boundary; the uniform inflation restores exact coverage,
-    # and preserves the balance just set because ∑ nzaᵢ = ∑ nzbⱼ.
+    # Apply the package's balance convention, then restore coverage lost to rounding.
     _balance_cover!(a, b, A)
     return inflate_feasible!(a, b, A)
 end
@@ -237,7 +226,6 @@ end
 #   ∑_{i,j: A[i,j]≠0} (log(a[i]*a[j]) - log|A[i,j]|)²
 # Fills `a` in-place and returns nza[i] = number of nonzero entries in row i.
 # For efficiency, uses a Sherman-Morrison approximation for the pattern of nonzeros. (It's exact when there are no zeros.)
-# This is the "rank-1 solution" described in manuscript section 5.2.
 function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, A::AbstractMatrix) where T
     ax = eachindex(a)
     axes(A) == (ax, ax) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(string(axes(A))), axes(a)=$(string(axes(a)))"))
@@ -655,10 +643,9 @@ end
 # `foreach_support_sym`. Requires a start with strictly positive scale on every
 # supported row (the geometric-mean init from `unconstrained_min!` guarantees this).
 #
-# Unlike `boost_feasible!`, which raises only the rows touching violated entries,
-# this leaves the shape of the starting point untouched and moves it bodily to the
-# feasibility boundary. The two reach different basins of the non-convex AbsLinear
-# objective, which is why `soft_symcover` offers both as starts. The shift depends
+# Unlike `boost_feasible!`, this preserves the shape of the starting point. The
+# two methods can reach different basins of the nonconvex AbsLinear objective.
+# The shift depends
 # on `A` only through the log-deficits at the starting point, which are invariant
 # under a diagonal rescaling `D*A*D`, so the result is scale-covariant. Growing the
 # log-scales directly (rather than multiplying by `exp(t)`) stays finite even when

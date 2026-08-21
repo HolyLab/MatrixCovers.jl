@@ -80,11 +80,7 @@
     end
 
     @testset "the strategies are distinct starts" begin
-        # :hardcover raises only the rows touching violated entries; an inflated :geomean moves
-        # the whole point bodily to the boundary, so it lifts the already-slack rows too.
-        # Reaching the boundary by different routes is what gives the AbsLinear multistart
-        # different basins to choose between. Here rows 1-2 are the violated block and row 3 is
-        # slack, so only the inflation disturbs row 3.
+        # :hardcover changes only violated rows; inflation also changes slack rows.
         A = [1.0 0.1 0.0; 0.1 1.0 0.0; 0.0 0.0 100.0]
         ah = initialize_symcover(A; strategy=:hardcover)
         ag = initialize_symcover(A; strategy=:geomean)

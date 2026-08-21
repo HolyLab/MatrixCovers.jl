@@ -8,8 +8,7 @@
 
 This package computes **covers** of matrices: non-negative vectors `a` and `b`
 such that `a[i] * b[j] >= abs(A[i, j])` for all `i`, `j`.  Covers are the
-natural scale-covariant representation of a matrix — under row/column diagonal
-scaling they transform exactly as the matrix entries do — making them a useful
+natural scale-covariant representation of a matrix, making them a useful
 building block for scale-invariant numerical analysis. In particular, 
 $`\hat A = A ./ (a b^T)`$ is scale-invariant, and because $`|\hat A[i, j]| \le 1`$
 for all `i` and `j`, this simple construct finds applications that range from
