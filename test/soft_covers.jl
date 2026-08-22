@@ -439,6 +439,20 @@ end
     # The `:lsqr` and dense paths solve the same problem.
     @test soft_symcover_min(AbsLog{2}(), sym_zeros; linsolve=:lsqr) ≈
           soft_symcover_min(AbsLog{2}(), sym_zeros; linsolve=:dense) rtol=1e-6
+
+    # The soft cover is the hard worker's cold solve, so it reaches the Woodbury path
+    # too: one sparse Cholesky in place of the dense factorization, same answer.
+    rng = StableRNG(77)
+    X = exp.(randn(rng, 40, 40))
+    Adense = (X .+ X') ./ 2
+    @test soft_symcover_min(AbsLog{2}(), Adense; linsolve=:woodbury) ≈
+          soft_symcover_min(AbsLog{2}(), Adense; linsolve=:dense) rtol=1e-8
+    @test MatrixCovers._soft_symcover_min_abslog2(Adense)[2].linsolve === :woodbury
+    Y = exp.(randn(rng, 40, 30))
+    aw, bw = soft_cover_min(AbsLog{2}(), Y; linsolve=:woodbury)
+    ad, bd = soft_cover_min(AbsLog{2}(), Y; linsolve=:dense)
+    @test aw .* bw' ≈ ad .* bd' rtol=1e-8
+    @test MatrixCovers._soft_cover_min_abslog2(Y)[3].linsolve === :woodbury
 end
 
 @testset "soft_symcover!/soft_cover! refiners" begin

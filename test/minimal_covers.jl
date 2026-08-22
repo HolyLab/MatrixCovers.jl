@@ -104,8 +104,8 @@ end
 
 @testset "MMC native AbsLog{2} matrix-free LSQR path" begin
     # Invalid solver selection is rejected.
-    @test_throws "linsolve must be :auto, :dense, or :lsqr" symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; linsolve=:qr)
-    @test_throws "linsolve must be :auto, :dense, or :lsqr" cover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; linsolve=:qr)
+    @test_throws "linsolve must be :auto, :dense, :lsqr, or :woodbury" symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; linsolve=:qr)
+    @test_throws "linsolve must be :auto, :dense, :lsqr, or :woodbury" cover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; linsolve=:qr)
 
     # The matrix-free LSQR path reproduces the dense path and the HiGHS reference
     # across the committed symmetric library, and returns a feasible cover.
@@ -141,6 +141,105 @@ end
     a, b = cover_min(AbsLog{2}(), [0.0 1.0; 1.0 0.0]; linsolve=:lsqr)
     @test a[1] * b[2] ≈ 1.0
     @test a[2] * b[1] ≈ 1.0
+end
+
+# The Woodbury path solves the same regularized normal equations as the dense path,
+# through a sparse Cholesky of `C` and a low-rank update, so the two must agree to
+# roundoff. The tolerance is loose relative to `eps`: a converged cover pins the
+# objective far more tightly than its own entries, so the two solves separate at
+# roughly the square root of the working precision.
+@testset "MMC native AbsLog{2} Woodbury path" begin
+    rng = StableRNG(9)
+    lognormal(m, n) = exp.(randn(rng, m, n))
+    symlognormal(n) = (X = lognormal(n, n); (X .+ X') ./ 2)
+
+    @testset "symmetric, n = $n" for n in (6, 30, 120)
+        A = symlognormal(n)
+        variants = ["all nonzero" => A,
+                    "zero diagonal" => A - Diagonal(A)]
+        # A sparse symmetric zero set, thin enough to stay inside the n ÷ 4 guard.
+        Z = symlognormal(n)
+        mask = rand(rng, n, n) .< 0.5 / max(n ÷ 8, 1)
+        mask = mask .| mask'
+        Z[mask] .= 0.0
+        maximum(count(iszero, Z; dims=2)) <= n ÷ 4 && push!(variants, "sparse zeros" => Z)
+        for (name, M) in variants
+            @testset "$name" begin
+                ad, sd = MatrixCovers._symcover_min_abslog2(M; linsolve=:dense)
+                aw, sw = MatrixCovers._symcover_min_abslog2(M; linsolve=:woodbury)
+                aa, sa = MatrixCovers._symcover_min_abslog2(M)
+                @test sd.linsolve === :dense
+                @test sw.linsolve === :woodbury
+                @test sa.linsolve === :woodbury
+                @test aw ≈ ad rtol=1e-7
+                @test aa == aw
+                @test iscover(aw, M; atol=1e-8)
+            end
+        end
+    end
+
+    @testset "asymmetric, ($m, $n)" for (m, n) in ((8, 6), (30, 22), (120, 90))
+        A = lognormal(m, n)
+        # The gauge direction (e; −e) leaves every product a[i]*b[j] fixed, so only the
+        # products are required to agree between the two solves.
+        k = min(m, n) ÷ 4   # the largest zero band the guard admits
+        for (name, M) in ("all nonzero" => A, "one zero band" => (B = copy(A); B[1:k, 1] .= 0.0; B))
+            @testset "$name" begin
+                ad, bd, sd = MatrixCovers._cover_min_abslog2(M; linsolve=:dense)
+                aw, bw, sw = MatrixCovers._cover_min_abslog2(M; linsolve=:woodbury)
+                _, _, sa = MatrixCovers._cover_min_abslog2(M)
+                @test sd.linsolve === :dense
+                @test sw.linsolve === :woodbury
+                @test sa.linsolve === :woodbury
+                @test aw .* bw' ≈ ad .* bd' rtol=1e-7
+                @test iscover(aw, bw, M; atol=1e-7)
+            end
+        end
+    end
+
+    # Only abs.(A) is read, so a complex Hermitian takes the same path and lands on
+    # the same cover as its magnitude matrix.
+    n = 8
+    M = randn(rng, ComplexF64, n, n)
+    H = Hermitian(M + M')
+    aw, sw = MatrixCovers._symcover_min_abslog2(H; linsolve=:woodbury)
+    @test sw.linsolve === :woodbury
+    @test aw ≈ MatrixCovers._symcover_min_abslog2(abs.(Matrix(H)); linsolve=:dense)[1] rtol=1e-7
+
+    # Offset axes and views index the support through `axes(A)`, not `1:n`, on this
+    # path as on the others.
+    A = symlognormal(12)
+    aref = symcover_min(AbsLog{2}(), A; linsolve=:woodbury)
+    Ao = OffsetArray(A, -3, -3)
+    ao = symcover_min(AbsLog{2}(), Ao; linsolve=:woodbury)
+    @test axes(ao, 1) == axes(Ao, 1)
+    @test collect(ao) ≈ aref rtol=1e-10
+    Av = view(symlognormal(16), 3:14, 3:14)
+    @test symcover_min(AbsLog{2}(), Matrix(Av); linsolve=:woodbury) ≈
+          symcover_min(AbsLog{2}(), Av; linsolve=:woodbury) rtol=1e-10
+    Ag = lognormal(14, 10)
+    Agv = view(Ag, 2:13, 2:9)
+    av, bv = cover_min(AbsLog{2}(), Agv; linsolve=:woodbury)
+    am, bm = cover_min(AbsLog{2}(), Matrix(Agv); linsolve=:woodbury)
+    @test av .* bv' ≈ am .* bm' rtol=1e-10
+
+    # The zero set must stay inside the guard, and the arithmetic must be Float64.
+    holey = symlognormal(12)
+    holey[1, 1:5] .= 0.0
+    holey[1:5, 1] .= 0.0
+    @test_throws "at most n ÷ 4 = 3 zeros; got 5" symcover_min(AbsLog{2}(), holey; linsolve=:woodbury)
+    @test MatrixCovers._symcover_min_abslog2(holey)[2].linsolve === :dense
+    gholey = lognormal(12, 12)
+    gholey[1, 1:5] .= 0.0
+    @test_throws "at most min(m, n) ÷ 4 = 3 zeros; got 5" cover_min(AbsLog{2}(), gholey; linsolve=:woodbury)
+    @test MatrixCovers._cover_min_abslog2(gholey)[3].linsolve === :dense
+
+    A32 = Float32.(symlognormal(8))
+    @test_throws "requires Float64 arithmetic" symcover_min(AbsLog{2}(), A32; linsolve=:woodbury)
+    @test MatrixCovers._symcover_min_abslog2(A32)[2].linsolve === :dense
+    G32 = Float32.(lognormal(8, 6))
+    @test_throws "requires Float64 arithmetic" cover_min(AbsLog{2}(), G32; linsolve=:woodbury)
+    @test MatrixCovers._cover_min_abslog2(G32)[3].linsolve === :dense
 end
 
 @testset "MMC disconnected-support gauge" begin

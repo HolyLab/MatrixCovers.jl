@@ -18,12 +18,19 @@ Supported ϕ values:
 - `AbsLog{2}()`: solved natively (no external solver). Accepts keyword arguments
   `κs` (the penalty-continuation schedule, default `(1e2, 1e4, 1e6, 1e8)`),
   `maxiter` (Newton steps per stage, default `40`), and `linsolve` (the inner
-  linear solve: `:auto`/`:dense` use a dense factorization of the reweighted
-  normal equations; `:lsqr` uses matrix-free LSQR (per-iteration cost O(nnz),
-  intended for large sparse supports)). `linsolve` defaults to `:auto` for
-  dense `A`; the `SparseMatrixCSC`/`Symmetric`/`Hermitian` sparse methods
-  default to `:lsqr` instead, since a dense factorization of the reweighted
-  normal equations is the wrong solve when `nnz ≪ n²`.
+  linear solve). `:dense` factorizes the reweighted normal equations densely,
+  at O(n³) per Newton step. `:woodbury` solves the same equations as a sparse
+  correction of the complete-support ones: the matrix is a sparse symmetric
+  positive-definite matrix plus `e*eᵀ`, so a sparse Cholesky and a
+  Sherman–Morrison update replace the dense factorization. It requires
+  `Float64` arithmetic and a support missing at most `n ÷ 4` entries in any
+  row, and raises an `ArgumentError` otherwise. `:lsqr` uses matrix-free LSQR
+  (per-iteration cost O(nnz), intended for large sparse supports). `:auto`
+  selects `:woodbury` where its requirements hold and `:dense` elsewhere.
+  `linsolve` defaults to `:auto` for dense `A`; the
+  `SparseMatrixCSC`/`Symmetric`/`Hermitian` sparse methods default to `:lsqr`
+  instead, since neither factorization of the reweighted normal equations is
+  the right solve when `nnz ≪ n²`.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
 - `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt. These objectives are
   nonconvex. Each strategy in `strategies` is refined, and the best local
@@ -57,12 +64,19 @@ Supported ϕ values:
 - `AbsLog{2}()`: solved natively (no external solver). Accepts keyword arguments
   `κs` (the penalty-continuation schedule, default `(1e2, 1e4, 1e6, 1e8)`),
   `maxiter` (Newton steps per stage, default `40`), and `linsolve` (the inner
-  linear solve: `:auto`/`:dense` use a dense factorization of the reweighted
-  normal equations; `:lsqr` uses matrix-free LSQR (per-iteration cost O(nnz),
-  intended for large sparse supports)). `linsolve` defaults to `:auto` for
-  dense `A`; the `SparseMatrixCSC` sparse method defaults to `:lsqr` instead,
-  since a dense factorization of the reweighted normal equations is the wrong
-  solve when `nnz ≪ n²`.
+  linear solve). `:dense` factorizes the reweighted normal equations densely,
+  at O((m+n)³) per Newton step. `:woodbury` solves the same equations as a
+  sparse correction of the complete-support ones: the matrix is a sparse
+  symmetric positive-definite matrix plus a rank-two term, so a sparse Cholesky
+  and a Woodbury update replace the dense factorization. It requires `Float64`
+  arithmetic and a support missing at most `min(m, n) ÷ 4` entries in any row
+  or column, and raises an `ArgumentError` otherwise. `:lsqr` uses matrix-free
+  LSQR (per-iteration cost O(nnz), intended for large sparse supports).
+  `:auto` selects `:woodbury` where its requirements hold and `:dense`
+  elsewhere. `linsolve` defaults to `:auto` for dense `A`; the
+  `SparseMatrixCSC` sparse method defaults to `:lsqr` instead, since neither
+  factorization of the reweighted normal equations is the right solve when
+  `nnz ≪ n²`.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
 - `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt. These objectives are
   nonconvex. Each strategy in `strategies` is refined, and the best local
@@ -285,12 +299,34 @@ function _prepare_cover_start!(a::AbstractVector, b::AbstractVector, A::Abstract
 end
 
 
-# Inner linear solve for the AbsLog{2} MMC Newton steps. `:auto` (the default)
-# forms and factorizes the reweighted normal equations densely, which is fastest
-# for dense supports: an LAPACK Cholesky beats the matrix-free path because each
-# LSQR iteration costs O(nnz) = O(n²) there. `:lsqr` forces the matrix-free path,
-# whose per-iteration cost is O(nnz); it is the intended solve for large sparse
-# supports (where nnz ≪ n²) and is used by the structured/sparse methods.
+# Inner linear solve for the AbsLog{2} MMC Newton steps. `:dense` forms and
+# factorizes the reweighted normal equations densely, at O(n³) per step.
+# `:woodbury` splits the same matrix as `C + U Uᵀ`, where `C` is sparse (its
+# off-diagonal pattern is the zero set of `A` together with the currently violated
+# entries) and symmetric positive definite, and `U` has one column (symmetric) or
+# two (asymmetric); a sparse Cholesky of `C` plus a Woodbury update then costs far
+# less than the dense factorization whenever `A` is close to fully supported.
+# `:auto` takes `:woodbury` where it applies and `:dense` otherwise. `:lsqr` forces
+# the matrix-free path, whose per-iteration cost is O(nnz); it is the intended
+# solve for large sparse supports (where nnz ≪ n²) and is used by the
+# structured/sparse methods.
+#
+# `C` is positive definite because the complete-support matrix contributes `n` (or
+# `m`) to each diagonal while the zero set subtracts a signless Laplacian `L_Z`
+# with λmax(L_Z) ≤ 2·maxdeg(Z); requiring at most a quarter of a row to be zero
+# keeps the difference bounded below by half the diagonal. CHOLMOD is the sparse
+# factorization behind it, and it is reliable only in `Float64`, so that is the
+# only working type the path accepts.
+
+# Append one COO triplet of the sparse Woodbury matrix `C`, tracking its diagonal
+# in `diagacc` so the ridge can be sized without a second pass over `C`.
+function _push_coo!(Ci, Cj, Cv, diagacc, p, q, v)
+    push!(Ci, p)
+    push!(Cj, q)
+    push!(Cv, v)
+    p == q && (diagacc[p] += v)
+    return nothing
+end
 
 # Matrix-free LSQR (Paige & Saunders) for the weighted least-squares problem
 # `min ‖M x - b‖` underlying the reweighted normal equations `MᵀM x = Mᵀb`.
@@ -360,15 +396,15 @@ end
 # Worker for `symcover_min(::AbsLog{2})`. Returns `(a, stats)` where `stats` is a
 # NamedTuple `(; nsolves, lsqriters, linsolve)` recording the number of inner linear
 # solves, the total LSQR iterations (0 on the dense path), and which path ran.
-# `linsolve` is `:auto`/`:dense` (dense factorization) or `:lsqr`
-# (matrix-free, for sparse supports). `start`, when given, is a positive cover of `A`
+# `linsolve` reports the path that ran: `:dense`, `:woodbury`, or `:lsqr`.
+# `start`, when given, is a positive cover of `A`
 # indexed like `axes(A, 1)` and supplies the first iterate in place of the cold
 # unweighted solve; the objective is convex, so it changes the path but not the result.
 function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                                maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
                                boost::Bool=true, fname=:symcover_min)
-    linsolve in (:auto, :dense, :lsqr) ||
-        throw(ArgumentError("linsolve must be :auto, :dense, or :lsqr; got :$linsolve"))
+    linsolve in (:auto, :dense, :lsqr, :woodbury) ||
+        throw(ArgumentError("linsolve must be :auto, :dense, :lsqr, or :woodbury; got :$linsolve"))
     # The shared entry to the native solve, reached from every sym `*_min` method,
     # so the precondition is checked once here rather than at each of them.
     require_abs_symmetric(A, fname)
@@ -389,14 +425,46 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     edges = Tuple{Int,Int}[]
     cvals = T[]
     hassupp = falses(n)
+    maxzero = 0            # largest number of zeros in any row of `A`
     for (ip, i) in enumerate(ax)
-        for s in _slots(G, i)
+        slots = _slots(G, i)
+        for s in slots
             push!(edges, (ip, G.idx[s] - first(ax) + 1))
             push!(cvals, log(G.val[s]))
         end
-        hassupp[ip] = !isempty(_slots(G, i))
+        hassupp[ip] = !isempty(slots)
+        maxzero = max(maxzero, n - length(slots))
     end
     ne = length(edges)
+    # The Woodbury path splits the normal equations around the complete-support
+    # matrix `n·I + e·eᵀ`, so its cost is set by the zero set `Z` rather than by `n`,
+    # and `n·I − L_Z` is positive definite only while `Z` stays thin.
+    use_woodbury = false
+    if !use_lsqr && linsolve !== :dense
+        ok = T === Float64 && maxzero <= n ÷ 4
+        if linsolve === :woodbury && !ok
+            T === Float64 ||
+                throw(ArgumentError("linsolve=:woodbury requires Float64 arithmetic, but `A` works in $T; use :dense or :lsqr"))
+            throw(ArgumentError("linsolve=:woodbury requires every row of `A` to have at most n ÷ 4 = $(n ÷ 4) zeros; got $maxzero"))
+        end
+        use_woodbury = ok
+    end
+    # Zero set of `A` in the same convention as `edges`: both orientations of an
+    # off-diagonal pair, the diagonal once. It is the off-diagonal pattern of the
+    # sparse `C` the Woodbury path factorizes.
+    zedges = Tuple{Int,Int}[]
+    if use_woodbury
+        mark = falses(n)
+        for (ip, i) in enumerate(ax)
+            for s in _slots(G, i)
+                mark[G.idx[s] - first(ax) + 1] = true
+            end
+            for jp in 1:n
+                mark[jp] || push!(zedges, (ip, jp))
+            end
+            fill!(mark, false)
+        end
+    end
     fκ = function (α, κ)
         v = zero(T)
         for (e, (ip, jp)) in enumerate(edges)
@@ -410,13 +478,23 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     # equations are the signless Laplacian system `B α = f`. The dense path forms and
     # factorizes `B` (a support-free variable gets an identity row; a minimal
     # scale-relative ridge lifts the bipartite gauge null space, e.g. the `[0 1; 1 0]`
-    # support graph whose signless Laplacian is singular). The LSQR path applies `√W R`
+    # support graph whose signless Laplacian is singular). The Woodbury path solves the
+    # same regularized system exactly, splitting `B` as `C + e·eᵀ` around the
+    # complete-support matrix `n·I + e·eᵀ` and correcting `C` for the zero set and the
+    # violated entries. The LSQR path applies `√W R`
     # and its transpose matrix-free and warm-starts from the incoming iterate; it
     # solves the least-squares form directly, so its accuracy tracks the conditioning
     # of `√W R` (≈ √κ) rather than that of `B` (≈ κ).
     ws = zeros(T, ne)   # √weight per support entry, frozen during one solve
     cv = zeros(T, ne)   # √weight · log|A_ij| (LSQR right-hand side)
     f = zeros(T, n)
+    # COO triplets of `C`, refilled each Woodbury solve; `diagacc` accumulates its
+    # diagonal as they are appended.
+    Ci = Int[]
+    Cj = Int[]
+    Cv = T[]
+    diagacc = zeros(T, n)
+    rhs = zeros(T, n, 2)
     nsolves = Ref(0)
     nlsqr = Ref(0)
     solve_weighted = function (α, κ)
@@ -447,6 +525,60 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             sol, it = _lsqr(Amul!, Atmul!, cv, α)
             nlsqr[] += it
             return sol
+        elseif use_woodbury
+            # `B = C + e·eᵀ` with `C = n·I − L_Z + (κ−1)·L_V`: the complete-support
+            # matrix, corrected by the zero set `Z` and by the currently violated
+            # entries `V`. `sparse` sums the duplicate triplets.
+            fill!(f, zero(T))
+            fill!(diagacc, zero(T))
+            empty!(Ci)
+            empty!(Cj)
+            empty!(Cv)
+            for p in 1:n
+                _push_coo!(Ci, Cj, Cv, diagacc, p, p, T(n))
+            end
+            for (p, q) in zedges
+                _push_coo!(Ci, Cj, Cv, diagacc, p, p, -oneunit(T))
+                _push_coo!(Ci, Cj, Cv, diagacc, p, q, -oneunit(T))
+            end
+            for (e, (ip, jp)) in enumerate(edges)
+                c = cvals[e]
+                w = κ === nothing ? oneunit(T) : ((α[ip] + α[jp] - c) < 0 ? T(κ) : oneunit(T))
+                f[ip] += w * c
+                if w != oneunit(T)
+                    _push_coo!(Ci, Cj, Cv, diagacc, ip, ip, w - oneunit(T))
+                    _push_coo!(Ci, Cj, Cv, diagacc, ip, jp, w - oneunit(T))
+                end
+            end
+            # Same ridge as the dense path, so both solve the same regularized system:
+            # `e·eᵀ` puts 1 on every diagonal of `B`, and every variable has support
+            # here, so no identity row arises.
+            dmax = zero(T)
+            for p in 1:n
+                dmax = max(dmax, diagacc[p] + oneunit(T))
+            end
+            ridge = (dmax > 0 ? dmax : oneunit(T)) * eps(T)
+            for p in 1:n
+                push!(Ci, p)
+                push!(Cj, p)
+                push!(Cv, ridge)
+            end
+            F = cholesky(Symmetric(sparse(Ci, Cj, Cv, n, n)))
+            for p in 1:n
+                rhs[p, 1] = f[p]
+                rhs[p, 2] = oneunit(T)
+            end
+            # Sherman–Morrison: with y = C\f and u = C\e, (C + e·eᵀ)\f is
+            # y − u·(eᵀy)/(1 + eᵀu).
+            YU = F \ rhs
+            sy = zero(T)
+            su = zero(T)
+            for p in 1:n
+                sy += YU[p, 1]
+                su += YU[p, 2]
+            end
+            r = sy / (oneunit(T) + su)
+            return [YU[p, 1] - r * YU[p, 2] for p in 1:n]
         else
             fill!(f, zero(T))
             B = zeros(T, n, n)
@@ -501,7 +633,8 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     for (ip, i) in enumerate(ax)
         a[i] = hassupp[ip] ? exp(α[ip] + γ) : zero(T)
     end
-    return a, (; nsolves=nsolves[], lsqriters=nlsqr[], linsolve=(use_lsqr ? :lsqr : :dense))
+    return a, (; nsolves=nsolves[], lsqriters=nlsqr[],
+               linsolve=(use_lsqr ? :lsqr : use_woodbury ? :woodbury : :dense))
 end
 
 # Worker for `cover_min(::AbsLog{2})`. Returns `(a, b, stats)` with `stats` a
@@ -511,8 +644,8 @@ end
 function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                             maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
                             boost::Bool=true)
-    linsolve in (:auto, :dense, :lsqr) ||
-        throw(ArgumentError("linsolve must be :auto, :dense, or :lsqr; got :$linsolve"))
+    linsolve in (:auto, :dense, :lsqr, :woodbury) ||
+        throw(ArgumentError("linsolve must be :auto, :dense, :lsqr, or :woodbury; got :$linsolve"))
     axr = axes(A, 1)
     axc = axes(A, 2)
     # The problem only ever depends on abs.(A), a real quantity, so the working type
@@ -544,6 +677,43 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     ne = length(edges)
     hasrow = nzrow .> 0
     hascol = nzcol .> 0
+    # The Woodbury path splits the normal equations around the complete-support
+    # matrix `D + u_r·u_rᵀ + u_c·u_cᵀ`, so its cost is set by the zero set `Z` rather
+    # than by `N`, and `D − L_Z` is positive definite only while `Z` stays thin. The
+    # bound is taken against `min(m, n)`, the smaller of the two diagonal blocks.
+    maxzero = 0
+    for ip in 1:m
+        maxzero = max(maxzero, n - nzrow[ip])
+    end
+    for jp in 1:n
+        maxzero = max(maxzero, m - nzcol[jp])
+    end
+    zbound = min(m, n) ÷ 4
+    use_woodbury = false
+    if !use_lsqr && linsolve !== :dense
+        ok = T === Float64 && maxzero <= zbound
+        if linsolve === :woodbury && !ok
+            T === Float64 ||
+                throw(ArgumentError("linsolve=:woodbury requires Float64 arithmetic, but `A` works in $T; use :dense or :lsqr"))
+            throw(ArgumentError("linsolve=:woodbury requires every row and column of `A` to have at most min(m, n) ÷ 4 = $zbound zeros; got $maxzero"))
+        end
+        use_woodbury = ok
+    end
+    # Zero set of `A` as (row position, column position) pairs missing from the
+    # support: the off-diagonal pattern of the sparse `C` the Woodbury path factorizes.
+    zedges = Tuple{Int,Int}[]
+    if use_woodbury
+        mark = falses(n)
+        for (ip, i) in enumerate(axr)
+            for s in _slots(G, i)
+                mark[G.idx[s] - first(axc) + 1] = true
+            end
+            for jp in 1:n
+                mark[jp] || push!(zedges, (ip, jp))
+            end
+            fill!(mark, false)
+        end
+    end
     # Gauge vector: ±1 on supported variables, 0 on support-free ones (which carry
     # no constraint and are decoupled with an identity row in `solve_weighted`).
     v0 = zeros(T, N)
@@ -563,10 +733,13 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     end
     # Each Newton step solves the reweighted least-squares problem for the stacked
     # scales x = (α; β), residuals z_ij = α_i + β_j - log|A_ij|. Row and column scales
-    # share the global (e; −e) gauge; both paths pin it. The dense path adds the rank-1
+    # share the global (e; −e) gauge; every path pins it. The dense path adds the rank-1
     # term v0*v0ᵀ to the normal equations `B x = f` and factorizes (support-free
     # variables get an identity row; a support with more than one connected component
-    # carries additional per-component gauges, lifted by the ridge below). The LSQR
+    # carries additional per-component gauges, lifted by the ridge below). The Woodbury
+    # path solves the same regularized system exactly: `B + v0·v0ᵀ = C + U·Uᵀ` with `U`
+    # the row and column indicators, so a sparse Cholesky of `C` and a rank-two update
+    # replace the dense factorization. The LSQR
     # path appends one gauge row `v0ᵀ x = 0` to the least-squares system so `√W R` has
     # full column rank, applies it matrix-free, and warm-starts from the incoming
     # iterate. After the solve a closed-form shift, applied within each component,
@@ -574,6 +747,13 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     f = zeros(T, N)
     ws = zeros(T, ne)       # √weight per support entry (LSQR path)
     cv = zeros(T, ne + 1)   # √weight · log|A_ij|, with a trailing 0 gauge target
+    # COO triplets of `C`, refilled each Woodbury solve; `diagacc` accumulates its
+    # diagonal as they are appended.
+    Ci = Int[]
+    Cj = Int[]
+    Cv = T[]
+    diagacc = zeros(T, N)
+    rhs = zeros(T, N, 3)
     nsolves = Ref(0)
     nlsqr = Ref(0)
     solve_weighted = function (x, κ)
@@ -607,6 +787,90 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             sol, it = _lsqr(Amul!, Atmul!, cv, x)
             nlsqr[] += it
             return sol
+        elseif use_woodbury
+            # `B + v0·v0ᵀ = C + U·Uᵀ` with `C = D − L_Z + (κ−1)·L_V`,
+            # `D = diag(n·1_m, m·1_n)` and `U = [u_r u_c]` the row and column
+            # indicators: the complete-support matrix, corrected by the zero set `Z`
+            # and by the currently violated entries `V`. `sparse` sums the duplicate
+            # triplets.
+            fill!(f, zero(T))
+            fill!(diagacc, zero(T))
+            empty!(Ci)
+            empty!(Cj)
+            empty!(Cv)
+            for ip in 1:m
+                _push_coo!(Ci, Cj, Cv, diagacc, ip, ip, T(n))
+            end
+            for jp in 1:n
+                _push_coo!(Ci, Cj, Cv, diagacc, m + jp, m + jp, T(m))
+            end
+            for (ip, jp) in zedges
+                q = m + jp
+                _push_coo!(Ci, Cj, Cv, diagacc, ip, ip, -oneunit(T))
+                _push_coo!(Ci, Cj, Cv, diagacc, q, q, -oneunit(T))
+                _push_coo!(Ci, Cj, Cv, diagacc, ip, q, -oneunit(T))
+                _push_coo!(Ci, Cj, Cv, diagacc, q, ip, -oneunit(T))
+            end
+            for (e, (p, q)) in enumerate(edges)
+                c = cvals[e]
+                w = κ === nothing ? oneunit(T) : ((x[p] + x[q] - c) < 0 ? T(κ) : oneunit(T))
+                f[p] += w * c
+                f[q] += w * c
+                if w != oneunit(T)
+                    dw = w - oneunit(T)
+                    _push_coo!(Ci, Cj, Cv, diagacc, p, p, dw)
+                    _push_coo!(Ci, Cj, Cv, diagacc, q, q, dw)
+                    _push_coo!(Ci, Cj, Cv, diagacc, p, q, dw)
+                    _push_coo!(Ci, Cj, Cv, diagacc, q, p, dw)
+                end
+            end
+            # Same ridge as the dense path, so both solve the same regularized system:
+            # `U·Uᵀ` puts 1 on every diagonal of `B + v0·v0ᵀ`, and every variable has
+            # support here, so no identity row arises.
+            dmax = zero(T)
+            for p in 1:N
+                dmax = max(dmax, diagacc[p] + oneunit(T))
+            end
+            ridge = (dmax > 0 ? dmax : oneunit(T)) * eps(T)
+            for p in 1:N
+                push!(Ci, p)
+                push!(Cj, p)
+                push!(Cv, ridge)
+            end
+            F = cholesky(Symmetric(sparse(Ci, Cj, Cv, N, N)))
+            fill!(rhs, zero(T))
+            for p in 1:N
+                rhs[p, 1] = f[p]
+            end
+            for ip in 1:m
+                rhs[ip, 2] = oneunit(T)
+            end
+            for jp in 1:n
+                rhs[m+jp, 3] = oneunit(T)
+            end
+            # Woodbury with a 2x2 capacitance: with y = C\f and Y = C\U,
+            # (C + U·Uᵀ)\f is y − Y·((I₂ + UᵀY)\(Uᵀy)).
+            YU = F \ rhs
+            ty = zero(T)
+            tz = zero(T)
+            k11 = zero(T)
+            k12 = zero(T)
+            k21 = zero(T)
+            k22 = zero(T)
+            for ip in 1:m
+                ty += YU[ip, 1]
+                k11 += YU[ip, 2]
+                k12 += YU[ip, 3]
+            end
+            for jp in 1:n
+                q = m + jp
+                tz += YU[q, 1]
+                k21 += YU[q, 2]
+                k22 += YU[q, 3]
+            end
+            K = [oneunit(T)+k11 k12; k21 oneunit(T)+k22]
+            g = K \ T[ty, tz]
+            return [YU[p, 1] - g[1] * YU[p, 2] - g[2] * YU[p, 3] for p in 1:N]
         else
             fill!(f, zero(T))
             B = v0 * v0'
@@ -717,7 +981,8 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     for (jp, j) in enumerate(axc)
         b[j] = hascol[jp] ? exp(x[m+jp] - s[colcomp[jp]]) : zero(T)
     end
-    return a, b, (; nsolves=nsolves[], lsqriters=nlsqr[], linsolve=(use_lsqr ? :lsqr : :dense))
+    return a, b, (; nsolves=nsolves[], lsqriters=nlsqr[],
+                  linsolve=(use_lsqr ? :lsqr : use_woodbury ? :woodbury : :dense))
 end
 
 # Workers for the soft (unconstrained) AbsLog{2} covers. The soft objective

@@ -1,10 +1,11 @@
 module MatrixCovers
 
 using LinearAlgebra: LinearAlgebra, Adjoint, Bidiagonal, Diagonal, Hermitian,
-                     SymTridiagonal, Symmetric, Transpose, Tridiagonal, dot, norm
+                     SymTridiagonal, Symmetric, Transpose, Tridiagonal, cholesky,
+                     dot, norm
 using PrecompileTools: PrecompileTools, @compile_workload
 using Random: Random, AbstractRNG, MersenneTwister
-using SparseArrays: SparseArrays, SparseMatrixCSC, nonzeros, nzrange, rowvals
+using SparseArrays: SparseArrays, SparseMatrixCSC, nonzeros, nzrange, rowvals, sparse
 
 export AbsLog, AbsLinear
 export cover_objective, iscover
