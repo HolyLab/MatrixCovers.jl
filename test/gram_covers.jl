@@ -3,6 +3,34 @@
 
 @testset "gramcover" begin
 
+    # Explicit symmetrized block sums covered by `gramcover`.
+    function blocksums(a, J, W)
+        sc = MatrixCovers.support_components(J)
+        k = MatrixCovers.ncomponents(sc)
+        M = zeros(k, k)
+        for i in axes(W, 1), ip in axes(W, 2)
+            ci, cip = MatrixCovers.rowcomponent(sc, i), MatrixCovers.rowcomponent(sc, ip)
+            (iszero(ci) || iszero(cip)) && continue
+            M[ci, cip] += a[i] * abs(W[i, ip]) * a[ip]
+        end
+        return [max(M[p, q], M[q, p]) for p in 1:k, q in 1:k]
+    end
+
+    # Recover `σ[p]` from any supported column in component `p`.
+    function groupscales(s, b, J)
+        sc = MatrixCovers.support_components(J)
+        return [(j = findfirst(==(p), sc.colcomp); s[j] / b[j])
+                for p in 1:MatrixCovers.ncomponents(sc)]
+    end
+
+    # Three square blocks on the diagonal, one support component each.
+    function threeblocks(rng)
+        b1, b2, b3 = randn(rng, 2, 2), randn(rng, 2, 2), randn(rng, 2, 2)
+        return [b1 zeros(2, 2) zeros(2, 2)
+                zeros(2, 2) b2 zeros(2, 2)
+                zeros(2, 2) zeros(2, 2) b3]
+    end
+
     @testset "random dense J: exact coverage of A'A" begin
         rng = StableRNG(3)
         J = randn(rng, 8, 5)
@@ -87,8 +115,7 @@
             @test isapprox(gramcover(a, b, J, W), gramcover(a2, b2, J, W); rtol=1e-12)
         end
 
-        # `W` with a vanishing diagonal block on one component: the gauge is
-        # propagated across the coupling rather than read off that block.
+        # A coupling fixes the scale of a component whose diagonal block vanishes.
         Wz = zeros(m, m)
         Wz[1:4, 1:4] .= 1.0
         Wz[1, 5] = Wz[5, 1] = 2.0
@@ -135,18 +162,16 @@
         Gc = J' * Wc * J
         @test all(sc * sc' .>= abs.(Gc) .- 1e-9 * maximum(abs, Gc))
 
-        # Coupled components whose own blocks all vanish: the surviving data fixes
-        # the products `s[j]*s[k]` across the two but not the split between them,
-        # so `gramcover` covers, but `s` is not fixed by the products alone. Documented,
-        # not a bug.
+        # A single loopless edge admits no gauge-invariant cover.
         Wo = zeros(m, m)
         Wo[1, 5] = Wo[5, 1] = 2.0
-        so = gramcover(a, b, J, Wo)
+        @test_throws "no gauge-invariant cover exists" gramcover(a, b, J, Wo)
+        so = gramcover(a, b, J, Wo; degenerate=:uniform)
         Go = J' * Wo * J
         @test all(so * so' .>= abs.(Go) .- 1e-9 * maximum(abs, Go))
         a2, b2 = copy(a), copy(b)
         a2[1:4] .*= 8; b2[1:3] ./= 8
-        @test !isapprox(so, gramcover(a2, b2, J, Wo); rtol=1e-6)
+        @test !isapprox(so, gramcover(a2, b2, J, Wo; degenerate=:uniform); rtol=1e-6)
     end
 
     @testset "sparse J" begin
@@ -238,6 +263,16 @@
         @test sbuf == gramcover(a, b, J, w)
         @test gramcover!(sbuf, a, b, sc, Diagonal(w)) === sbuf
         @test sbuf == gramcover(a, b, sc, w)
+
+        # Matrix-weight methods accept and validate `degenerate` consistently.
+        @test gramcover(a, b, J, Diagonal(w); degenerate=:uniform) == gramcover(a, b, J, w)
+        @test gramcover(a, b, sc, Diagonal(w); degenerate=:uniform) == gramcover(a, b, sc, w)
+        @test gramcover!(sbuf, a, b, J, Diagonal(w); degenerate=:uniform) === sbuf
+        @test sbuf == gramcover(a, b, J, w)
+        @test_throws "`degenerate` must be :error or :uniform" gramcover(a, b, J, Diagonal(w); degenerate=:nonsense)
+        @test_throws "`degenerate` must be :error or :uniform" gramcover(a, b, sc, Diagonal(w); degenerate=:nonsense)
+        @test_throws "`degenerate` must be :error or :uniform" gramcover!(sbuf, a, b, J, Diagonal(w); degenerate=:nonsense)
+        @test_throws "`degenerate` must be :error or :uniform" gramcover!(sbuf, a, b, sc, Diagonal(w); degenerate=:nonsense)
     end
 
     @testset "general W leaves an uncoupled component as its own group" begin
@@ -257,6 +292,136 @@
         # The uncoupled third component (W is the identity there) reproduces the
         # unweighted cover, up to the roundoff inflation.
         @test s[5:6] ≈ gramcover(a, b, J)[5:6]
+    end
+
+    @testset "two coupled components, both diagonal blocks nonzero" begin
+        # For a 2x2 `Ms` with positive diagonal, the minimal cover is
+        # `σ[p] = sqrt(Ms[p,p]) * sqrt(max(1, κ))`, `κ = Ms[1,2]/sqrt(Ms[1,1]*Ms[2,2])`:
+        # below `κ = 1` the diagonal constraints bind alone, above it the coupling does.
+        rng = StableRNG(9)
+        B = randn(rng, 4, 3); C = randn(rng, 3, 2)
+        J = [B zeros(4, 2); zeros(3, 3) C]
+        a, b = cover(J)
+        m = size(J, 1)
+        κs = Float64[]
+        for c in (0.05, 40.0)
+            W = Matrix{Float64}(I, m, m)
+            W[1, 5] = W[5, 1] = c
+            s = gramcover(a, b, J, W)
+            Ms = blocksums(a, J, W)
+            κ = Ms[1, 2] / sqrt(Ms[1, 1] * Ms[2, 2])
+            push!(κs, κ)
+            σ = groupscales(s, b, J)
+            @test σ ≈ sqrt.([Ms[1, 1], Ms[2, 2]]) .* sqrt(max(1, κ)) rtol = 1e-6
+            G = J' * W * J
+            @test all(s * s' .>= abs.(G))
+        end
+        @test κs[1] < 1 < κs[2]
+    end
+
+    @testset "two coupled components, one diagonal block zero" begin
+        # For `Ms = [d e; e 0]`, the minimal cover saturates its two constraints.
+        rng = StableRNG(11)
+        B = randn(rng, 4, 3); C = randn(rng, 3, 2)
+        J = [B zeros(4, 2); zeros(3, 3) C]
+        a, b = cover(J)
+        m = size(J, 1)
+        W = zeros(m, m)
+        W[1:4, 1:4] .= 1.0
+        W[1, 5] = W[5, 1] = 2.0
+        s = gramcover(a, b, J, W)
+        Ms = blocksums(a, J, W)
+        @test iszero(Ms[2, 2])
+        σ = groupscales(s, b, J)
+        @test σ[1] ≈ sqrt(Ms[1, 1]) rtol = 1e-6
+        @test σ[2] ≈ Ms[1, 2] / sqrt(Ms[1, 1]) rtol = 1e-6
+        G = J' * W * J
+        @test all(s * s' .>= abs.(G))
+    end
+
+    @testset "three coupled components in a triangle, every diagonal block zero" begin
+        # An odd cycle fixes the gauge without a diagonal block.
+        rng = StableRNG(13)
+        J = threeblocks(rng)
+        a, b = cover(J)
+        m = size(J, 1)
+        W = zeros(m, m)
+        W[1, 3] = W[3, 1] = 1.5
+        W[1, 5] = W[5, 1] = 0.75
+        W[3, 5] = W[5, 3] = 2.25
+        s = gramcover(a, b, J, W)
+        Ms = blocksums(a, J, W)
+        @test all(iszero, [Ms[p, p] for p in 1:3])
+        σ = groupscales(s, b, J)
+        @test σ ≈ [sqrt(Ms[1, 2] * Ms[1, 3] / Ms[2, 3]),
+                   sqrt(Ms[1, 2] * Ms[2, 3] / Ms[1, 3]),
+                   sqrt(Ms[1, 3] * Ms[2, 3] / Ms[1, 2])] rtol = 1e-6
+        G = J' * W * J
+        @test all(s * s' .>= abs.(G))
+
+        # The result remains gauge-invariant.
+        a2, b2 = copy(a), copy(b)
+        for (p, (rows, cols)) in enumerate(((1:2, 1:2), (3:4, 3:4), (5:6, 5:6)))
+            γ = (2.0, 0.3, 7.0)[p]
+            a2[rows] .*= γ; b2[cols] ./= γ
+        end
+        @test isapprox(s, gramcover(a2, b2, J, W); rtol=1e-6)
+    end
+
+    @testset "loopless bipartite coupling graphs are refused" begin
+        # An even cycle without loops is bipartite.
+        rng = StableRNG(17)
+        blocks = [randn(rng, 2, 2) for _ in 1:4]
+        J = zeros(8, 8)
+        for p in 1:4
+            J[2p-1:2p, 2p-1:2p] .= blocks[p]
+        end
+        a, b = cover(J)
+        @test MatrixCovers.ncomponents(MatrixCovers.support_components(J)) == 4
+        W = zeros(8, 8)
+        for (i, ip) in ((1, 3), (3, 5), (5, 7), (7, 1))
+            W[i, ip] = W[ip, i] = 1.0 + 0.5 * i
+        end
+        @test_throws "no gauge-invariant cover exists" gramcover(a, b, J, W)
+        s = gramcover(a, b, J, W; degenerate=:uniform)
+        G = J' * W * J
+        @test all(s * s' .>= abs.(G))
+
+        @test_throws "`degenerate` must be :error or :uniform" gramcover(a, b, J, W; degenerate=:nonsense)
+
+        # One loop removes the obstruction.
+        W[1, 1] = 1.0
+        s1 = gramcover(a, b, J, W)
+        G1 = J' * W * J
+        @test all(s1 * s1' .>= abs.(G1))
+    end
+
+    @testset "generic W over three coupled components" begin
+        # Compare the minimal cover with a valid diagonal-normalized cover.
+        rng = StableRNG(19)
+        J = threeblocks(rng)
+        a, b = cover(J)
+        m = size(J, 1)
+        W = abs.(randn(rng, m, m)) .+ 0.1
+        s = gramcover(a, b, J, W)
+        G = J' * W * J
+        @test all(s * s' .>= abs.(G))
+
+        Ms = blocksums(a, J, W)
+        σ = groupscales(s, b, J)
+        @test σ ≈ symcover_min(AbsLog{2}(), Ms) rtol = 1e-6
+
+        # This diagonal-normalized formula covers `Ms` but need not be minimal.
+        d = [Ms[p, p] for p in 1:3]
+        σh = [sqrt(sum(Ms[p, q] * sqrt(d[p] / d[q]) for q in 1:3)) for p in 1:3]
+        @test all(σh * σh' .>= Ms)
+        @test cover_objective(AbsLog{2}(), σ, Ms) <= cover_objective(AbsLog{2}(), σh, Ms)
+
+        a2, b2 = copy(a), copy(b)
+        for (p, γ) in enumerate((5.0, 0.2, 1.7))
+            a2[2p-1:2p] .*= γ; b2[2p-1:2p] ./= γ
+        end
+        @test isapprox(s, gramcover(a2, b2, J, W); rtol=1e-6)
     end
 
 end

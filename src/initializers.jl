@@ -1,8 +1,4 @@
-# Named starting covers, shared by every algorithm that needs a starting point:
-# the soft-cover multistarts and the `*_min` solvers alike. Each strategy is a
-# deterministic, scale-covariant point built from the primitives in
-# `heuristic_covers.jl`; nothing here calls a solver, so the dependency runs one
-# way and the start menu has a single definition.
+# Starting covers shared by the soft-cover multistarts and `*_min` solvers.
 
 # Starting covers the non-convex AbsLinear solvers refine, in the order they are tried.
 # `:leaveout` and `:diagfeasible` have no asymmetric formulation, so the two menus differ.
@@ -21,39 +17,33 @@ const COVER_MIN_STRATEGIES = (:hardcover, :geomean)
 Build a starting point for the symmetric cover of `A`, as consumed by
 [`symcover_min`](@ref) and by the [`soft_symcover`](@ref) multistart.
 
-No penalty is taken: every strategy below is a property of `A` alone, so the
-starting point does not depend on the objective it will be refined against.
+The strategies depend only on `A`, so this function takes no penalty.
 
 `strategy` names the point:
 
-- `:geomean` — the geometric mean of the nonzero entries of each row, and *not* a
-  cover. It minimizes the soft AbsLog{2} objective exactly when every entry of `A`
-  is nonzero; on a sparse support it approximates that minimum, which
-  [`soft_symcover_min`](@ref)`(AbsLog{2}(), A)` returns exactly.
+- `:geomean` — the geometric mean of each row's nonzero entries. It is not
+  generally a cover.
 - `:leaveout` — the geometric mean recomputed with the most-underweighted
   support entry dropped, which lands in the basin that treats that entry as
   effectively zero. Raises an `ArgumentError` when no entry can be dropped
   (empty support, or dropping it would empty a row). Not a cover.
 - `:diagfeasible` — a cover grown from the diagonal by nearest-neighbor
-  propagation. Feasible by construction.
+  propagation.
 - `:hardcover` — the tightened hard cover of [`symcover`](@ref), which is
   `:geomean` boosted to feasibility and then tightened. Forwards `maxiter` to the
-  tightening pass. Feasible by construction, so `feasible` has no effect on it.
+  tightening pass. `feasible` has no effect on it.
 
 `feasible` names how the point is brought up to covering `A` — that is, to
 `a[i]*a[j] >= abs(A[i,j])`, up to the roundoff of the log-domain arithmetic:
 
 - `:inflate` (the default) multiplies every scale by the smallest common factor
-  that achieves coverage, moving the point bodily and leaving its shape intact.
+  that achieves coverage.
 - `:boost` raises only the rows that touch a violated entry, so it changes the
   shape of the point. This is the route [`symcover`](@ref) itself takes.
-- `:none` returns the strategy's own point, with no coverage guarantee. This is
-  what the soft covers want: forcing the geometric mean to cover `A` would
-  destroy the very property that makes it the soft AbsLog{2} optimum.
+- `:none` returns the strategy's point without a coverage guarantee.
 
-The two feasible routes land on the boundary at different points, and so in
-different basins of the non-convex `AbsLinear` objectives — which is exactly why a
-menu of starts is worth having, and why the choice is exposed rather than fixed.
+The two feasible routes reach different points on the boundary and can enter
+different basins of the nonconvex `AbsLinear` objectives.
 
 Under every setting the result is strictly positive on every row that carries
 support and exactly zero on every row that carries none.

@@ -24,13 +24,9 @@ A subtype must be callable on a nonnegative real:
 whenever `A[i,j]` is zero, and `cover_objective` passes `typemax` for an entry
 left uncovered by a zero scale. Penalties are conventionally singleton structs.
 
-That call is the whole contract, and it buys exactly one thing:
-[`cover_objective`](@ref) works for any subtype. **The solvers do not.** Every
-solver in this package dispatches on a concrete built-in penalty — `AbsLog{2}`
-is solved natively, the `AbsLinear` penalties through JuMP — so a custom subtype
-passed to [`symcover_min`](@ref), [`soft_symcover`](@ref), or any other solver
-raises a `MethodError`. Scoring covers with your own penalty is supported;
-minimizing it is not.
+[`cover_objective`](@ref) works for any subtype, but solvers support only
+specific built-in penalties: `AbsLog{2}` natively and `AbsLinear` through JuMP.
+Passing a custom subtype to a solver raises a `MethodError`.
 """
 abstract type AbstractCoverPenalty<:Function end
 

@@ -18,11 +18,8 @@ using MatrixCovers: _edge_list, _sym_edge_list, _degrees
 # hard-cover models below sum over its `ei <= ej` half instead, per the objective each
 # one is defined by.
 
-# The AbsLinear objectives are non-convex, so Ipopt returns a local minimum of
-# whichever basin it descends into from the start it is given. That makes the start a
-# genuine input rather than a hint, and it is why the hard-cover entry points here are the
-# `*_min!` refiners, which take the start from the caller. The non-mutating `symcover_min`
-# and `cover_min` are multistart drivers over these kernels and live in the main package.
+# Ipopt returns a local minimum selected by the start. These kernels therefore
+# implement the mutating refiners; the main package supplies multistart drivers.
 
 check_solved(model, fname) =
     MatrixCovers.check_solved(JuMP.termination_status(model), "Ipopt", fname)

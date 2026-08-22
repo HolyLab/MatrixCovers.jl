@@ -16,42 +16,25 @@ minimizing the soft-cover objective `∑_{i,j} ϕ(|A[i,j]| / (a[i]*a[j]))`.
 Unlike [`symcover`](@ref), there is no hard coverage constraint: `a[i]*a[j]` may be
 less than `|A[i,j]|`, with violations penalized by `ϕ`.
 
-Supported penalty functions:
-- `AbsLog{2}()`: convex, and returns its exact unconstrained minimum from a single linear
-  solve. Identical to [`soft_symcover_min`](@ref)`(AbsLog{2}(), A)` — with one minimizer
-  there is nothing for a heuristic and a minimizer to disagree about.
-- `AbsLog{1}()`: initializes from the AbsLog{2} minimum, then refines by coordinate descent
-  with a log-space weighted-median step, reaching a deterministic and scale-covariant fixed
-  point. That point is not in general a minimizer: each step minimizes exactly over one
-  coordinate, but the objective's nonsmoothness couples `a[i]` with `a[j]`, so the descent
-  can settle where no single-coordinate move improves and the objective still sits
-  materially above its minimum. [`soft_symcover_min`](@ref) does not yet offer an exact
-  `AbsLog{1}` alternative.
-- `AbsLinear{2}()` (default): non-convex; refined by coordinate descent from `starts`
-  scale-covariant starting points, keeping the lowest-objective result (see below).
-- `AbsLinear{1}()`: initializes from the `AbsLinear{2}()` result, coordinate descent uses a
-  weighted-median step.
+Supported penalties are:
 
-For the `AbsLinear` penalties the objective is non-convex, so `starts` starting points are
-tried and the best kept, taken in this order: the geometric-mean minimum, the tightened hard
-cover, the geometric-mean minimum inflated uniformly until it covers `A`, a leave-one-out
-geometric mean that drops the support entry with the most negative log-residual (this start
-keeps the result continuous as an entry `|A[i,j]|` approaches zero), and — only when `A` has a
-zero entry — a greedy feasible cover. Any slots left over are multiplicative log-normal
-perturbations `a .* exp.(σ .* ξ)` of the geometric-mean point with spread `σ`, `ξ` drawn from
-`rng`; at the default `starts=5` there is at most one such perturbation. Every start co-varies
-with a diagonal rescaling of `A` and the objective is scale-invariant, so the selection is
-scale-covariant. The default `rng` is a fresh `MersenneTwister(0)` per call, making repeated
-calls (and the two frames of a covariance check) agree; pass your own `rng` for reproducibility
-you control, since default RNG streams are not stable across Julia versions. `sigma` is
-accepted as an ASCII alias for `σ`.
+- `AbsLog{2}()`: the convex minimum, computed by one linear solve.
+- `AbsLog{1}()`: weighted-median coordinate descent to a fixed point, which need
+  not be a local minimum.
+- `AbsLinear{2}()` (default): multistart coordinate descent.
+- `AbsLinear{1}()`: weighted-median descent initialized from the `AbsLinear{2}`
+  result.
+
+For `AbsLinear`, `starts` controls the number of deterministic and perturbed
+starting points. Perturbations have the form `a .* exp.(σ .* ξ)`, where `ξ` is
+drawn from `rng`. The default RNG is reset for each call. Pass an explicit `rng`
+to control reproducibility. `sigma` is an ASCII alias for `σ`.
 
 See also: [`symcover`](@ref), [`cover_objective`](@ref), [`soft_symcover_min`](@ref).
 
 # Examples
 
-The multistart converges to the covariant minimizer to within its objective
-tolerance; round to compare against exact values.
+Round the multistart result when comparing it with exact values.
 
 ```jldoctest
 julia> A = [4 -1; -1 0];
@@ -111,19 +94,15 @@ Refine the starting point `a` into a symmetric soft cover of `A`, in place, and 
 The no-ϕ form defaults to `AbsLinear{2}()`, matching [`soft_symcover`](@ref), whose
 supported ϕ values these methods share.
 
-This is the refiner half of [`soft_symcover`](@ref): the non-mutating form owns a
-multistart menu, so its result is a property of `A`, while this one descends from the
-single start you hand it, so its result is a property of `A` *and* that start. Building
-the start is the caller's job — see [`initialize_symcover`](@ref), and pass
-`feasible=:none`, since a soft cover is under no obligation to cover `A`.
+Unlike [`soft_symcover`](@ref), this method refines one caller-provided start.
+Build it with [`initialize_symcover`](@ref) and `feasible=:none`.
 
 `a` must be finite and strictly positive on every row of `A` that carries support; scales
 on rows carrying no support are inert, and are zero on output. Unlike [`symcover_min!`](@ref),
 `a` need *not* cover `A` — the soft objective imposes no coverage constraint.
 
-`maxiter` bounds the descent sweeps; its default matches the corresponding
-[`soft_symcover`](@ref) method. Under `AbsLog{2}` the objective is convex with a unique
-minimizer, so the start is honored but not visible in the result.
+`maxiter` bounds the descent sweeps. Under `AbsLog{2}`, the unique minimizer is
+independent of the start.
 
 See also: [`soft_symcover`](@ref), [`soft_symcover_min!`](@ref), [`initialize_symcover`](@ref), [`soft_cover!`](@ref).
 """
@@ -166,44 +145,24 @@ objective `∑_{i,j} ϕ(|A[i,j]| / (a[i]*b[j]))`. This is the asymmetric analog 
 Unlike [`cover`](@ref), there is no hard coverage constraint: `a[i]*b[j]` may be less than
 `|A[i,j]|`, with violations penalized by `ϕ`.
 
-Supported penalty functions:
-- `AbsLog{2}()`: convex, and returns its exact unconstrained minimum from a single linear
-  solve. Identical to [`soft_cover_min`](@ref)`(AbsLog{2}(), A)` — with one minimizer
-  there is nothing for a heuristic and a minimizer to disagree about.
-- `AbsLog{1}()`: initializes from the `AbsLog{2}()` minimum, then refines by alternating
-  weighted-median row and column updates, reaching a deterministic and scale-covariant fixed
-  point. As in [`soft_symcover`](@ref), that point is not in general a minimizer: each
-  half-sweep minimizes exactly, but the objective's nonsmoothness couples `a[i]` with `b[j]`,
-  so the descent can settle where no such sweep improves and the objective still sits
-  materially above its minimum. [`soft_cover_min`](@ref) does not yet offer an exact
-  `AbsLog{1}` alternative.
-- `AbsLinear{2}()` (default): in the inverse-scale variables `u = 1 ./ a`, `v = 1 ./ b`, the
-  objective `∑_{i,j∈S} (1 - |A[i,j]| u[i] v[j])²` (sum over the nonzero support `S`) is
-  biconvex, so alternating least squares with the closed-form half-sweeps
+Supported penalties are:
 
-      u[i] = ∑_j |A[i,j]| v[j] / ∑_j (|A[i,j]| v[j])²   (dually for v[j])
-
-  is monotone, stopping when the relative objective decrease falls to rounding level
-  for the element type, or after `maxiter` sweeps.
-- `AbsLinear{1}()`: initializes from the `AbsLinear{2}()` result, then refines by alternating
-  weighted-median updates — each row/column block is minimized exactly, so the descent is
-  monotone. Its flat basins are broken by a deterministic lower-median tie-break, giving a
-  scale-covariant representative.
+- `AbsLog{2}()`: the convex minimum, computed by one linear solve.
+- `AbsLog{1}()`: alternating weighted-median updates to a fixed point, which
+  need not be a local minimum.
+- `AbsLinear{2}()` (default): alternating least squares.
+- `AbsLinear{1}()`: alternating weighted-median updates initialized from the
+  `AbsLinear{2}` result.
 
 Rows or columns of `A` that are entirely zero receive scale `0`. As with [`cover`](@ref),
 only the products `a[i] * b[j]` are determined by the problem; the split is fixed by the
 balance convention `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]`, imposed within each connected
 component of the support (the gauge acts independently on each).
 
-The objective is non-convex, so `starts` starting points are tried and the lowest-objective
-result kept: the geometric mean boosted until it covers `A`, the tightened hard cover
-[`cover`](@ref), and — for the remaining starts — multiplicative log-normal perturbations
-`a .* exp.(σ .* ξ)`, with spread `σ`, of that boosted point, `ξ` drawn from `rng`. Every start co-varies with an
-independent row/column rescaling of `A` and the objective is scale-invariant, so the selection
-is scale-covariant. The default `rng` is a fresh `MersenneTwister(0)` per call, making repeated
-calls (and the two frames of a covariance check) agree; pass your own `rng` for reproducibility
-you control, since default RNG streams are not stable across Julia versions. `sigma` is accepted
-as an ASCII alias for `σ`.
+For `AbsLinear`, `starts` controls the number of deterministic and perturbed
+starting points. Perturbations have spread `σ` and use `rng`. The default RNG is
+reset for each call; pass one explicitly to control reproducibility. `sigma` is
+an ASCII alias for `σ`.
 
 See also: [`cover`](@ref), [`soft_symcover`](@ref), [`cover_objective`](@ref).
 
@@ -253,18 +212,13 @@ end
     a, b = soft_cover!(ϕ, a, b, A; maxiter=...)
     a, b = soft_cover!(a, b, A; maxiter=...)
 
-Refine the starting point `(a, b)` into a soft cover of `A`, in place, and return it. This
-is the asymmetric counterpart of [`soft_symcover!`](@ref) and the refiner half of
-[`soft_cover`](@ref), carrying the same contract on the start: finite and strictly
-positive on every supported row and column, inert (and zero on output) elsewhere, and
-under no obligation to cover `A`. Build one with [`initialize_cover`](@ref) and
-`feasible=:none`. The no-ϕ form defaults to `AbsLinear{2}()`, matching
-[`soft_cover`](@ref).
+Refine the starting point `(a, b)` into a soft cover of `A` in place. Scales must
+be finite and positive on supported rows and columns; unsupported scales are
+zeroed. The start need not cover `A`. Build one with [`initialize_cover`](@ref)
+and `feasible=:none`. The no-ϕ form uses `AbsLinear{2}()`.
 
-The product `a[i]*b[j]` is unchanged by `a -> c*a`, `b -> b/c`, so the start is read only
-up to that gauge: `(a, b)` and `(2a, b/2)` give the same result. The result itself is
-pinned to the balance convention of [`cover_min`](@ref), as every asymmetric cover in this
-package is.
+The result uses the balance convention of [`cover_min`](@ref), so equivalent
+rescalings `(c*a, b/c)` give the same result.
 
 See also: [`soft_cover`](@ref), [`soft_cover_min!`](@ref), [`initialize_cover`](@ref), [`soft_symcover!`](@ref).
 """
@@ -307,21 +261,11 @@ with no coverage constraints. The no-ϕ form defaults to `AbsLinear{2}()`, match
 [`soft_symcover`](@ref).
 
 Supported ϕ values and required extensions:
-- `AbsLog{2}()`: solved natively (no external solver). In log space the objective is a
-  linear least-squares, so one solve settles it, and being convex it has a unique
-  minimizer that no start can influence. `linsolve` selects the inner solve, exactly as
-  in [`symcover_min`](@ref).
-- `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt. These objectives are
-  non-convex, so the solver returns the minimum of the basin it starts in. Rather than
-  commit to one start, these methods refine each of `strategies` — the
-  [`initialize_symcover`](@ref) menu, by default `$(SYMCOVER_MIN_STRATEGIES)`, without
-  forcing feasibility — and return the best cover found, at a cost of one solve per start.
-- `AbsLog{1}()`: not yet implemented. The objective is an LP in log space, but its optimum
-  is a face, and the lexicographic AbsLog{2} selection that [`symcover_min`](@ref) uses to
-  pin one member of the corresponding hard face does not carry over: the hard face is bounded
-  by the coverage constraints, while this one is a level set of an unconstrained piecewise-
-  linear objective, across which the quadratic pulls far enough to cost most of the exactly
-  tight residuals that make `AbsLog{1}` worth choosing.
+- `AbsLog{2}()`: solved natively as linear least squares; `linsolve` has the same
+  meaning as in [`symcover_min`](@ref).
+- `AbsLinear{1}()`, `AbsLinear{2}()`: require JuMP and Ipopt. Each strategy in
+  `strategies` is refined, and the best local minimum is returned.
+- `AbsLog{1}()`: not implemented.
 
 See also: [`soft_symcover_min!`](@ref), [`soft_symcover`](@ref), [`symcover_min`](@ref).
 """
@@ -357,22 +301,14 @@ end
     a = soft_symcover_min!(ϕ, a, A)
     a = soft_symcover_min!(a, A)
 
-Refine the starting point `a` into the ϕ-minimal symmetric soft cover of `A`, in place.
-This is the soft counterpart of [`symcover_min!`](@ref), and the second half of the
-initialize/refine pair whose first half is [`initialize_symcover`](@ref). The no-ϕ form
-defaults to `AbsLinear{2}()`, matching [`soft_symcover_min`](@ref), whose supported ϕ
-values these methods share.
+Refine `a` into a local minimum of the symmetric soft-cover objective, in place.
+The no-ϕ form uses `AbsLinear{2}()`.
 
-`a` must be strictly positive on every row of `A` that carries support; scales on rows
-carrying no support are inert, and are zero on output. Unlike [`symcover_min!`](@ref), `a`
-need *not* cover `A` — the soft objective imposes no coverage constraint, and the natural
-starts do not satisfy one. Pass `feasible=:none` when building a start with
-[`initialize_symcover`](@ref).
+`a` must be positive on supported rows; unsupported scales are zeroed. It need
+not cover `A`. Use `feasible=:none` with [`initialize_symcover`](@ref).
 
-The `AbsLinear` penalties are non-convex, so the start selects the local minimum the solver
-descends into; that is why [`soft_symcover_min`](@ref) tries several rather than committing
-to one. Under `AbsLog{2}` the objective is convex with a unique minimizer, so the start is
-honored but not visible in the result.
+For `AbsLinear`, the result can depend on the start. The `AbsLog{2}` result is
+unique.
 
 See also: [`initialize_symcover`](@ref), [`soft_symcover_min`](@ref), [`symcover_min!`](@ref).
 """
@@ -386,10 +322,7 @@ function soft_symcover_min!(::AbsLog{2}, a::AbstractVector, A::AbstractMatrix; k
     return a
 end
 
-# Shared prologue of the symmetric soft refiners (`soft_symcover!`, `soft_symcover_min!`).
-# The soft objective constrains nothing, so — unlike `_prepare_symcover_start!` — this
-# checks positivity only, and moves the start nowhere. `fname` names the caller so the
-# error reports the function the user actually called.
+# Validate a symmetric soft-cover start and clear unsupported scales.
 function _prepare_soft_symcover_start!(a::AbstractVector, A::AbstractMatrix, fname::Symbol=:soft_symcover_min!)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("$fname requires a square matrix"))
@@ -427,25 +360,12 @@ the objective depends on `a` and `b` only through the products `a[i]*b[j]`, so w
 convention the split between them would be arbitrary.
 
 Supported ϕ values and required extensions:
-- `AbsLog{2}()`: solved natively (no external solver) — the same analytic geometric-mean
-  minimum [`cover`](@ref) computes as its initial point. Convex, so the minimizer is unique.
-- `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt. These objectives are
-  non-convex, so the solver returns the minimum of the basin it starts in. Rather than
-  commit to one start, these methods refine each of `strategies` — the
-  [`initialize_cover`](@ref) menu, by default `$(COVER_MIN_STRATEGIES)`, taken raw
-  (`feasible=:none`, since the soft objective constrains nothing) — and return the best
-  cover found, at a cost of one solve per start. The result is the best *local* minimum on
-  that menu: the multistart is a hedge against a poor basin, not a certificate of global
-  optimality.
-- `AbsLog{1}()`: not yet implemented. The objective is an LP in log space, but its optimum
-  is a face, and the lexicographic AbsLog{2} selection that [`symcover_min`](@ref) uses to
-  pin one member of the corresponding hard face does not carry over: the hard face is bounded
-  by the coverage constraints, while this one is a level set of an unconstrained piecewise-
-  linear objective, across which the quadratic pulls far enough to cost most of the exactly
-  tight residuals that make `AbsLog{1}` worth choosing.
+- `AbsLog{2}()`: solved natively; the minimizer is unique.
+- `AbsLinear{1}()`, `AbsLinear{2}()`: require JuMP and Ipopt. Each strategy in
+  `strategies` is refined, and the best local minimum is returned.
+- `AbsLog{1}()`: not implemented.
 
-Every start on the menu co-varies with a rescaling of `A` and the objective is
-scale-invariant, so the selection — and hence the result — is scale-covariant.
+The starting points and objective are scale-covariant, as is the selected result.
 
 See also: [`soft_cover_min!`](@ref), [`soft_symcover_min`](@ref), [`soft_cover`](@ref).
 """
@@ -473,19 +393,14 @@ end
     a, b = soft_cover_min!(ϕ, a, b, A)
     a, b = soft_cover_min!(a, b, A)
 
-Refine the starting point `(a, b)` into the ϕ-minimal asymmetric soft cover of `A`, in
-place. This is the asymmetric counterpart of [`soft_symcover_min!`](@ref). The no-ϕ form
-defaults to `AbsLinear{2}()`, matching [`soft_cover_min`](@ref), whose supported ϕ values
-these methods share.
+Refine `(a, b)` into a local minimum of the asymmetric soft-cover objective, in
+place. The no-ϕ form uses `AbsLinear{2}()`.
 
-`a` and `b` must be strictly positive on every supported row and column; scales on
-unsupported rows and columns are inert, and are zero on output. As with
-[`soft_symcover_min!`](@ref) — and unlike [`cover_min!`](@ref) — the start need *not* cover
-`A`. Build one with `feasible=:none`.
+`a` and `b` must be positive on supported rows and columns; unsupported scales
+are zeroed. The start need not cover `A`. Build one with `feasible=:none`.
 
-The product `a[i]*b[j]` is unchanged by `a -> c*a`, `b -> b/c`, so the start is read only
-up to that gauge, and the result is pinned to the balance convention of
-[`soft_cover_min`](@ref).
+The result uses the balance convention of [`soft_cover_min`](@ref), so equivalent
+rescalings `(c*a, b/c)` give the same result.
 
 See also: [`initialize_cover`](@ref), [`soft_cover_min`](@ref), [`soft_symcover_min!`](@ref).
 """
@@ -501,11 +416,7 @@ function soft_cover_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::A
     return a, b
 end
 
-# Shared prologue of the asymmetric soft refiners (`soft_cover!`, `soft_cover_min!`); the
-# counterpart of `_prepare_soft_symcover_start!`. Positivity only — the soft objective
-# constrains nothing — plus the balance pin, so the refiners read the start only up to the
-# row/column gauge. `fname` names the caller so the error reports the function the user
-# actually called.
+# Validate an asymmetric soft-cover start, clear unsupported scales, and balance it.
 function _prepare_soft_cover_start!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
                                     fname::Symbol=:soft_cover_min!)
     axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
@@ -554,27 +465,12 @@ function _resolve_alias(primary, alias, default, primary_name::Symbol, alias_nam
     return primary
 end
 
-# Relative-objective margin a later start must beat the incumbent by to replace it.
-#
-# Two candidates that reach the same point differ, between one frame and a rescaled one, only
-# by roundoff in evaluating the objective — a sum of O(n²) terms, so of relative size O(n·eps).
-# The margin must exceed that, or the selection could flip with the frame and forfeit
-# covariance; it must also stay below any genuine basin gap, which is orders of magnitude
-# larger. Candidates stopped short of convergence may differ by far more than roundoff, but
-# such differences are deterministic and co-vary with the frame, so switching on them is safe.
+# Relative improvement required to replace the incumbent. This prevents
+# roundoff-equivalent candidates from changing the selection after rescaling.
 _multistart_switchtol(::Type{T}) where {T} = 5_000_000 * eps(T)
 
-# Labeled candidate starts for the symmetric AbsLinear{2} multistart, in selection order.
-# The deterministic starts are the `initialize_symcover` menu: the geometric mean (raw — it is
-# the exact soft AbsLog{2} optimum, so forcing it to feasibility would spoil it — and also the
-# perturbation base), the tightened hard cover, the uniformly inflated geometric mean, the
-# leave-one-out geometric mean (when a support entry can be dropped), and — only when `A` has
-# a zero entry — the greedy feasible cover. The feasible start is gated because on a fully
-# dense `A` it never uniquely wins, and "which entries are zero" is invariant under a diagonal
-# rescaling `D*A*D`, so the gate keeps the selection scale-covariant. Remaining slots, up to
-# `starts` total, are multiplicative log-normal perturbations `a_g .* exp.(σ .* ξ)` of the
-# geometric-mean point, `ξ` drawn from `rng` (drawn for every index so the stream is
-# frame-independent). `starts` below the number of deterministic starts truncates the list.
+# Symmetric AbsLinear{2} starts in selection order, followed by log-normal
+# perturbations of the geometric-mean point. `starts` truncates or extends the list.
 function _soft_symcover_abslinear2_inits(A::AbstractMatrix, starts::Int, σ::Real, rng)
     ax = axes(A, 1)
     T = float(real(eltype(A)))
@@ -608,13 +504,7 @@ function _soft_symcover_abslinear2_inits(A::AbstractMatrix, starts::Int, σ::Rea
     return labels, inits
 end
 
-# Index of the multistart winner among candidate objectives `objs`: the earliest candidate not
-# beaten by a strict relative improvement. Switching only on a genuine improvement is what keeps
-# the selection scale-covariant — candidates landing in the same basin converge to the same
-# objective only to the descent tolerance (~1e-14), and switching on that noise would forfeit
-# covariance, since the incumbent (ordered geometric-mean first) is the most covariant start.
-# Real basin improvements are far larger. This is the single source of the selection rule, so a
-# caller that captures `objs` (below) recovers the winner exactly, without re-deriving it.
+# Return the first candidate not beaten by more than the roundoff margin.
 function _multistart_select(objs)
     besti = firstindex(objs)
     Ebest = objs[besti]
@@ -662,14 +552,16 @@ end
 
 # Coordinate-descent iteration for AbsLinear{2} soft cover.
 # Each coordinate a[k] is updated to the exact minimizer of
-#   (1 - d/x²)² + ∑_{j≠k} (1 - c_j/x)²
-# where d = |A[k,k]| and c_j = |A[k,j]|/a[j].
+#   ½(1 - d/x²)² + ∑_{j≠k} (1 - c_j/x)²
+# where d = |A[k,k]| and c_j = |A[k,j]|/a[j]. This is half the part of the
+# `cover_objective` sum that depends on a[k]: that sum runs over the full grid,
+# so each off-diagonal pair contributes twice and the diagonal once.
 # Closed form when d=0 (x = s2/s1); Newton on a cubic otherwise.
 #
 # `iter` bounds the sweeps; the descent exits early once every coordinate's
-# stationarity residual r_k = ∑_j (1 - ρ)ρ (ρ = |A[k,j]|/(a[k]a[j])), the
-# gradient of the objective in log a[k], has magnitude below `tol` at the start
-# of a sweep. The residual is available for free from the sums already formed
+# stationarity residual r_k = ∑_j (1 - ρ)ρ (ρ = |A[k,j]|/(a[k]a[j])), half the
+# gradient of the objective above in log a[k], has magnitude below `tol` at the
+# start of a sweep. The residual is available for free from the sums already formed
 # for the update (r_k = s1/a[k] - s2/a[k]² + d/a[k]² - d²/a[k]⁴), it is the exact
 # quantity optimality demands be zero, and it is scale-invariant (each ρ is), so
 # covariant restarts of a rescaled problem exit on the same sweep and the
@@ -753,16 +645,20 @@ function _weighted_self_median!(c::AbstractVector{T}) where T
     return wm
 end
 
-# AbsLinear{1} coordinate objective at candidate `x`: |1 - d/x²| + ∑ᵢ |1 - cᵢ/x|.
+# AbsLinear{1} coordinate objective at candidate `x`: |1 - d/x²| + 2∑ᵢ |1 - cᵢ/x|,
+# the part of the full-grid `cover_objective` sum that depends on a[k] (each
+# off-diagonal pair appears twice there, the diagonal once).
 # This is a top-level function because a closure in `_abslinear1_iter!` would
 # capture and box the reassigned `d`, allocating in the inner loop and causing
 # juliac's trim verifier to report a dynamic call.
-_abslinear1_obj(x, d, c) = abs(1 - d/x^2) + sum(abs(1 - ci/x) for ci in c)
+_abslinear1_obj(x, d, c) = abs(1 - d/x^2) + 2 * sum(abs(1 - ci/x) for ci in c)
 
 # Coordinate-descent iteration for AbsLinear{1} soft cover.
-# Each coordinate a[k] is updated to minimize ∑_j |1 - |A[k,j]|/(a[k]*a[j])|.
-# For the off-diagonal sum, the minimizer is the weighted median of c_j with weights c_j,
-# where c_j = |A[k,j]|/a[j].  When A[k,k] ≠ 0 we also compare against sqrt(|A[k,k]|).
+# Each coordinate a[k] is updated to reduce |1 - d/x²| + 2∑_{j≠k} |1 - c_j/x|,
+# where d = |A[k,k]| and c_j = |A[k,j]|/a[j]. The off-diagonal sum is minimized
+# by the weighted median of the c_j with weights c_j (the factor 2 does not move
+# it). When d ≠ 0 the update takes the better of that median and sqrt(d) under
+# `_abslinear1_obj`; this is not an exact coordinate minimization.
 #
 # `iter` bounds the sweeps; the descent exits early once the largest relative
 # coordinate movement in a sweep drops to `tol`. The median update reaches an
@@ -941,9 +837,10 @@ function _soft_cover_abslinear2_inits(A::AbstractMatrix, starts::Int, σ::Real, 
     ag, bg = initialize_cover(A; strategy=:geomean, feasible=:boost)
     labels = ["boost"]
     inits = [(copy(ag), copy(bg))]
-    # The tightened hard cover `cover(A)` is exactly this point tightened, so tighten a copy
+    # `cover(A)` is this point tightened, then balanced and re-inflated. Tighten a copy
     # (at `tighten_cover!`'s own default `maxiter`) rather than recomputing the shared
-    # geometric-mean and boost passes.
+    # geometric-mean and boost passes; the balance is gauge-only and the re-inflation
+    # only recovers roundoff, so this start differs from `cover(A)` negligibly.
     length(inits) < starts && (push!(labels, "hardcover"); push!(inits, tighten_cover!(copy(ag), copy(bg), A)))
     k = 0
     while length(inits) < starts

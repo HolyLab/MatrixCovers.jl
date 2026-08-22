@@ -33,10 +33,7 @@
 end
 
 @testset "symcover does not currently consult ϕ" begin
-    # A regression check on the heuristic as it stands, not an API guarantee: the docstring
-    # says the heuristic covers ignore `ϕ` *currently*, and that this may change. Should a
-    # penalty-tuned heuristic land, this test records what changes — update it; do not read a
-    # failure here as a broken promise to callers.
+    # The current heuristic accepts but ignores the penalty.
     rng = StableRNG(1)
     for n in (2, 5, 40)
         B = randn(rng, n, n); A = (B + B') / 2
@@ -46,8 +43,7 @@ end
         end
     end
 
-    # Ignored is not the same as unchecked: the slot takes a penalty, so a wrong
-    # first argument fails rather than being silently dropped.
+    # The first argument must still be a penalty.
     A = [4.0 1.5; 1.5 1.0]
     a = symcover(A)
     b = copy(a)

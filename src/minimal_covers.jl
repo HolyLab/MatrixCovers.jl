@@ -27,18 +27,12 @@ Supported ϕ values:
   `nnz ≪ n²`.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
 - `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt. These objectives are
-  non-convex, so the solver returns the minimum of the basin it starts in. Rather than
-  commit to one start, these methods refine each of `strategies` — the
-  [`initialize_symcover`](@ref) menu, by default `$(SYMCOVER_MIN_STRATEGIES)` — and return
-  the best cover found, at a cost of one solve per start. A strategy that `A` admits no
-  start for is skipped. The result is the best *local* minimum on that menu: the multistart
-  is a hedge against a poor basin, not a certificate of global optimality.
+  nonconvex. Each strategy in `strategies` is refined, and the best local
+  minimum is returned. A strategy that cannot produce a start is skipped.
 
-The `AbsLog` penalties are convex in the log-scales, so for them the minimum value is
-unique and no such hedge is needed. `AbsLog{2}` has a unique minimizer too. `AbsLog{1}`
-does not: its optimum is a whole face of the feasible polytope, whose members are
-genuinely different covers that happen to score alike. The one returned is the member
-of that face minimizing the `AbsLog{2}` objective.
+The `AbsLog` penalties are convex in the log-scales. `AbsLog{2}` has a unique
+minimizer. When the `AbsLog{1}` optimum is a face, the method returns the member
+that minimizes the `AbsLog{2}` objective.
 
 !!! note
     Even the native solver is more expensive than the [`symcover`](@ref) heuristic.
@@ -52,17 +46,12 @@ symcover_min(A::AbstractMatrix; kwargs...) = symcover_min(AbsLog{2}(), A; kwargs
     a, b = cover_min(ϕ, A)
     a, b = cover_min(A)
 
-Return the ϕ-minimal asymmetric hard cover of `A`: the vectors `a`, `b` minimizing
+Return the ϕ-minimal asymmetric hard cover of `A`: vectors `a`, `b` minimizing
 `∑_{i,j} ϕ(|A[i,j]|/(a[i]*b[j]))` subject to `a[i]*b[j] >= |A[i,j]|` for every nonzero
-entry of `A`. Only the products `a[i]*b[j]` are determined by the problem: the gauge
-`a -> γ*a`, `b -> b/γ` leaves every one of them unchanged, and acts independently on
-each connected component of the bipartite support graph of `A` (rows and columns as
-vertices, stored nonzeros as edges), since no product spans two components. The split
-is pinned by imposing, within each component, the balance convention
+entry of `A`. The split between `a` and `b` is set within each support component
+by the balance convention
 `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` (`nzaᵢ`, `nzbⱼ` = nonzero counts of row `i`,
-column `j`, summed over that component's rows/columns) — so the result is a
-deterministic function of the support and the products, and block-diagonal assembly
-commutes with the split. The no-ϕ form defaults to `AbsLog{2}()`, matching
+column `j`). The no-ϕ form defaults to `AbsLog{2}()`, matching
 [`cover`](@ref).
 
 Supported ϕ values:
@@ -77,18 +66,12 @@ Supported ϕ values:
   reweighted normal equations is the wrong solve when `nnz ≪ n²`.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
 - `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt. These objectives are
-  non-convex, so the solver returns the minimum of the basin it starts in. Rather than
-  commit to one start, these methods refine each of `strategies` — the
-  [`initialize_cover`](@ref) menu, by default `$(COVER_MIN_STRATEGIES)` — and return the
-  best cover found, at a cost of one solve per start. The result is the best *local*
-  minimum on that menu: the multistart is a hedge against a poor basin, not a certificate
-  of global optimality.
+  nonconvex. Each strategy in `strategies` is refined, and the best local
+  minimum is returned.
 
-The `AbsLog` penalties are convex in the log-scales, so for them the minimum value is
-unique and no such hedge is needed. `AbsLog{2}` has a unique minimizer too. `AbsLog{1}`
-does not: its optimum is a whole face of the feasible polytope, whose members are
-genuinely different covers that happen to score alike. The one returned is the member
-of that face minimizing the `AbsLog{2}` objective.
+The `AbsLog` penalties are convex in the log-scales. `AbsLog{2}` has a unique
+minimizer. When the `AbsLog{1}` optimum is a face, the method returns the member
+that minimizes the `AbsLog{2}` objective.
 
 !!! note
     Even the native solver is more expensive than the [`cover`](@ref) heuristic.
@@ -114,12 +97,9 @@ cover `A` — `a[i]*a[j] >= abs(A[i,j])` — to within the roundoff of the log-d
 arithmetic; otherwise an `ArgumentError` is raised. Scales on rows carrying no
 support are inert: whatever they hold on input, they are zero on output.
 
-How much the start matters depends on ϕ. Under the `AbsLog` penalties the result is
-start-independent: they are convex in the log-scales, `AbsLog{2}` has a unique
-minimizer, and `AbsLog{1}` — whose optimum is a whole face of equally-scoring covers
-— is pinned to the member of that face minimizing the `AbsLog{2}` objective. The
-`AbsLinear` penalties are non-convex, and the identified local minima depend on
-the start(s).
+The `AbsLog` result is independent of the start. For `AbsLog{1}`, ties are broken
+by the `AbsLog{2}` objective. Local minima under `AbsLinear` can depend on the
+start.
 
 See also: [`initialize_symcover`](@ref), [`symcover_min`](@ref), [`cover_min!`](@ref).
 """
@@ -198,16 +178,10 @@ function cover_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::Abstra
     return a, b
 end
 
-# The AbsLinear objectives are non-convex, so a refinement reports the minimum of whichever
-# basin its start lies in. The drivers below therefore refine every start on a menu and keep
-# the best, which is what makes the result of the non-mutating entry point a property of `A`
-# rather than of an initialization the caller never chose. The kernels they call — the
-# `*_min!` refiners for the AbsLinear penalties — live in the MatrixCoversIpoptExt extension, but the
-# menu and the selection are native, so the two families need only one description.
+# Multistart drivers for nonconvex AbsLinear objectives. The `*_min!` kernels live
+# in MatrixCoversIpoptExt; the main package owns the starts and selection.
 #
-# The winner is picked by `_multistart_select`, the same scale-covariant rule the soft-cover
-# multistarts use: a later start replaces the incumbent only on a genuine relative
-# improvement, never on the roundoff by which two starts reaching the same basin differ.
+# Use the same roundoff-tolerant selection rule as the soft-cover multistarts.
 function symcover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=SYMCOVER_MIN_STRATEGIES)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("symcover_min requires a square matrix"))
