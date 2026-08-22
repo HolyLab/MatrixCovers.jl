@@ -242,6 +242,35 @@ end
     @test MatrixCovers._cover_min_abslog2(G32)[3].linsolve === :dense
 end
 
+# A Newton step is exact on the dense and Woodbury paths, so a whole step that leaves
+# the violated set unchanged has already reached the minimizer of the current
+# penalty stage, and the stage ends without a confirmation solve. The `:lsqr` steps
+# are inexact and keep the decrease test as their sole criterion, which is what makes
+# their solve counts the reference here.
+@testset "MMC exact paths stop on a sign-stable Newton step" begin
+    rng = StableRNG(31)
+    A = (X = exp.(randn(rng, 60, 60)); (X .+ X') ./ 2)
+    ad, sd = MatrixCovers._symcover_min_abslog2(A; linsolve=:dense)
+    aw, sw = MatrixCovers._symcover_min_abslog2(A; linsolve=:woodbury)
+    al, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
+    @test ad ≈ al rtol=1e-6
+    @test aw ≈ al rtol=1e-6
+    # One solve per κ stage is saved; `κs` has four stages by default.
+    @test sd.nsolves == sw.nsolves
+    @test sd.nsolves <= sl.nsolves - length((1e2, 1e4, 1e6, 1e8))
+    @test sd.nsolves <= 26
+
+    G = exp.(randn(rng, 60, 45))
+    gd, hd, td = MatrixCovers._cover_min_abslog2(G; linsolve=:dense)
+    gw, hw, tw = MatrixCovers._cover_min_abslog2(G; linsolve=:woodbury)
+    gl, hl, tl = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr)
+    @test gd .* hd' ≈ gl .* hl' rtol=1e-6
+    @test gw .* hw' ≈ gl .* hl' rtol=1e-6
+    @test td.nsolves == tw.nsolves
+    @test td.nsolves <= tl.nsolves - length((1e2, 1e4, 1e6, 1e8))
+    @test td.nsolves <= 24
+end
+
 @testset "MMC disconnected-support gauge" begin
     # A support graph that splits into k connected components carries k independent
     # (e; −e) gauges. The asymmetric dense normal equations pin only the global one

@@ -318,6 +318,16 @@ end
 # factorization behind it, and it is reliable only in `Float64`, so that is the
 # only working type the path accepts.
 
+# True when the residuals of `x` are violated on exactly the entries `pat` marks.
+# `edges` and `cvals` are the support list and its `log|A_ij|`, as gathered by the
+# workers below.
+function _violated_matches(pat, edges, cvals, x)
+    for (e, (p, q)) in enumerate(edges)
+        ((x[p] + x[q] - cvals[e]) < zero(eltype(cvals))) == pat[e] || return false
+    end
+    return true
+end
+
 # Append one COO triplet of the sparse Woodbury matrix `C`, tracking its diagonal
 # in `diagacc` so the ridge can be sized without a second pass over `C`.
 function _push_coo!(Ci, Cj, Cv, diagacc, p, q, v)
@@ -488,6 +498,9 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     ws = zeros(T, ne)   # √weight per support entry, frozen during one solve
     cv = zeros(T, ne)   # √weight · log|A_ij| (LSQR right-hand side)
     f = zeros(T, n)
+    # Entries the frozen weights of the current solve treat as violated. A full Newton
+    # step that leaves this pattern intact has landed on the stage's minimizer.
+    vpat = falses(ne)
     # COO triplets of `C`, refilled each Woodbury solve; `diagacc` accumulates its
     # diagonal as they are appended.
     Ci = Int[]
@@ -543,9 +556,11 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             end
             for (e, (ip, jp)) in enumerate(edges)
                 c = cvals[e]
-                w = κ === nothing ? oneunit(T) : ((α[ip] + α[jp] - c) < 0 ? T(κ) : oneunit(T))
+                viol = κ !== nothing && (α[ip] + α[jp] - c) < 0
+                vpat[e] = viol
+                w = viol ? T(κ) : oneunit(T)
                 f[ip] += w * c
-                if w != oneunit(T)
+                if viol
                     _push_coo!(Ci, Cj, Cv, diagacc, ip, ip, w - oneunit(T))
                     _push_coo!(Ci, Cj, Cv, diagacc, ip, jp, w - oneunit(T))
                 end
@@ -584,7 +599,9 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             B = zeros(T, n, n)
             for (e, (ip, jp)) in enumerate(edges)
                 c = cvals[e]
-                w = κ === nothing ? oneunit(T) : ((α[ip] + α[jp] - c) < 0 ? T(κ) : oneunit(T))
+                viol = κ !== nothing && (α[ip] + α[jp] - c) < 0
+                vpat[e] = viol
+                w = viol ? T(κ) : oneunit(T)
                 f[ip] += w * c
                 B[ip, ip] += w
                 B[ip, jp] += w
@@ -615,6 +632,11 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                 fnew = fκ(α .+ t .* (αnew .- α), κ)
             end
             α = α .+ t .* (αnew .- α)
+            # `f_κ` is convex and the dense and Woodbury steps solve its quadratic model
+            # exactly, so a whole step that leaves the violated set unchanged has reached
+            # the stage's minimizer: the gradient there is the model's, which is zero.
+            # The `:lsqr` solves are inexact and carry no such guarantee.
+            !use_lsqr && isone(t) && _violated_matches(vpat, edges, cvals, α) && break
             fcur - fnew <= 5000 * eps(T) * max(fcur, one(T)) && break
             fcur = fnew
         end
@@ -747,6 +769,9 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     f = zeros(T, N)
     ws = zeros(T, ne)       # √weight per support entry (LSQR path)
     cv = zeros(T, ne + 1)   # √weight · log|A_ij|, with a trailing 0 gauge target
+    # Entries the frozen weights of the current solve treat as violated. A full Newton
+    # step that leaves this pattern intact has landed on the stage's minimizer.
+    vpat = falses(ne)
     # COO triplets of `C`, refilled each Woodbury solve; `diagacc` accumulates its
     # diagonal as they are appended.
     Ci = Int[]
@@ -813,10 +838,12 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             end
             for (e, (p, q)) in enumerate(edges)
                 c = cvals[e]
-                w = κ === nothing ? oneunit(T) : ((x[p] + x[q] - c) < 0 ? T(κ) : oneunit(T))
+                viol = κ !== nothing && (x[p] + x[q] - c) < 0
+                vpat[e] = viol
+                w = viol ? T(κ) : oneunit(T)
                 f[p] += w * c
                 f[q] += w * c
-                if w != oneunit(T)
+                if viol
                     dw = w - oneunit(T)
                     _push_coo!(Ci, Cj, Cv, diagacc, p, p, dw)
                     _push_coo!(Ci, Cj, Cv, diagacc, q, q, dw)
@@ -876,7 +903,9 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             B = v0 * v0'
             for (e, (p, q)) in enumerate(edges)
                 c = cvals[e]
-                w = κ === nothing ? oneunit(T) : ((x[p] + x[q] - c) < 0 ? T(κ) : oneunit(T))
+                viol = κ !== nothing && (x[p] + x[q] - c) < 0
+                vpat[e] = viol
+                w = viol ? T(κ) : oneunit(T)
                 f[p] += w * c
                 f[q] += w * c
                 B[p, p] += w
@@ -931,6 +960,11 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                 fnew = fκ(x .+ t .* (xnew .- x), κ)
             end
             x = x .+ t .* (xnew .- x)
+            # `f_κ` is convex and the dense and Woodbury steps solve its quadratic model
+            # exactly, so a whole step that leaves the violated set unchanged has reached
+            # the stage's minimizer: the gradient there is the model's, which is zero.
+            # The `:lsqr` solves are inexact and carry no such guarantee.
+            !use_lsqr && isone(t) && _violated_matches(vpat, edges, cvals, x) && break
             fcur - fnew <= 5000 * eps(T) * max(fcur, one(T)) && break
             fcur = fnew
         end
