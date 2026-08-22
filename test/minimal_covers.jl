@@ -174,6 +174,11 @@ end
                 @test aw ≈ ad rtol=1e-7
                 @test aa == aw
                 @test iscover(aw, M; atol=1e-8)
+                # Both Woodbury sub-paths run within a continuation: the early stages
+                # are well enough conditioned for conjugate gradients, the late ones
+                # are not, and both are exact.
+                @test sw.cgiters > 0
+                @test sd.cgiters == 0
             end
         end
     end
@@ -193,6 +198,8 @@ end
                 @test sa.linsolve === :woodbury
                 @test aw .* bw' ≈ ad .* bd' rtol=1e-7
                 @test iscover(aw, bw, M; atol=1e-7)
+                @test sw.cgiters > 0
+                @test sd.cgiters == 0
             end
         end
     end
@@ -222,6 +229,17 @@ end
     av, bv = cover_min(AbsLog{2}(), Agv; linsolve=:woodbury)
     am, bm = cover_min(AbsLog{2}(), Matrix(Agv); linsolve=:woodbury)
     @test av .* bv' ≈ am .* bm' rtol=1e-10
+
+    # A single well-conditioned stage exercises the conjugate-gradient sub-path alone.
+    A1 = symlognormal(24)
+    c1, s1 = MatrixCovers._symcover_min_abslog2(A1; κs=(1e2,), linsolve=:woodbury)
+    @test s1.cgiters > 0
+    @test c1 ≈ MatrixCovers._symcover_min_abslog2(A1; κs=(1e2,), linsolve=:dense)[1] rtol=1e-8
+    G1 = lognormal(24, 18)
+    p1, q1, t1 = MatrixCovers._cover_min_abslog2(G1; κs=(1e2,), linsolve=:woodbury)
+    pd1, qd1, _ = MatrixCovers._cover_min_abslog2(G1; κs=(1e2,), linsolve=:dense)
+    @test t1.cgiters > 0
+    @test p1 .* q1' ≈ pd1 .* qd1' rtol=1e-8
 
     # The zero set must stay inside the guard, and the arithmetic must be Float64.
     holey = symlognormal(12)
