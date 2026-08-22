@@ -2,7 +2,7 @@ using MatrixCovers
 using MatrixCovers: foreach_support, foreach_support_sym, unconstrained_min!, tighten_cover!
 using MatrixCovers: ncomponents, support_components
 using JuMP, HiGHS, Ipopt   # triggers MatrixCoversJuMPExt and MatrixCoversIpoptExt extensions
-using SparseArrays  # triggers MatrixCoversSparseArraysExt extension
+using SparseArrays
 using Unitful       # triggers MatrixCoversUnitfulExt extension
 using LinearAlgebra
 using OffsetArrays
@@ -68,7 +68,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
     # Aqua checks the package alone; the extensions need their own sweep.
     @testset "method ambiguities" begin
         @test isempty(detect_ambiguities(MatrixCovers; recursive=true))
-        for extname in (:MatrixCoversSparseArraysExt, :MatrixCoversJuMPExt, :MatrixCoversIpoptExt, :MatrixCoversUnitfulExt, :MatrixCoversSparseArraysUnitfulExt)
+        for extname in (:MatrixCoversJuMPExt, :MatrixCoversIpoptExt, :MatrixCoversUnitfulExt)
             ext = Base.get_extension(MatrixCovers, extname)
             @test ext !== nothing
             @test isempty(detect_ambiguities(MatrixCovers, ext; recursive=true))

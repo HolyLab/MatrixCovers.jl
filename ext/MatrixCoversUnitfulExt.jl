@@ -1,8 +1,9 @@
 module MatrixCoversUnitfulExt
 
-using LinearAlgebra: LinearAlgebra
+using LinearAlgebra: LinearAlgebra, Hermitian, Symmetric
 using MatrixCovers
 using MatrixCovers: AbsLog, AbsLinear
+using SparseArrays: SparseMatrixCSC
 using Unitful: Unitful, FreeUnits, Quantity, Unit, unit, ustrip
 
 const MC = MatrixCovers
@@ -318,6 +319,24 @@ MC.soft_symcover_min(A::QMatrix; kwargs...) = sym(MC.soft_symcover_min, A; kwarg
 MC.soft_symcover_min!(a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_symcover_min!, a, A; kwargs...)
 MC.soft_cover_min(A::QMatrix; kwargs...) = asym(MC.soft_cover_min, A; kwargs...)
 MC.soft_cover_min!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover_min!, a, b, A; kwargs...)
+
+# MatrixCovers types the matrix slot of its sparse refiners, where the methods above
+# type the element: neither is more specific for a sparse matrix of quantities, so the
+# two are ambiguous there. These methods resolve that pair. They are the only overlap --
+# every other sparse method leaves its matrix slot untyped.
+#
+# Sparse storage synthesizes structural zeros with `zero(eltype)`, so the element type
+# is concrete and every entry carries the same unit.
+const QSparse = SparseMatrixCSC{<:Quantity}
+const QSparseSym = Union{QSparse,
+                         Symmetric{<:Quantity,<:SparseMatrixCSC},
+                         Hermitian{<:Quantity,<:SparseMatrixCSC}}
+
+MC.symcover_min!(ϕ::AbsLog{2}, a::QVector, A::QSparseSym; kwargs...) =
+    symstart!(MC.symcover_min!, a, A, ϕ; kwargs...)
+
+MC.cover_min!(ϕ::AbsLog{2}, a::QVector, b::QVector, A::QSparse; kwargs...) =
+    asymstart!(MC.cover_min!, a, b, A, ϕ; kwargs...)
 
 for P in PENALTIES
     @eval begin

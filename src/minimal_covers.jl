@@ -22,9 +22,8 @@ Supported ϕ values:
   normal equations; `:lsqr` uses matrix-free LSQR (per-iteration cost O(nnz),
   intended for large sparse supports)). `linsolve` defaults to `:auto` for
   dense `A`; the `SparseMatrixCSC`/`Symmetric`/`Hermitian` sparse methods
-  (from the SparseArrays extension) default to `:lsqr` instead, since a dense
-  factorization of the reweighted normal equations is the wrong solve when
-  `nnz ≪ n²`.
+  default to `:lsqr` instead, since a dense factorization of the reweighted
+  normal equations is the wrong solve when `nnz ≪ n²`.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
 - `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt. These objectives are
   nonconvex. Each strategy in `strategies` is refined, and the best local
@@ -61,9 +60,9 @@ Supported ϕ values:
   linear solve: `:auto`/`:dense` use a dense factorization of the reweighted
   normal equations; `:lsqr` uses matrix-free LSQR (per-iteration cost O(nnz),
   intended for large sparse supports)). `linsolve` defaults to `:auto` for
-  dense `A`; the `SparseMatrixCSC` sparse method (from the SparseArrays
-  extension) defaults to `:lsqr` instead, since a dense factorization of the
-  reweighted normal equations is the wrong solve when `nnz ≪ n²`.
+  dense `A`; the `SparseMatrixCSC` sparse method defaults to `:lsqr` instead,
+  since a dense factorization of the reweighted normal equations is the wrong
+  solve when `nnz ≪ n²`.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
 - `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt. These objectives are
   nonconvex. Each strategy in `strategies` is refined, and the best local
@@ -370,9 +369,8 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                                boost::Bool=true, fname=:symcover_min)
     linsolve in (:auto, :dense, :lsqr) ||
         throw(ArgumentError("linsolve must be :auto, :dense, or :lsqr; got :$linsolve"))
-    # The shared entry to the native solve, reached from the sym `*_min` methods in
-    # this package and in the SparseArrays extension, so the precondition is checked
-    # once here rather than at each of them.
+    # The shared entry to the native solve, reached from every sym `*_min` method,
+    # so the precondition is checked once here rather than at each of them.
     require_abs_symmetric(A, fname)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("symcover_min requires a square matrix"))
