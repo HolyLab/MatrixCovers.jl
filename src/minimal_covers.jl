@@ -525,25 +525,306 @@ function _lsqr(Amul!, Atmul!, b::AbstractVector{T}, x0::AbstractVector{T};
     return x, iters
 end
 
+# The two layouts the AbsLog{2} continuation reads its support through. Both present
+# the same abstract object: a set of support entries, each pairing two unknowns `(p, q)`
+# with a value `c = log|A_ij|` and contributing a residual `z = x[p] + x[q] - c`.
+#
+# Every support entry is represented once: in the symmetric case an off-diagonal entry
+# and its mirror are the single pair `(p, q)` with `p < q`, the diagonal is `(p, p)`,
+# and the `symmetric` flag of `SupportSystem` records that an off-diagonal entry stands
+# for two residuals. Its multiplicity is therefore `mult = (symmetric && p != q) ? 2 : 1`,
+# and every weighted quantity below carries it.
+
+# One stored element per support entry. Suits a support that is sparse relative to the
+# grid, which is what the LSQR and dense paths face.
+struct EdgeList{T}
+    edges::Vector{Tuple{Int,Int}}   # support entries as pairs of unknowns
+    cvals::Vector{T}                # log|A_ij| per stored entry
+end
+
+# The values on a dense grid, with `-Inf` (the image of a zero entry under `log`)
+# marking a position outside the support. The sweeps then run as contiguous column
+# passes that vectorize, at the cost of visiting the whole grid; the Woodbury path,
+# which is taken only when the zero set is thin, is where that trade pays.
+#
+# Symmetric: `C` is `n×n` and only the upper triangle (`i ≤ j`) is read, entry `(i, j)`
+# coupling unknowns `i` and `j`. Asymmetric: `C` is `m×n`, entry `(i, j)` coupling
+# unknowns `i` and `m + j`.
+struct Grid{T}
+    C::Matrix{T}
+end
+
 # The support of `A` as the linear system the AbsLog{2} continuation solves. The
 # unknowns are stacked log-scales `x[1:N]` — the row scales alone for a symmetric
-# problem, the row scales followed by the column scales for an asymmetric one — and
-# each support entry contributes a residual `z = x[p] + x[q] - c`.
-#
-# Every support entry is stored once: in the symmetric case an off-diagonal entry and
-# its mirror are the single edge `(p, q)` with `p < q`, the diagonal is `(p, p)`, and
-# `symmetric = true` records that an off-diagonal edge stands for two residuals. Its multiplicity is therefore
-# `mult = (symmetric && p != q) ? 2 : 1`, and every weighted quantity below carries it.
-struct SupportSystem{T}
+# problem, the row scales followed by the column scales for an asymmetric one.
+struct SupportSystem{T,S}
     N::Int
-    edges::Vector{Tuple{Int,Int}}   # support entries as pairs of unknowns
-    cvals::Vector{T}                # log|A_ij| per stored edge
-    symmetric::Bool                 # an off-diagonal edge stands for both orientations
+    supp::S                         # support layout: `EdgeList` or `Grid`
+    symmetric::Bool                 # an off-diagonal entry stands for both orientations
     hassupp::BitVector              # unknowns carrying at least one support entry
     dfull::Vector{T}                # complete-support diagonal (Woodbury path only)
-    zedges::Vector{Tuple{Int,Int}}  # zero set, stored like `edges` (Woodbury path only)
+    zedges::Vector{Tuple{Int,Int}}  # zero set, as pairs of unknowns (Woodbury path only)
     U::Matrix{T}                    # low-rank block of `B + v0·v0ᵀ = C + U·Uᵀ` (Woodbury path only)
     v0::Vector{T}                   # gauge: dense adds `v0·v0ᵀ`, LSQR appends the row `v0ᵀx = 0`
+    function SupportSystem{T,S}(N, supp, symmetric, hassupp, dfull, zedges, U, v0) where {T,S}
+        return new{T,S}(N, supp, symmetric, hassupp, dfull, zedges, U, v0)
+    end
+end
+SupportSystem{T}(N, supp::S, args...) where {T,S} = SupportSystem{T,S}(N, supp, args...)
+
+# The support sweeps, one method per layout. `symmetric` carries the multiplicity
+# convention described above; on a `Grid` it also selects the layout's geometry.
+
+# Objective `f_κ(x) = Σ_e mult_e·w_e·z_e²`, `w_e = κ` where `z_e < 0` and 1 elsewhere.
+function _fκ(x, κ, supp::EdgeList{T}, symmetric::Bool) where {T}
+    edges, cvals = supp.edges, supp.cvals
+    v = zero(T)
+    for (e, (p, q)) in enumerate(edges)
+        z = x[p] + x[q] - cvals[e]
+        v += ((symmetric && p != q) ? 2 : 1) * (z < 0 ? T(κ) : oneunit(T)) * z^2
+    end
+    return v
+end
+
+function _fκ(x, κ, supp::Grid{T}, symmetric::Bool) where {T}
+    C = supp.C
+    m, n = size(C)
+    κT = T(κ)
+    v = zero(T)
+    if symmetric
+        for j in 1:n
+            xj = x[j]
+            cj = view(C, 1:j-1, j)
+            xi = view(x, 1:j-1)
+            vj = zero(T)
+            @simd for i in eachindex(cj, xi)
+                c = cj[i]
+                z = xi[i] + xj - c
+                w = ifelse(z < 0, κT, oneunit(T))
+                vj += ifelse(isfinite(c), w * z^2, zero(T))
+            end
+            c = C[j, j]
+            z = 2xj - c
+            w = ifelse(z < 0, κT, oneunit(T))
+            v += 2vj + ifelse(isfinite(c), w * z^2, zero(T))
+        end
+    else
+        xr = view(x, 1:m)
+        for j in 1:n
+            xj = x[m+j]
+            cj = view(C, :, j)
+            vj = zero(T)
+            @simd for i in eachindex(cj, xr)
+                c = cj[i]
+                z = xr[i] + xj - c
+                w = ifelse(z < 0, κT, oneunit(T))
+                vj += ifelse(isfinite(c), w * z^2, zero(T))
+            end
+            v += vj
+        end
+    end
+    return v
+end
+
+# The objective and the violated set at `x` from one sweep: the line search needs the
+# value and the stage's stopping test needs to know whether the set still matches
+# `pat`, and both read the same residuals.
+function _fκpat(x, κ, pat, supp::EdgeList{T}, symmetric::Bool) where {T}
+    edges, cvals = supp.edges, supp.cvals
+    v = zero(T)
+    same = true
+    for (e, (p, q)) in enumerate(edges)
+        z = x[p] + x[q] - cvals[e]
+        viol = z < 0
+        v += ((symmetric && p != q) ? 2 : 1) * (viol ? T(κ) : oneunit(T)) * z^2
+        same &= viol == pat[e]
+    end
+    return v, same
+end
+
+function _fκpat(x, κ, pat, supp::Grid{T}, symmetric::Bool) where {T}
+    C = supp.C
+    m, n = size(C)
+    κT = T(κ)
+    v = zero(T)
+    ndiff = 0
+    if symmetric
+        for j in 1:n
+            xj = x[j]
+            cj = view(C, 1:j-1, j)
+            pj = view(pat, 1:j-1, j)
+            xi = view(x, 1:j-1)
+            vj = zero(T)
+            dj = 0
+            @simd for i in eachindex(cj, pj, xi)
+                c = cj[i]
+                fin = isfinite(c)
+                z = xi[i] + xj - c
+                w = ifelse(z < 0, κT, oneunit(T))
+                vj += ifelse(fin, w * z^2, zero(T))
+                dj += ifelse((fin & (z < 0)) == pj[i], 0, 1)
+            end
+            c = C[j, j]
+            fin = isfinite(c)
+            z = 2xj - c
+            w = ifelse(z < 0, κT, oneunit(T))
+            v += 2vj + ifelse(fin, w * z^2, zero(T))
+            ndiff += dj + ifelse((fin & (z < 0)) == pat[j, j], 0, 1)
+        end
+    else
+        xr = view(x, 1:m)
+        for j in 1:n
+            xj = x[m+j]
+            cj = view(C, :, j)
+            pj = view(pat, :, j)
+            vj = zero(T)
+            dj = 0
+            @simd for i in eachindex(cj, pj, xr)
+                c = cj[i]
+                fin = isfinite(c)
+                z = xr[i] + xj - c
+                w = ifelse(z < 0, κT, oneunit(T))
+                vj += ifelse(fin, w * z^2, zero(T))
+                dj += ifelse((fin & (z < 0)) == pj[i], 0, 1)
+            end
+            v += vj
+            ndiff += dj
+        end
+    end
+    return v, ndiff == 0
+end
+
+# Storage for the violated set of one solve, in the layout's own shape. `Matrix{Bool}`
+# rather than `BitMatrix` so that the column views the `Grid` sweeps take vectorize.
+_violation_pattern(supp::EdgeList) = falses(length(supp.edges))
+_violation_pattern(supp::Grid) = fill(false, size(supp.C))
+
+# Shift to exact feasibility: the smallest γ ≥ 0 with `x[p] + x[q] + 2γ ≥ c` on the
+# whole support.
+function _boost_shift(x, supp::EdgeList{T}, symmetric::Bool) where {T}
+    edges, cvals = supp.edges, supp.cvals
+    γ = zero(T)
+    for (e, (p, q)) in enumerate(edges)
+        γ = max(γ, (cvals[e] - x[p] - x[q]) / 2)
+    end
+    return γ
+end
+
+function _boost_shift(x, supp::Grid{T}, symmetric::Bool) where {T}
+    C = supp.C
+    m, n = size(C)
+    γ = zero(T)
+    if symmetric
+        for j in 1:n
+            xj = x[j]
+            cj = view(C, 1:j-1, j)
+            xi = view(x, 1:j-1)
+            gj = zero(T)
+            @simd for i in eachindex(cj, xi)
+                gj = max(gj, (cj[i] - xi[i] - xj) / 2)
+            end
+            γ = max(γ, gj, (C[j, j] - 2xj) / 2)
+        end
+    else
+        xr = view(x, 1:m)
+        for j in 1:n
+            xj = x[m+j]
+            cj = view(C, :, j)
+            gj = zero(T)
+            @simd for i in eachindex(cj, xr)
+                gj = max(gj, (cj[i] - xr[i] - xj) / 2)
+            end
+            γ = max(γ, gj)
+        end
+    end
+    return γ
+end
+
+# One Woodbury assembly sweep: the right-hand side `f`, the violated set `vedges` with
+# its per-unknown count `degV`, and the diagonal `dg` of `B` on top of its
+# already-initialized zero-set correction. `dκ = κ - 1`, or 0 for the cold unweighted
+# solve, which `κ === nothing` marks and in which no entry counts as violated.
+#
+# The vectorized pass over a column writes `vpat` and accumulates `f`; a scalar scan of
+# the same column then collects the violated entries. `w·c` is formed with `ifelse` on
+# `isfinite(c)`: `0 * -Inf` is NaN.
+function _assemble_woodbury!(f, dg, degV, vedges, vpat, x, κ, supp::Grid{T},
+                             symmetric::Bool, dκ) where {T}
+    C = supp.C
+    m, n = size(C)
+    weighted = κ !== nothing
+    κT = weighted ? T(κ) : oneunit(T)
+    if symmetric
+        for j in 1:n
+            xj = x[j]
+            cj = view(C, 1:j-1, j)
+            xi = view(x, 1:j-1)
+            fi = view(f, 1:j-1)
+            vj = view(vpat, 1:j-1, j)
+            fq = zero(T)
+            @simd for i in eachindex(cj, xi, fi, vj)
+                c = cj[i]
+                fin = isfinite(c)
+                viol = weighted & fin & (xi[i] + xj - c < 0)
+                w = ifelse(viol, κT, oneunit(T))
+                wc = ifelse(fin, w * c, zero(T))
+                fi[i] += wc
+                fq += wc
+                vj[i] = viol
+            end
+            c = C[j, j]
+            fin = isfinite(c)
+            viol = weighted & fin & (2xj - c < 0)
+            w = ifelse(viol, κT, oneunit(T))
+            f[j] += fq + ifelse(fin, w * c, zero(T))
+            vpat[j, j] = viol
+            for i in eachindex(vj)
+                vj[i] || continue
+                push!(vedges, (i, j))
+                degV[i] += 1
+                degV[j] += 1
+                dg[i] += dκ
+                dg[j] += dκ
+            end
+            # A symmetric diagonal entry sits at both ends of its own residual, so it
+            # lands on `dg[j]` twice while counting once in `degV`.
+            if vpat[j, j]
+                push!(vedges, (j, j))
+                degV[j] += 1
+                dg[j] += 2dκ
+            end
+        end
+    else
+        xr = view(x, 1:m)
+        fr = view(f, 1:m)
+        for j in 1:n
+            q = m + j
+            xj = x[q]
+            cj = view(C, :, j)
+            vj = view(vpat, :, j)
+            fq = zero(T)
+            @simd for i in eachindex(cj, xr, fr, vj)
+                c = cj[i]
+                fin = isfinite(c)
+                viol = weighted & fin & (xr[i] + xj - c < 0)
+                w = ifelse(viol, κT, oneunit(T))
+                wc = ifelse(fin, w * c, zero(T))
+                fr[i] += wc
+                fq += wc
+                vj[i] = viol
+            end
+            f[q] += fq
+            for i in eachindex(vj)
+                vj[i] || continue
+                push!(vedges, (i, q))
+                degV[i] += 1
+                degV[q] += 1
+                dg[i] += dκ
+                dg[q] += dκ
+            end
+        end
+    end
+    return f
 end
 
 # The AbsLog{2} penalty continuation on `sys`: a sequence of stages of increasing κ,
@@ -552,26 +833,29 @@ end
 # stacked log-scales and the `stats` NamedTuple the callers pass on. With `boost`, the
 # result is shifted uniformly to exact feasibility `x[p] + x[q] ≥ c` on the support.
 #
-# The objective counts each stored edge with its multiplicity, `f_κ(x) =
+# The objective counts each support entry with its multiplicity, `f_κ(x) =
 # Σ_e mult_e·w_e·(x[p] + x[q] - c_e)²`, so a symmetric problem is weighted on the full
 # grid rather than on one triangle. The normal equations assembled below are that
-# system scaled by ½ — uniformly, so they have the same solution: a stored edge puts
+# system scaled by ½ — uniformly, so they have the same solution: a support entry puts
 # `w` on `B[p,p]` and `B[p,q]` and `w·c` on `f[p]`, and the same again transposed when
 # `q != p`. A symmetric diagonal entry, whose row of `R` is `2·e_p`, thereby collects
 # `2w` on `B[p,p]` and `w·c` on `f[p]`.
-function _abslog2_continuation(sys::SupportSystem{T}, x0, use_woodbury::Bool;
+#
+# The layout of `sys.supp` selects the linear-solve path: a `Grid` is built exactly
+# when the Woodbury path applies, and the LSQR and dense paths run on an `EdgeList`.
+function _abslog2_continuation(sys::SupportSystem{T}, x0;
                                κs, maxiter::Int, linsolve::Symbol, boost::Bool) where {T}
     N = sys.N
-    edges = sys.edges
-    cvals = sys.cvals
+    supp = sys.supp
     v0 = sys.v0
     U = sys.U
-    ne = length(edges)
+    use_woodbury = supp isa Grid
+    ne = supp isa EdgeList ? length(supp.edges) : 0
     use_lsqr = linsolve === :lsqr
     # CHOLMOD, which factors the LSQR preconditioner, is reliable only in Float64;
     # other working types run the plain matrix-free iteration.
     use_precond = use_lsqr && T === Float64
-    # Number of residuals a stored edge stands for.
+    # Number of residuals a stored entry stands for.
     symmetric = sys.symmetric
     mult = (p, q) -> (symmetric && p != q) ? 2 : 1
     # Diagonal of `C` before any entry is violated: the complete-support value, less
@@ -581,28 +865,6 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0, use_woodbury::Bool;
     for (p, q) in sys.zedges
         czero[p] -= oneunit(T)
         czero[q] -= oneunit(T)
-    end
-    fκ = function (x, κ)
-        v = zero(T)
-        for (e, (p, q)) in enumerate(edges)
-            z = x[p] + x[q] - cvals[e]
-            v += mult(p, q) * (z < 0 ? T(κ) : oneunit(T)) * z^2
-        end
-        return v
-    end
-    # The objective and the violated set at `x` from one sweep: the line search needs
-    # the value and the stage's stopping test needs to know whether the set still
-    # matches `pat`, and both read the same residuals.
-    fκpat = function (x, κ, pat)
-        v = zero(T)
-        same = true
-        for (e, (p, q)) in enumerate(edges)
-            z = x[p] + x[q] - cvals[e]
-            viol = z < 0
-            v += mult(p, q) * (viol ? T(κ) : oneunit(T)) * z^2
-            same &= viol == pat[e]
-        end
-        return v, same
     end
     # Each Newton step freezes the weights at the current `x` and solves the reweighted
     # least-squares problem `min ‖√W (R x - c)‖`, `(R x)_e = x[p] + x[q]`, whose normal
@@ -618,22 +880,22 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0, use_woodbury::Bool;
     # the incoming iterate; it solves the least-squares form directly, so its accuracy
     # tracks the conditioning of `√W R` (≈ √κ) rather than that of `B` (≈ κ).
     f = zeros(T, N)
-    ws = zeros(T, ne)       # √weight per stored edge, frozen during one solve
+    ws = zeros(T, ne)       # √weight per stored entry, frozen during one solve
     cv = zeros(T, ne + 1)   # √weight · log|A_ij|, with a trailing 0 gauge target
     # Entries the frozen weights of the current solve treat as violated. A full Newton
     # step that leaves this pattern intact has landed on the stage's minimizer.
-    vpat = falses(ne)
+    vpat = _violation_pattern(supp)
     vedges = Tuple{Int,Int}[]                # the violated entries of the current solve
     degV = zeros(Int, use_woodbury ? N : 0)  # violated entries per unknown
     dg = zeros(T, use_woodbury ? N : 0)      # diagonal of `B`, for the ridge and the CG preconditioner
     # Diagonal of the unweighted normal matrix of the gauge-augmented system,
-    # `RᵀR + v0·v0ᵀ`, the base of the LSQR preconditioner: each stored edge puts its
+    # `RᵀR + v0·v0ᵀ`, the base of the LSQR preconditioner: each stored entry puts its
     # multiplicity at each of its ends, and an entry whose row of `R` is `2·e_p` puts 4.
     # A variable with neither support nor gauge is given 1 so the preconditioner stays
     # positive definite.
     dpart = zeros(T, use_lsqr ? N : 0)
-    if use_lsqr
-        for (p, q) in edges
+    if supp isa EdgeList && use_lsqr
+        for (p, q) in supp.edges
             if p == q
                 dpart[p] += 4 * oneunit(T)
             else
@@ -674,7 +936,107 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0, use_woodbury::Bool;
     nchol = Ref(0)
     solve_weighted = function (x, κ)
         nsolves[] += 1
-        if use_lsqr
+        if supp isa Grid
+            # `B + v0·v0ᵀ = C + U·Uᵀ` with `C = D − L_Z + (κ−1)·L_V`: the
+            # complete-support diagonal `D`, corrected by the zero set `Z` and by the
+            # currently violated entries `V`. One sweep over the grid collects the
+            # right-hand side, the violated set, and the diagonal of `B`; everything
+            # after it is O(|Z| + |V|).
+            dκ = κ === nothing ? zero(T) : T(κ) - oneunit(T)
+            fill!(f, zero(T))
+            copyto!(dg, czero)
+            fill!(degV, 0)
+            empty!(vedges)
+            _assemble_woodbury!(f, dg, degV, vedges, vpat, x, κ, supp, symmetric, dκ)
+            # Same ridge as the dense path, so both solve the same regularized system:
+            # `U·Uᵀ` puts 1 on every diagonal of `B + v0·v0ᵀ`, and every variable has
+            # support here, so no identity row arises.
+            dmax = zero(T)
+            maxdegV = 0
+            for p in 1:N
+                dmax = max(dmax, dg[p] + oneunit(T))
+                maxdegV = max(maxdegV, degV[p])
+            end
+            ridge = (dmax > 0 ? dmax : oneunit(T)) * eps(T)
+            for p in 1:N
+                dg[p] += oneunit(T) + ridge
+            end
+            # These triplets store `C` in full rather than in one triangle: the same
+            # matrix then serves the matvec below and the factorization after it.
+            # `sparse` sums the duplicates, and the ridge rides on the diagonal. The
+            # zero set's diagonal contribution is already in `czero`, so only its
+            # off-diagonal entries are pushed here; the violated entries are assembled
+            # afresh on every solve, both diagonal and off-diagonal.
+            empty!(Ci)
+            empty!(Cj)
+            empty!(Cv)
+            for p in 1:N
+                push!(Ci, p)
+                push!(Cj, p)
+                push!(Cv, czero[p] + ridge)
+            end
+            for (p, q) in sys.zedges
+                p == q && continue
+                push!(Ci, p)
+                push!(Cj, q)
+                push!(Cv, -oneunit(T))
+                push!(Ci, q)
+                push!(Cj, p)
+                push!(Cv, -oneunit(T))
+            end
+            for (p, q) in vedges
+                push!(Ci, p)
+                push!(Cj, p)
+                push!(Cv, dκ)
+                push!(Ci, p)
+                push!(Cj, q)
+                push!(Cv, dκ)
+                if q != p
+                    push!(Ci, q)
+                    push!(Cj, q)
+                    push!(Cv, dκ)
+                    push!(Ci, q)
+                    push!(Cj, p)
+                    push!(Cv, dκ)
+                end
+            end
+            C = sparse(Ci, Cj, Cv, N, N)
+            # Gershgorin on `(κ−1)·L_V` against the smallest complete-support diagonal
+            # estimates the condition number of `B`. While that estimate is small,
+            # conjugate gradients on `C·x + U·(Uᵀx)` reach the same answer in a few
+            # hundred O(nnz(C)) applications, which is far cheaper than a factorization
+            # whose fill on the near-random violated pattern of the early stages
+            # approaches dense.
+            κest = oneunit(T) + dκ * 2 * maxdegV / dmin
+            if κest <= WOODBURY_CG_KAPPA
+                copyto!(cgx, x)
+                Bmul! = function (yy, xx)
+                    mul!(yy, C, xx)
+                    # The columns of `U` are indicator vectors, so the low-rank term is
+                    # a block sum broadcast back over the same block.
+                    for k in axes(U, 2)
+                        s = zero(T)
+                        for p in 1:N
+                            u = U[p, k]
+                            iszero(u) || (s += u * xx[p])
+                        end
+                        for p in 1:N
+                            u = U[p, k]
+                            iszero(u) || (yy[p] += u * s)
+                        end
+                    end
+                    return yy
+                end
+                it, ok = _pcg!(Bmul!, cgx, dg, f, cgr, cgz, cgd, cgAd,
+                               50 + 20 * ceil(Int, sqrt(κest)), 100 * eps(T) * norm(f))
+                ncg[] += it
+                ok && return copy(cgx)
+            end
+            nchol[] += 1
+            return _woodbury_solve!(zeros(T, N), cholesky(Symmetric(C)), U, f, rhs)
+        elseif use_lsqr
+            edges = supp.edges
+            cvals = supp.cvals
             dκ = κ === nothing ? zero(T) : T(κ) - oneunit(T)
             empty!(vedges)
             fill!(mdiag, zero(T))
@@ -812,119 +1174,9 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0, use_woodbury::Bool;
             sol, it = _lsqr(Amul!, Atmul!, cv, x)
             nlsqr[] += it
             return sol
-        elseif use_woodbury
-            # `B + v0·v0ᵀ = C + U·Uᵀ` with `C = D − L_Z + (κ−1)·L_V`: the
-            # complete-support diagonal `D`, corrected by the zero set `Z` and by the
-            # currently violated entries `V`. One O(nnz) sweep collects the right-hand
-            # side, the violated set, and the diagonal of `B`; everything after it is
-            # O(|Z| + |V|).
-            dκ = κ === nothing ? zero(T) : T(κ) - oneunit(T)
-            fill!(f, zero(T))
-            copyto!(dg, czero)
-            fill!(degV, 0)
-            empty!(vedges)
-            for (e, (p, q)) in enumerate(edges)
-                c = cvals[e]
-                viol = κ !== nothing && (x[p] + x[q] - c) < 0
-                vpat[e] = viol
-                w = viol ? T(κ) : oneunit(T)
-                f[p] += w * c
-                q != p && (f[q] += w * c)
-                if viol
-                    push!(vedges, (p, q))
-                    degV[p] += 1
-                    q != p && (degV[q] += 1)
-                    dg[p] += dκ
-                    dg[q] += dκ
-                end
-            end
-            # Same ridge as the dense path, so both solve the same regularized system:
-            # `U·Uᵀ` puts 1 on every diagonal of `B + v0·v0ᵀ`, and every variable has
-            # support here, so no identity row arises.
-            dmax = zero(T)
-            maxdegV = 0
-            for p in 1:N
-                dmax = max(dmax, dg[p] + oneunit(T))
-                maxdegV = max(maxdegV, degV[p])
-            end
-            ridge = (dmax > 0 ? dmax : oneunit(T)) * eps(T)
-            for p in 1:N
-                dg[p] += oneunit(T) + ridge
-            end
-            # These triplets store `C` in full rather than in one triangle: the same
-            # matrix then serves the matvec below and the factorization after it.
-            # `sparse` sums the duplicates, and the ridge rides on the diagonal. The
-            # zero set's diagonal contribution is already in `czero`, so only its
-            # off-diagonal entries are pushed here; the violated entries are assembled
-            # afresh on every solve, both diagonal and off-diagonal.
-            empty!(Ci)
-            empty!(Cj)
-            empty!(Cv)
-            for p in 1:N
-                push!(Ci, p)
-                push!(Cj, p)
-                push!(Cv, czero[p] + ridge)
-            end
-            for (p, q) in sys.zedges
-                p == q && continue
-                push!(Ci, p)
-                push!(Cj, q)
-                push!(Cv, -oneunit(T))
-                push!(Ci, q)
-                push!(Cj, p)
-                push!(Cv, -oneunit(T))
-            end
-            for (p, q) in vedges
-                push!(Ci, p)
-                push!(Cj, p)
-                push!(Cv, dκ)
-                push!(Ci, p)
-                push!(Cj, q)
-                push!(Cv, dκ)
-                if q != p
-                    push!(Ci, q)
-                    push!(Cj, q)
-                    push!(Cv, dκ)
-                    push!(Ci, q)
-                    push!(Cj, p)
-                    push!(Cv, dκ)
-                end
-            end
-            C = sparse(Ci, Cj, Cv, N, N)
-            # Gershgorin on `(κ−1)·L_V` against the smallest complete-support diagonal
-            # estimates the condition number of `B`. While that estimate is small,
-            # conjugate gradients on `C·x + U·(Uᵀx)` reach the same answer in a few
-            # hundred O(nnz(C)) applications, which is far cheaper than a factorization
-            # whose fill on the near-random violated pattern of the early stages
-            # approaches dense.
-            κest = oneunit(T) + dκ * 2 * maxdegV / dmin
-            if κest <= WOODBURY_CG_KAPPA
-                copyto!(cgx, x)
-                Bmul! = function (yy, xx)
-                    mul!(yy, C, xx)
-                    # The columns of `U` are indicator vectors, so the low-rank term is
-                    # a block sum broadcast back over the same block.
-                    for k in axes(U, 2)
-                        s = zero(T)
-                        for p in 1:N
-                            u = U[p, k]
-                            iszero(u) || (s += u * xx[p])
-                        end
-                        for p in 1:N
-                            u = U[p, k]
-                            iszero(u) || (yy[p] += u * s)
-                        end
-                    end
-                    return yy
-                end
-                it, ok = _pcg!(Bmul!, cgx, dg, f, cgr, cgz, cgd, cgAd,
-                               50 + 20 * ceil(Int, sqrt(κest)), 100 * eps(T) * norm(f))
-                ncg[] += it
-                ok && return copy(cgx)
-            end
-            nchol[] += 1
-            return _woodbury_solve!(zeros(T, N), cholesky(Symmetric(C)), U, f, rhs)
         else
+            edges = supp.edges
+            cvals = supp.cvals
             fill!(f, zero(T))
             B = v0 * v0'
             for (e, (p, q)) in enumerate(edges)
@@ -962,16 +1214,16 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0, use_woodbury::Bool;
     end
     x = x0 === nothing ? solve_weighted(zeros(T, N), nothing) : x0
     for κ in κs
-        fcur = fκ(x, κ)
+        fcur = _fκ(x, κ, supp, symmetric)
         for _ in 1:maxiter
             xnew = solve_weighted(x, κ)
             t = one(T)
             xt = xnew
-            fnew, stable = fκpat(xt, κ, vpat)
+            fnew, stable = _fκpat(xt, κ, vpat, supp, symmetric)
             while fnew > fcur && t > 500_000 * eps(T)
                 t /= 2
                 xt = x .+ t .* (xnew .- x)
-                fnew = fκ(xt, κ)
+                fnew = _fκ(xt, κ, supp, symmetric)
                 stable = false
             end
             x = xt
@@ -988,10 +1240,7 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0, use_woodbury::Bool;
     # `boost=false` leaves the iterate untouched, for the soft objective, which
     # imposes no coverage constraint and whose optimum the boost would move off.
     if boost
-        γ = zero(T)
-        for (e, (p, q)) in enumerate(edges)
-            γ = max(γ, (cvals[e] - x[p] - x[q]) / 2)
-        end
+        γ = _boost_shift(x, supp, symmetric)
         for p in 1:N
             x[p] += γ
         end
@@ -1042,29 +1291,18 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     end
     n = length(ax)
     use_lsqr = linsolve === :lsqr
-    # Support entries, one per unordered pair `{i, j}` of the support: the residuals
-    # `z_ij = α_i + α_j - log|A_ij|` of a pair and its mirror are the same, and
-    # `SupportSystem` weights the stored edge for both. `cvals` holds log|A_ij|
-    # alongside. The Newton solve runs on 1-based positions 1:n and is scattered back
-    # onto `a` through `ax` so `A`'s own axes are honored.
+    # The support is measured before it is laid out, so that only the layout the chosen
+    # path needs is built. The Newton solve runs on 1-based positions 1:n and is
+    # scattered back onto `a` through `ax` so `A`'s own axes are honored.
     G = _sym_support(A, T)
-    edges = Tuple{Int,Int}[]
-    cvals = T[]
     hassupp = falses(n)
     nsupp = 0              # support entries of `A`, counted in both orientations
     maxzero = 0            # largest number of zeros in any row of `A`
     for (ip, i) in enumerate(ax)
-        slots = _slots(G, i)
-        for s in slots
-            jp = G.idx[s] - first(ax) + 1
-            if jp >= ip
-                push!(edges, (ip, jp))
-                push!(cvals, log(G.val[s]))
-            end
-        end
-        hassupp[ip] = !isempty(slots)
-        nsupp += length(slots)
-        maxzero = max(maxzero, n - length(slots))
+        ns = length(_slots(G, i))
+        hassupp[ip] = ns > 0
+        nsupp += ns
+        maxzero = max(maxzero, n - ns)
     end
     # The Woodbury path splits the normal equations around the complete-support matrix
     # `n·I + e·eᵀ`, so its cost is set by the zero set `Z` rather than by `n`. Two
@@ -1088,8 +1326,35 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         end
         use_woodbury = ok
     end
-    # Zero set of `A` in the same convention as `edges`: one entry per unordered pair.
-    # It is the off-diagonal pattern of the sparse `C` the Woodbury path factorizes.
+    # The layout the chosen path reads: the Woodbury sweeps run on the grid, the LSQR
+    # and dense sweeps on the list. Both hold one element per unordered pair `{i, j}` —
+    # the residuals `z_ij = α_i + α_j - log|A_ij|` of a pair and its mirror are the
+    # same, and `SupportSystem` weights the stored entry for both.
+    supp = if use_woodbury
+        C = fill(T(-Inf), n, n)
+        for (ip, i) in enumerate(ax)
+            for s in _slots(G, i)
+                jp = G.idx[s] - first(ax) + 1
+                jp >= ip && (C[ip, jp] = log(G.val[s]))
+            end
+        end
+        Grid{T}(C)
+    else
+        edges = Tuple{Int,Int}[]
+        cvals = T[]
+        for (ip, i) in enumerate(ax)
+            for s in _slots(G, i)
+                jp = G.idx[s] - first(ax) + 1
+                if jp >= ip
+                    push!(edges, (ip, jp))
+                    push!(cvals, log(G.val[s]))
+                end
+            end
+        end
+        EdgeList{T}(edges, cvals)
+    end
+    # Zero set of `A`, one entry per unordered pair. It is the off-diagonal pattern of
+    # the sparse `C` the Woodbury path factorizes.
     zedges = Tuple{Int,Int}[]
     if use_woodbury
         mark = falses(n)
@@ -1106,13 +1371,13 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     # Nothing here pins a gauge: `v0` is zero, so the dense path adds no rank-one term
     # and the LSQR gauge row is inert. The ridge lifts what singularity remains — the
     # null space of a bipartite support graph such as `[0 1; 1 0]`.
-    sys = SupportSystem{T}(n, edges, cvals, true, hassupp,
+    sys = SupportSystem{T}(n, supp, true, hassupp,
                            use_woodbury ? fill(T(n), n) : T[], zedges,
                            ones(T, use_woodbury ? n : 0, use_woodbury ? 1 : 0),
                            zeros(T, n))
     x0 = start === nothing ? nothing :
          T[hassupp[ip] ? log(T(start[i])) : zero(T) for (ip, i) in enumerate(ax)]
-    α, stats = _abslog2_continuation(sys, x0, use_woodbury; κs, maxiter, linsolve, boost)
+    α, stats = _abslog2_continuation(sys, x0; κs, maxiter, linsolve, boost)
     # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     a = similar(Array{T}, ax)
     for (ip, i) in enumerate(ax)
@@ -1155,25 +1420,22 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     n = length(axc)
     N = m + n
     use_lsqr = linsolve === :lsqr
-    # Support entries as edges linking a row position ip to a column position m+jp,
-    # with `cvals` holding log|A_ij| alongside. Internal positions 1:m index rows,
-    # m+1:m+n index columns, and results are scattered back through axr/axc so A's
-    # axes are honored.
+    # Each support entry links a row position ip to a column position m+jp. Internal
+    # positions 1:m index rows, m+1:m+n index columns, and results are scattered back
+    # through axr/axc so A's axes are honored. The support is measured before it is
+    # laid out, so that only the layout the chosen path needs is built.
     G = _row_support(A, T)
-    edges = Tuple{Int,Int}[]
-    cvals = T[]
     nzrow = zeros(Int, m)   # support entries per row, for the balance convention
     nzcol = zeros(Int, n)   # ditto per column
+    ne = 0
     for (ip, i) in enumerate(axr)
         for s in _slots(G, i)
             jp = G.idx[s] - first(axc) + 1
-            push!(edges, (ip, m + jp))
-            push!(cvals, log(G.val[s]))
+            ne += 1
             nzrow[ip] += 1
             nzcol[jp] += 1
         end
     end
-    ne = length(edges)
     hasrow = nzrow .> 0
     hascol = nzcol .> 0
     # The Woodbury path splits the normal equations around the complete-support
@@ -1207,6 +1469,27 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             throw(ArgumentError("linsolve=:woodbury requires `A` to have at most 4·max(m, n) = $zbudget zeros in total; got $nzero"))
         end
         use_woodbury = ok
+    end
+    # The layout the chosen path reads: the Woodbury sweeps run on the grid, the LSQR
+    # and dense sweeps on the list. Both hold `log|A_ij|` for each support entry.
+    supp = if use_woodbury
+        C = fill(T(-Inf), m, n)
+        for (ip, i) in enumerate(axr)
+            for s in _slots(G, i)
+                C[ip, G.idx[s]-first(axc)+1] = log(G.val[s])
+            end
+        end
+        Grid{T}(C)
+    else
+        edges = Tuple{Int,Int}[]
+        cvals = T[]
+        for (ip, i) in enumerate(axr)
+            for s in _slots(G, i)
+                push!(edges, (ip, m + G.idx[s] - first(axc) + 1))
+                push!(cvals, log(G.val[s]))
+            end
+        end
+        EdgeList{T}(edges, cvals)
     end
     # Zero set of `A` as stacked-position pairs missing from the support: the
     # off-diagonal pattern of the sparse `C` the Woodbury path factorizes. The
@@ -1246,7 +1529,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     for jp in 1:n
         hascol[jp] && (v0[m+jp] = -one(T))
     end
-    sys = SupportSystem{T}(N, edges, cvals, false, vcat(hasrow, hascol), dfull, zedges, Umat, v0)
+    sys = SupportSystem{T}(N, supp, false, vcat(hasrow, hascol), dfull, zedges, Umat, v0)
     x0 = if start === nothing
         nothing
     else
@@ -1260,7 +1543,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         end
         s0
     end
-    x, stats = _abslog2_continuation(sys, x0, use_woodbury; κs, maxiter, linsolve, boost)
+    x, stats = _abslog2_continuation(sys, x0; κs, maxiter, linsolve, boost)
     # Shift along the (e; -e) gauges to the balance convention ∑ nzaᵢ αᵢ = ∑ nzbⱼ βⱼ,
     # imposed within each connected component of the support: the gauge acts
     # independently on each component, so a single global shift would leave the
