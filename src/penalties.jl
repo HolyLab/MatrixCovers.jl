@@ -5,14 +5,11 @@
 """
     AbstractCoverPenalty <: Function
 
-Supertype of the penalty functions `ϕ` that score a cover, and the type of the
-first argument of most of this package's API. The built-in subtypes are
-[`AbsLog`](@ref) and [`AbsLinear`](@ref).
+Supertype of cover penalties. Built-in subtypes are [`AbsLog`](@ref) and
+[`AbsLinear`](@ref).
 
-A penalty is a function of the single ratio `r = |A[i,j]| / (a[i]*b[j])`, and
-[`cover_objective`](@ref) sums it over the entries of `A`. Because `ϕ` sees only
-that ratio, and every diagonal rescaling of `A` leaves it fixed, any objective
-built from a penalty is automatically scale-invariant.
+[`cover_objective`](@ref) applies the penalty to
+`r = |A[i,j]|/(a[i]*b[j])` and sums over `A`.
 
 # Extending
 
@@ -20,9 +17,8 @@ A subtype must be callable on a nonnegative real:
 
     (::MyPenalty)(r::Real)
 
-`r` ranges over `[0, Inf]`. Both endpoints occur and neither may error: `r = 0`
-whenever `A[i,j]` is zero, and `cover_objective` passes `typemax` for an entry
-left uncovered by a zero scale. Penalties are conventionally singleton structs.
+The method must accept `r = 0` and `r = typemax(...)`. Penalties are usually
+singleton structs.
 
 [`cover_objective`](@ref) works for any subtype, but solvers support only
 specific built-in penalties: `AbsLog{2}` natively and `AbsLinear` through JuMP.
@@ -38,13 +34,8 @@ Penalty type for
     φ(r) = |log(r)|^p  if r > 0
            0           if r = 0
 
-The discontinuity at r=0 prevents zero entries in A from sending the objective
-value to infinity.
-
-This leads to convex optimization problems in log space. `AbsLog{1}` typically
-has a flat minimum-basin in which members of an entire family of solutions are
-equally good. `AbsLog{2}`, except in degenerate cases like `[0 1; 1 0]`, has a
-unique minimum.
+The `r=0` convention keeps zero entries finite. The objective is convex in log
+space; `AbsLog{1}` may have multiple minima.
 
 See also: [`AbsLinear`](@ref).
 """
@@ -72,15 +63,8 @@ struct AbsLinear{p} <: AbstractCoverPenalty end
 """
     MatrixCovers.scalar_type(T)
 
-The plain floating-point type underlying the element type `T`, with any units
-removed. [`cover_objective`](@ref) sums the ratios `|A[i,j]| / (a[i]*b[j])`,
-which are dimensionless because a cover requires
-`unit(A[i,j]) == unit(a[i])*unit(b[j])`, so the score is an ordinary number
-whatever the operands carry.
-
-This cannot be expressed as `float(real(T))`: a matrix whose entries carry
-different units has an abstract `eltype`, for which `real` and `oneunit` are
-undefined. A unit-carrying element type therefore needs its own method.
+Return the unitless floating-point type underlying `T`. Unit-carrying element
+types should specialize this method.
 """
 scalar_type(::Type{T}) where {T<:Number} = float(real(T))
 
@@ -99,16 +83,11 @@ end
     cover_objective(ϕ, a, b, A)
     cover_objective(ϕ, a, A)
 
-Compute the cover objective `∑_{i,j} ϕ(|A[i,j]| / (a[i] * b[j]))` for the given
-penalty function `ϕ`. The two-argument form is for symmetric matrices where the cover
-is `a*a'`.
+Compute `∑ ϕ(|A[i,j]|/(a[i]*b[j]))`. The shorter form uses the symmetric cover
+`a*a'`.
 
-The sum runs over the full grid in both forms, so in the symmetric form each
-off-diagonal pair contributes twice and each diagonal entry once. This weighting
-is what the `sym` solvers minimize, so the score reported here is the quantity
-they optimized; code that reads a symmetric matrix through
-[`foreach_support_sym`](@ref), which reports each pair once, must apply the
-factor of 2 itself to match.
+Both forms use full-grid weighting: symmetric off-diagonal pairs contribute
+twice and diagonal entries once.
 
 Zero entries of `A` are handled according to `ϕ`:
 - `AbsLog{p}`: zero entries contribute 0 (φ(0) = 0 by convention).
@@ -116,8 +95,7 @@ Zero entries of `A` are handled according to `ϕ`:
 
 `eachindex(a)` must match `axes(A, 1)` and `eachindex(b)` must match `axes(A, 2)`.
 
-`A` is read through [`foreach_support`](@ref), so the cost is proportional to the
-support rather than to `length(A)` for a storage type that specializes it.
+`A` is read through [`foreach_support`](@ref).
 
 See also:
 - Penalty types (options for `ϕ`): [`AbsLog`](@ref), [`AbsLinear`](@ref).
@@ -143,8 +121,7 @@ function cover_objective(ϕ, a, b, A)
     # zero entry over a zero scale, which constrains nothing. They therefore share
     # one penalty value, and only their count is needed: zero for `AbsLog`, but a
     # nonzero constant for `AbsLinear`, which is continuous at `r = 0`.
-    # The guard is not just an optimization: a penalty that is infinite at zero
-    # would otherwise turn a fully-dense `A` into `0 * Inf`, i.e. `NaN`.
+    # The guard prevents `0 * Inf` for penalties that are infinite at zero.
     nzero = length(a) * length(b) - nsupport[]
     return iszero(nzero) ? s[] : s[] + nzero * T(ϕ(zero(T)))
 end

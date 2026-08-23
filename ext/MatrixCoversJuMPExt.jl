@@ -10,19 +10,10 @@ using LinearAlgebra: dot
 check_solved(model, fname) =
     MatrixCovers.check_solved(JuMP.termination_status(model), "HiGHS", fname)
 
-# The models are built over 1-based positions 1:n; `pr`/`pc` map each position to
-# the corresponding axis index of `A`, and results are scattered back onto vectors
-# whose axes match `A`'s so offset axes are honored. A row/column of `A` with no
-# nonzero entry carries no constraint or objective term; its scale is set to exactly
-# 0, matching the native solvers.
-#
-# `A` is read through the support hook and gathered into a flat edge list in position
-# space — `ei`/`ej` the endpoints, `elog` the log-magnitude — so a model costs O(nnz)
-# to build rather than O(length(A)). The symmetric list is the full-grid reading, whose
-# `ei <= ej` half is the constraint set.
+# Models use 1-based positions and scatter results back to `A`'s axes. Support is
+# gathered as an O(nnz) edge list; unsupported scales are zero.
 
-# Exact reference for the native `symcover_min(::AbsLog{2})`: same QP, solved by
-# HiGHS. Not exported; used by the test suite to cross-check the native solver.
+# HiGHS reference for tests of native symmetric `AbsLog{2}`.
 function MatrixCovers.symcover_min_jump(::AbsLog{2}, A)
     axr = axes(A, 1)
     axes(A, 2) == axr || throw(ArgumentError("symcover_min_jump requires a square matrix"))
@@ -56,16 +47,10 @@ function MatrixCovers.symcover_min!(::AbsLog{1}, a::AbstractVector, A)
     return a
 end
 
-# Relative slack allowed on the AbsLog{1} optimum while the AbsLog{2} objective is
-# minimized over it. The incumbent attains the bound exactly, so the face is never empty;
-# the slack only has to absorb the rounding of re-evaluating the objective row, and it
-# bounds how far the reported AbsLog{1} objective can drift above its true optimum.
+# Slack for re-evaluating the `AbsLog{1}` optimum during tie-breaking.
 const LEX_L1_SLACK = 1e-9
 
-# Select a unique point on the optimal AbsLog{1} face by minimizing AbsLog{2}
-# over it. Both objectives depend only on scale-invariant residuals.
-#
-# `residuals` uses the same support weighting as `cover_objective`.
+# Break `AbsLog{1}` ties with `AbsLog{2}` using full-grid support weights.
 function _minimize_l2_over_l1_face!(model, lin, residuals, fname)
     isempty(residuals) && return nothing
     linopt = JuMP.value(lin)
@@ -77,11 +62,8 @@ function _minimize_l2_over_l1_face!(model, lin, residuals, fname)
     return nothing
 end
 
-# The AbsLog{1} hard cover is an LP: the coverage constraint forces every residual
-# α[i]+α[j]-log|A[i,j]| to be nonnegative, so |·| drops away and the objective is
-# linear in α. Its optimum is a face, not a point, so a second stage picks the canonical
-# member of that face. `start`, when given, is a cover of `A` supplying the initial point;
-# it is a hint to the solver, and the canonical selection keeps it out of the result.
+# Symmetric `AbsLog{1}` LP. A second stage selects the canonical point on the
+# optimal face; `start` is only a solver hint.
 function _symcover_min_abslog1(A, start)
     axr = axes(A, 1)
     axes(A, 2) == axr || throw(ArgumentError("symcover_min requires a square matrix"))
@@ -136,10 +118,7 @@ function MatrixCovers.cover_min_jump(::AbsLog{2}, A)
         @constraint(model, α[ei[e]] + β[ej[e]] - elog[e] >= 0)
     end
     nza, nzb = _degrees(ei, m), _degrees(ej, n)
-    # Pins only the global gauge direction; a disconnected support carries one (e; -e)
-    # gauge per component (see MatrixCovers._support_components), so the remaining
-    # directions are left to whichever vertex HiGHS returns. The post-solve balance
-    # shift below fixes all of them, matching the native solver.
+    # The post-solve balance handles component gauges not pinned here.
     @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
     JuMP.optimize!(model)
     check_solved(model, "cover_min_jump")
@@ -165,11 +144,8 @@ function MatrixCovers.cover_min!(::AbsLog{1}, a::AbstractVector, b::AbstractVect
     return a, b
 end
 
-# Asymmetric counterpart of `_symcover_min_abslog1`, on the bipartite support: the
-# same LP over row scales α and column scales β. The balance constraint below pins
-# the global row/column gauge; a support with more than one connected component
-# carries additional per-component gauges that the post-solve balance shift pins,
-# so the split between `a` and `b` is deterministic.
+# Asymmetric `AbsLog{1}` LP. Balance globally in the model and per component
+# after solving.
 function _cover_min_abslog1(A, start)
     axr = axes(A, 1)
     axc = axes(A, 2)
@@ -199,11 +175,7 @@ function _cover_min_abslog1(A, start)
         @constraint(model, α[ei[e]] + β[ej[e]] - elog[e] >= 0)
     end
     nza, nzb = rowcount, colcount
-    # Gauge pin: the products a[i]*b[j] are unchanged by a -> c*a, b -> b/c, so without this
-    # the split between `a` and `b` would be arbitrary. It is orthogonal to the AbsLog{1}
-    # degeneracy the second stage resolves, and stays in force there. It pins only the
-    # global gauge direction, one of possibly several (one per connected component of the
-    # support); the post-solve balance shift below pins the rest.
+    # Pin the global row/column gauge; post-processing handles components.
     @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
     JuMP.optimize!(model)
     check_solved(model, "cover_min")

@@ -112,15 +112,8 @@ end
 end
 
 @testset "traversal-based kernels match dense reference" begin
-    # unconstrained_min! and tighten_cover! are order-insensitive folds over
-    # foreach_support(_sym) (sum/min accumulations), so structured/sparse
-    # storage must agree with the dense form up to floating-point summation
-    # order (rtol=1e-12). The full symcover pipeline includes the bucketed
-    # feasibility boost, whose within-bucket processing order follows the
-    # storage type's traversal order: storages that traverse the canonical
-    # triangle in the dense fallback's column-major order are compared
-    # elementwise, the rest on feasibility and objective value. cover's boost
-    # order is likewise storage-dependent and is not compared elementwise.
+    # Order-insensitive kernels match dense results directly. For bucketed boosts,
+    # traversal-order differences are compared by feasibility and objective.
     rng = StableRNG(11)
     n = 8
     Adense = randn(rng, n, n); Adense = Adense + Adense'
@@ -142,11 +135,7 @@ end
     @test symcover(AbsLog{2}(), D) ≈ symcover(AbsLog{2}(), Matrix(D)) rtol=1e-12
     @test symcover(AbsLog{2}(), St) ≈ symcover(AbsLog{2}(), Tsym) rtol=1e-12   # same symmetric-valued matrix
 
-    # Traversal order differs from the dense fallback's (Ssp_L keys pairs by
-    # the smaller index; St/Tsym visit all diagonal entries before any
-    # off-diagonal, dense interleaves them), so the bucketed boost's
-    # within-bucket order can differ: compare on feasibility and objective
-    # value rather than elementwise.
+    # Different traversal orders may choose different within-bucket ties.
     objclose(a1, M1, a2, M2) = isapprox(cover_objective(AbsLog{2}(), a1, M1),
         cover_objective(AbsLog{2}(), a2, M2); rtol=1e-2, atol=1e-10)
     for A in (Ssp_L,)
@@ -198,11 +187,7 @@ end
 end
 
 @testset "native solvers on sparse and structured inputs" begin
-    # The native AbsLog{2} MMC solvers (`symcover_min`/`cover_min`) and the AbsLinear
-    # soft covers must agree with the dense reference on `Matrix(A)` when handed a
-    # sparse-backed or structured input, and the hard MMC covers must stay feasible.
-    # On a `SparseMatrixCSC`/`Symmetric`/`Hermitian`-sparse the MMC solvers default to
-    # the matrix-free LSQR inner solve; structured inputs use the generic dense path.
+    # Sparse and structured solvers match dense references; hard covers remain feasible.
 
     symdenses = [[2.0 1.0 0.0; 1.0 3.0 2.0; 0.0 2.0 5.0],
                  [4.0 0.0 1.0; 0.0 0.0 0.0; 1.0 0.0 2.0]]   # second has a zero row/column
@@ -266,10 +251,7 @@ end
     end
 end
 
-# `Symmetric`/`Hermitian` over a sparse parent store one triangle, so the
-# asymmetric traversal must reconstitute the other. Without its own method these
-# fall back to the generic full-grid `getindex` scan, which is correct but defeats
-# the sparse specialization the wrapper exists to enable.
+# Asymmetric traversal of sparse symmetric wrappers must emit both orientations.
 @testset "asymmetric traversal of wrapped sparse storage" begin
     P = sparse([1, 2, 1, 3], [1, 2, 3, 3], [2.0, 3.0, 1.5, 4.0], 3, 3)
     for W in (Symmetric(P, :U), Symmetric(sparse(transpose(P)), :L),

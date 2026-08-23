@@ -34,13 +34,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
     Aqua.test_all(MatrixCovers)
 
     @testset "ExplicitImports" begin
-        # The public-ness checks consult `Base.ispublic` only on 1.11+; before that they
-        # fall back to `isexported` and flag every `public`-but-unexported binding, so
-        # they are meaningful only on 1.11+. The other five checks run on every version.
-        #
-        # These are this package's own internals, which its extensions legitimately
-        # extend and call: extension and package ship from one repo at one version, so
-        # there is no cross-package promise to break.
+        # Public-name checks require Julia 1.11. Extensions may use package internals.
         internals = (:_cover_min_abslog2, :_symcover_min_abslog2,
                      :_prepare_cover_start!, :_prepare_symcover_start!,
                      :_prepare_soft_cover_start!, :_prepare_soft_symcover_start!,
@@ -49,12 +43,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
                      :require_abs_symmetric,
                      :_edge_list, :_sym_edge_list, :_degrees,
                      :_balance_cover!, :inflate_feasible!)
-        # Non-public names owned by other packages, each with no public equivalent:
-        # `FreeUnits`/`Unit` are Unitful's unit representation and `Units` their
-        # abstract supertype, needed to reject the unit types this package cannot
-        # read; `Optimizer` is the solver handle JuMP's own documented
-        # `Model(HiGHS.Optimizer)` entry point names; and `register_error_hint` is
-        # Base-internal.
+        # External non-public names with no usable public equivalent.
         foreign = (:FreeUnits, :Unit, :Units, :Optimizer, :Experimental, :register_error_hint)
         test_explicit_imports(
             MatrixCovers;

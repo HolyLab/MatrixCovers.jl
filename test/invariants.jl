@@ -1,9 +1,4 @@
-# Cross-notion invariants: conventions documented for every cover notion,
-# checked uniformly across all of them. Each entry supplies the solver as
-# `A -> a` (symmetric) or `A -> (a, b)` (general), whether it promises hard
-# feasibility, and the tolerance its algorithm warrants. The themed files pin
-# each notion's algorithm-specific precision; this file pins the shared
-# conventions:
+# Shared invariants across cover algorithms:
 #   - repeated calls return identical results
 #   - hard covers are feasible
 #   - results co-vary with diagonal rescaling of A
@@ -87,9 +82,7 @@ const GEN_NOTIONS = (
         @test axes(ao, 1) == axes(Ao, 1)
         @test axes(bo, 1) == axes(Ao, 2)
         @test collect(ao) .* transpose(collect(bo)) ≈ a .* transpose(b) rtol=nt.rtol
-        # The gauge a -> c*a, b -> b/c is invisible to every objective and every coverage
-        # constraint, so nothing in the problem fixes the split between `a` and `b`. The
-        # balance convention does, and every asymmetric cover reports its result in it.
+        # Every asymmetric cover uses the balance convention.
         @test isbalanced(a, b, Agen)
         @test isbalanced(az, bz, Azgen)
         # The balance convention is imposed per connected component: on a support with
@@ -105,11 +98,7 @@ const GEN_NOTIONS = (
         @test isbalanced(initialize_cover(Ablk; strategy, feasible)..., Ablk)
     end
 
-    # The gauge factor is a whole power of two, so imposing the convention is exact
-    # in binary floating point: every product the coverage constraints see is
-    # preserved bit for bit. A cover cannot be perturbed into infeasibility by the
-    # act of pinning its gauge. Products across two components are not preserved,
-    # and are not constrained either — the support is exactly where both hold.
+    # Power-of-two gauge shifts preserve supported products exactly.
     @testset "balancing preserves on-support products exactly" begin
         rng = StableRNG(11)
         for A in (Agen, Ablk, Azgen)
@@ -143,13 +132,7 @@ const GEN_NOTIONS = (
         @test bbd == vcat(b1, b2)
     end
 
-    # The sym objective is summed over the full grid: each off-diagonal pair counts
-    # twice, each diagonal entry once. `cover_objective` is the reference, and every
-    # sym solver must minimize that same weighting even though its constraints live on
-    # the `i <= j` triangle. The references below impose the constraints on the full
-    # grid explicitly, so agreeing with them pins both halves of the convention: that
-    # the triangle is the equivalent constraint set, and that the objective is not
-    # halved along with it.
+    # Symmetric solvers use full-grid objective weights with triangle constraints.
     @testset "sym solvers minimize the full-grid objective" begin
         function ref_min(pow, A)
             n = size(A, 1)
@@ -167,10 +150,7 @@ const GEN_NOTIONS = (
             return JuMP.objective_value(model)
         end
 
-        # The two conventions share a minimizer whenever the diagonal residuals
-        # vanish at the optimum, which is the common case — so a discriminating
-        # matrix is committed rather than left to the random draws. Weighting this
-        # one's off-diagonal pairs once instead of twice moves the optimum.
+        # This matrix distinguishes full-grid from triangle weighting.
         Mdisc = [2.4 1.2 1.2; 1.2 1.4 2.4; 1.2 2.4 0.6]
 
         rng = StableRNG(20)

@@ -1,9 +1,6 @@
 # Starting covers shared by the soft-cover multistarts and `*_min` solvers.
 
-# Starting covers the non-convex AbsLinear solvers refine, in the order they are tried.
-# `:leaveout` and `:diagfeasible` have no asymmetric formulation, so the two menus differ.
-# The hard-cover drivers take these starts as covers (`feasible=:inflate`), the soft-cover
-# driver takes them raw (`feasible=:none`) — the soft objective constrains nothing.
+# Default starts for nonconvex `AbsLinear` solvers.
 const SYMCOVER_MIN_STRATEGIES = (:hardcover, :geomean, :leaveout)
 const COVER_MIN_STRATEGIES = (:hardcover, :geomean)
 
@@ -14,41 +11,26 @@ const COVER_MIN_STRATEGIES = (:hardcover, :geomean)
 """
     a = initialize_symcover(A; strategy=:hardcover, feasible=:inflate, kwargs...)
 
-Build a starting point for the symmetric cover of `A`, as consumed by
-[`symcover_min`](@ref) and by the [`soft_symcover`](@ref) multistart.
-
-The strategies depend only on `A`, so this function takes no penalty.
+Build a symmetric starting point for [`symcover_min`](@ref) or
+[`soft_symcover`](@ref). Strategies depend only on `A`:
 
 `strategy` names the point:
 
-- `:geomean` — the geometric mean of each row's nonzero entries. It is not
-  generally a cover.
+- `:geomean` — geometric means of the nonzero entries in each row.
 - `:leaveout` — the geometric mean recomputed with the most-underweighted
-  support entry dropped, which lands in the basin that treats that entry as
-  effectively zero. Raises an `ArgumentError` when no entry can be dropped
-  (empty support, or dropping it would empty a row). Not a cover.
+  support entry omitted. It fails if removing that entry empties a row.
 - `:diagfeasible` — a cover grown from the diagonal by nearest-neighbor
   propagation.
-- `:hardcover` — the tightened hard cover of [`symcover`](@ref), which is
-  `:geomean` boosted to feasibility and then tightened. Forwards `maxiter` to the
-  tightening pass. `feasible` has no effect on it.
+- `:hardcover` — the result of [`symcover`](@ref). It forwards `maxiter` and
+  ignores `feasible`.
 
-`feasible` names how the point is brought up to covering `A` — that is, to
-`a[i]*a[j] >= abs(A[i,j])`, up to the roundoff of the log-domain arithmetic:
+`feasible` controls whether and how the point is made into a cover:
 
-- `:inflate` (the default) multiplies every scale by the smallest common factor
-  that achieves coverage.
-- `:boost` raises only the rows that touch a violated entry, so it changes the
-  shape of the point. This is the route [`symcover`](@ref) itself takes.
+- `:inflate` multiplies every scale by the smallest common factor that covers `A`.
+- `:boost` raises scales that touch violated entries.
 - `:none` returns the strategy's point without a coverage guarantee.
 
-The two feasible routes reach different points on the boundary and can enter
-different basins of the nonconvex `AbsLinear` objectives.
-
-Under every setting the result is strictly positive on every row that carries
-support and exactly zero on every row that carries none.
-
-An unrecognized `strategy` or `feasible` raises an `ArgumentError`.
+Supported rows receive positive scales; unsupported rows receive zero.
 
 See also: [`initialize_symcover!`](@ref), [`initialize_cover`](@ref), [`symcover`](@ref), [`symcover_min`](@ref).
 """
@@ -83,22 +65,15 @@ end
 """
     a, b = initialize_cover(A; strategy=:hardcover, feasible=:inflate, kwargs...)
 
-Build a starting point for the cover of `A`, as consumed by [`cover_min`](@ref)
-and by the [`soft_cover`](@ref) multistart. This is the asymmetric analog of
-[`initialize_symcover`](@ref), and takes the same `feasible` keyword, under
-which the result covers `A` as `a[i]*b[j] >= abs(A[i,j])`.
+Build an asymmetric starting point for [`cover_min`](@ref) or
+[`soft_cover`](@ref). The `feasible` keyword matches
+[`initialize_symcover`](@ref).
 
-Two of the strategies carry over: `:hardcover` (the tightened hard cover of
-[`cover`](@ref), forwarding `maxiter`) and `:geomean` (the AbsLog{2}
-unconstrained minimum). `:leaveout` and `:diagfeasible` have no asymmetric
-formulation and raise an `ArgumentError`, as does any unrecognized `strategy` or
-`feasible`.
+Supported strategies are `:hardcover` (the result of [`cover`](@ref), forwarding
+`maxiter`) and `:geomean` (the unconstrained `AbsLog{2}` minimum).
 
-Under every `feasible` setting the result is strictly positive on every
-supported row and column and exactly zero on the unsupported ones, and the split
-between `a` and `b` is fixed by the balance convention
-`∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]`, imposed within each connected component of the
-support, that every asymmetric cover in the package uses (see [`cover_min`](@ref)).
+Supported rows and columns receive positive scales; unsupported ones receive
+zero. The factors use the balance convention of [`cover_min`](@ref).
 
 See also: [`initialize_cover!`](@ref), [`initialize_symcover`](@ref), [`cover`](@ref), [`cover_min`](@ref).
 """
@@ -134,9 +109,7 @@ function initialize_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatr
         throw(ArgumentError("unknown strategy :$strategy; expected one of :hardcover, :geomean"))
     end
     _make_feasible!(feasible, a, b, A)
-    # `:boost` raises rows and columns independently and so moves the gauge; pin it, as every
-    # asymmetric cover in the package does. This is invisible to the refiners, which read a
-    # start only up to the gauge, but it means a start can be compared against a cover.
+    # Restore the package's balance convention after a selective boost.
     return _balance_cover!(a, b, A)
 end
 
@@ -144,11 +117,7 @@ end
 # Internal helpers
 # ============================================================
 
-# Build the named symmetric start in `a` and return `true`, or return `false` — leaving `a`
-# unspecified — when `A` admits no such start. Only `:leaveout` can decline, and only for
-# want of a support entry it can drop. The two callers want opposite things there:
-# `initialize_symcover!` raises the `ArgumentError`, since the caller named one strategy and
-# did not get it, while a multistart forfeits the slot and refines the rest of its menu.
+# Build a named start. `:leaveout` returns `false` when no entry can be removed.
 function _initialize_symcover!(a::AbstractVector, A::AbstractMatrix, strategy::Symbol,
                                feasible::Symbol; kwargs...)
     if strategy === :hardcover
@@ -169,14 +138,8 @@ function _initialize_symcover!(a::AbstractVector, A::AbstractMatrix, strategy::S
     return true
 end
 
-# Raise a starting point onto the coverage boundary by the named route, or leave it
-# where it is. The two routes land at different points — `inflate_feasible!` scales
-# every entry by one common factor, `boost_feasible!` raises only the rows touching a
-# violated entry — so which one is used is part of what names a start, not an
-# implementation detail of reaching feasibility.
-# Binding the argument count in `Vararg{Any,N}` lets Julia specialize the
-# splatted calls below. Otherwise, juliac's trim verifier treats them as
-# dynamic calls.
+# Apply the selected feasibility step. The `Vararg` length keeps calls
+# statically specialized for `juliac`.
 function _make_feasible!(feasible::Symbol, scales::Vararg{Any,N}) where N
     if feasible === :inflate
         inflate_feasible!(scales...)
@@ -188,47 +151,23 @@ function _make_feasible!(feasible::Symbol, scales::Vararg{Any,N}) where N
     return nothing
 end
 
-# Strategies with no tunables of their own must reject stray keywords rather than
-# discard them: a forwarded `maxiter` that silently does nothing would misreport
-# which start was built.
+# Reject keywords unused by a strategy.
 function _reject_kwargs(strategy::Symbol, kwargs)
     isempty(kwargs) && return nothing
     throw(ArgumentError("strategy=:$strategy accepts no further keyword arguments, got $(string(join(keys(kwargs), ", ")))"))
 end
 
-# Leave-one-out geometric mean. The geometric mean weights every nonzero entry equally, so
-# an entry with |A[i,j]| far below the rest (in the scale-invariant sense of its log-residual
-# z[i,j] = log|A[i,j]| - α[i] - α[j] at the unweighted minimum) skews the start into a worse
-# basin than the exact-zero limit. Here the entry with the most negative residual is dropped
-# from the support and the geometric mean recomputed, giving a start in the basin that treats
-# that entry as effectively zero; the AbsLinear objective is finite at r = 0, so refinement
-# then varies continuously as the entry vanishes.
-#
-# Scale-covariance: the residuals z are scale-invariant, so selecting the entry by argmin z
-# is covariant, as is the reduced-support geometric mean. Residual ties are broken by
-# ascending raw |A[i,j]| — NOT scale-invariant, but exact ties are precisely where
-# covariance is unachievable: whenever A is scale-equivalent to a row/column permutation of
-# itself (true of EVERY symmetric 2×2 with nonzero off-diagonal, via t² = A[2,2]/A[1,1]),
-# the competing basins have exactly equal objectives, so no deterministic algorithm can be
-# simultaneously scale-covariant, permutation-equivariant, and continuous there. The raw
-# magnitude is the only continuity-relevant information left, and using it only on ties
-# confines the covariance exception to that degenerate class. (Weighting all entries by raw
-# |A[i,j]|² instead would carry per-entry physical units — incommensurate sums — and break
-# covariance on an open set of matrices.)
-#
-# Returns `true` and fills `a` with the leave-one-out start, or returns `false` (leaving `a`
-# unspecified) when no entry can be dropped: empty support, or dropping the selected entry
-# would empty some row's support.
+# Recompute the geometric mean after dropping the most negative log-residual.
+# Residual ties use raw magnitude; this is the strategy's only covariance
+# exception. Return `false` if no entry can be removed without emptying a row.
 function _leaveout_logmean_init!(a::AbstractVector{T}, A::AbstractMatrix) where T
     ax = eachindex(a)
     axes(A) == (ax, ax) || throw(DimensionMismatch("`_leaveout_logmean_init!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(string(axes(A))), axes(a)=$(string(axes(a))))"))
     nza = unconstrained_min!(AbsLog{2}(), a, A)
     sum(nza) == 0 && return false
-    # One gather serves all three passes below: the two pair scans read the `j >= i`
-    # half of it, the Gauss-Seidel sweeps read whole rows.
+    # Pair scans use the upper triangle; Gauss-Seidel uses complete rows.
     S = _sym_support(A, T)
-    # Most negative residual over the support, with a roundoff-tolerant tie set: exact ties
-    # (e.g. z[1,1] == z[2,2] for every 2×2) must not be ordered by floating-point noise.
+    # Use a roundoff-tolerant set for tied residuals.
     zmin = T(Inf)
     for i in ax, s in _slots(S, i)
         j = S.idx[s]
@@ -247,16 +186,11 @@ function _leaveout_logmean_init!(a::AbstractVector{T}, A::AbstractMatrix) where 
             ibest, jbest, Abest = i, j, Aij
         end
     end
-    # Dropping entry (i,j) removes one support count from row i and (if off-diagonal) row j.
+    # Account for both endpoints of an off-diagonal entry.
     nza[ibest] > 1 || return false
     ibest == jbest || nza[jbest] > 1 || return false
-    # Minimize the unconstrained AbsLog{2} objective over the reduced support by
-    # Gauss-Seidel on its normal equations, starting from the full-support solution
-    # already in `a`. The closed-form geometric-mean formula used by
-    # `unconstrained_min!` is exactly scale-covariant only for rank-1 support
-    # patterns, which the reduced support never is; a Gauss-Seidel update, by
-    # contrast, is exactly covariant from any covariant iterate, for any sweep
-    # count, so basin selection downstream cannot depend on the frame.
+    # Minimize the reduced-support `AbsLog{2}` objective by Gauss-Seidel. Starting
+    # from a covariant point preserves covariance at every sweep.
     α = similar(a)
     for i in ax
         α[i] = iszero(nza[i]) ? zero(T) : log(a[i])

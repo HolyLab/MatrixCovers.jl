@@ -1,7 +1,4 @@
-# Element types other than Float64. The internal convergence tolerances are
-# multiples of `eps(T)`, so both a narrower and a wider type must behave: a
-# Float64-scaled literal is unreachable in Float32 (every descent would run to
-# `maxiter`) and stops far short of what BigFloat can resolve.
+# Element types other than Float64, including precision-scaled tolerances.
 
 @testset "element types" begin
 
@@ -22,12 +19,7 @@
         @test iscover(a, b, B; rtol=8eps(Float32))
     end
 
-    # The AbsLog{2} penalty continuation resolves descent of order `eps(T)` at penalty
-    # strengths up to 1e8, which `Float32` cannot represent: carried out in `Float32`
-    # throughout, every stage past the first makes no progress and the cover lands tens
-    # of percent from the optimum. The solve therefore runs in `Float64` whenever the
-    # working type is narrower, so a narrow answer is the `Float64` answer rounded, and
-    # the element and container types still follow the input.
+    # Narrow inputs compute in Float64 and convert back to the requested type.
     @testset "narrow working types solve in Float64" begin
         rng = StableRNG(77)
         X = exp.(randn(rng, 60, 60))
@@ -94,9 +86,7 @@
     end
 
     @testset "row and column scales may differ in element type" begin
-        # The public entry points take plain `AbstractVector`s, so a mismatch must
-        # not surface as a MethodError from an unexported internal. Each vector
-        # keeps its own element type; the arithmetic promotes.
+        # Public refiners accept mixed vector element types and promote arithmetic.
         A = [4.0 1.5 0.5; 1.5 1.0 2.0]
         a0, b0 = Float64[3.0, 3.0], Float32[3.0, 3.0, 3.0]
 
@@ -119,15 +109,12 @@
     end
 
     @testset "tolerances follow the element type" begin
-        # Each convergence threshold must sit above the type's resolution, or the
-        # test it guards can never fire.
+        # Convergence thresholds must exceed the type's resolution.
         for T in (Float32, Float64, BigFloat)
             @test MatrixCovers._multistart_switchtol(T) > eps(T)
         end
 
-        # And must sit below it for a wider type, so the extra precision is used.
-        # Running the ALS kernel from one start under the eltype-scaled tolerance
-        # and under the Float64-scaled literal it replaced separates the two.
+        # Wider types must use their extra precision.
         A = BigFloat[4 1.5 0.3; 1.5 1 0.7; 0.3 0.7 2.0]
         start = initialize_symcover(A; feasible=:none)
         u1, v1 = copy(start), copy(start)

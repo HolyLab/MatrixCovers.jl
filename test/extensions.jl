@@ -50,10 +50,7 @@
     a_soft = soft_symcover_min(AbsLog{2}(), A_rank1)
     @test cover_objective(AbsLog{2}(), a_soft, A_rank1) < 1e-8
 
-    # A solve that does not reach an optimum is an error, not a cover: the point
-    # such a model holds is the base of a ray rather than a minimizer. The guard is
-    # exercised directly on the status, since the symmetry precondition rejects the
-    # asymmetric input that is what left this LP unbounded.
+    # Non-optimal solver statuses are errors.
     @test MatrixCovers.check_solved(JuMP.OPTIMAL, "HiGHS", "symcover_min") === nothing
     @test MatrixCovers.check_solved(JuMP.LOCALLY_SOLVED, "Ipopt", "symcover_min!") === nothing
     @test_throws "terminated with status" MatrixCovers.check_solved(JuMP.DUAL_INFEASIBLE, "HiGHS", "symcover_min")
@@ -117,9 +114,7 @@ end
     Aasym = [1.0 2.0 3.0; 4.0 5.0 6.0]
 
     for ϕ in PENALTIES
-        # Refining a start yields a hard cover no worse than the start itself, to
-        # within the tolerance the solvers converge to (on this matrix the :hardcover
-        # start is already all but optimal, so there is nothing else separating them).
+        # Refinement does not worsen the start beyond solver tolerance.
         a0 = initialize_symcover(A)
         a = symcover_min!(ϕ, copy(a0), A)
         @test iscover(a, A; rtol=1e-6)
@@ -136,9 +131,7 @@ end
         @test ga ≈ ab && gb ≈ bb
     end
 
-    # AbsLog{1}'s optimum is a whole face of equally-scoring covers, but the solver pins the
-    # member minimizing the AbsLog{2} objective over it, so the start cannot be read off the
-    # result — the same point comes back from any of them.
+    # `AbsLog{2}` tie-breaking makes the `AbsLog{1}` result start-independent.
     a_cold = symcover_min(AbsLog{1}(), A)
     for strategy in (:hardcover, :geomean, :diagfeasible)
         @test symcover_min!(AbsLog{1}(), initialize_symcover(A; strategy), A) ≈ a_cold
@@ -149,9 +142,7 @@ end
         @test ah ≈ ab_cold && bh ≈ bb_cold
     end
 
-    # The AbsLinear objectives are non-convex: on this matrix the :hardcover and
-    # :geomean starts descend into genuinely different local minima, which is what
-    # makes a menu of starts worth having.
+    # Different starts reach different `AbsLinear` local minima.
     Abasin = [81.892035218799 1.06622031288736 29.4700945830419 0.0181293142917846;
               1.06622031288736 0.243512973596586 38.0236584552296 0.0279078887878805;
               29.4700945830419 38.0236584552296 8.96405068596511 26.5775238859338;
@@ -171,9 +162,7 @@ end
 end
 
 @testset "soft_symcover_min multistart and refiner (Ipopt)" begin
-    # A start for the soft cover need not cover `A`: the objective imposes no coverage
-    # constraint, and the raw geometric mean — the exact soft AbsLog{2} optimum — does not
-    # cover. The refiner must accept it where symcover_min! would reject it.
+    # Soft refiners accept non-covering starts.
     A = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
     a0 = initialize_symcover(A; strategy=:geomean, feasible=:none)
     @test !iscover(a0, A)
@@ -197,11 +186,7 @@ end
         end
     end
 
-    # For a non-convex objective, scale covariance is a property of the *start*: a start that
-    # does not co-vary with `A` can reach a different basin once the frame is rescaled, and
-    # the objective is scale-invariant only within a basin. This matrix and rescaling separate
-    # the basins sharply enough to catch that — an `A`-independent start scores 4.00 in the
-    # rescaled frame where the co-varied answer scores 1.47 — so it pins the menu's covariance.
+    # Covariant starts must select corresponding nonconvex basins after rescaling.
     Abasins = [0.020358630644342735 0.53352144014074843 5.8899714528796077 0.23770314779348869 3.0721768720180109;
               0.53352144014074843 3.5416395788642903 37.199280652497748 49.972622569225109 333.53567816710364;
               5.8899714528796077 37.199280652497748 0.76014027958709862 2.4189759139690739 0.92571970793600067;
@@ -263,10 +248,7 @@ end
 end
 
 @testset "AbsLog{1} canonical selection on the optimal face (HiGHS)" begin
-    # The AbsLog{1} optimum is a face of the feasible polytope, not a point: its members are
-    # different covers scoring the same objective. The solver returns the member that also
-    # minimizes the AbsLog{2} objective — L1-optimal still, but the tightest such cover
-    # rather than whichever vertex the LP happened to reach.
+    # Select the `AbsLog{2}`-minimal member of the `AbsLog{1}` optimal face.
     ϕ1, ϕ2 = AbsLog{1}(), AbsLog{2}()
     rng = StableRNG(17)
     for n in (3, 5, 8)
@@ -293,9 +275,7 @@ end
         @test symcover_min(ϕ1, D * A * D) ≈ D * a
     end
 
-    # Asymmetric: the balance convention pins the gauge `a -> c*a, b -> b/c`, which leaves
-    # every product a[i]*b[j] untouched; the canonical selection resolves the L1 face, whose
-    # members have genuinely different products. The two rules are independent and both hold.
+    # Gauge balancing and `AbsLog{1}` face selection are independent.
     Aasym = [3.0 1.0 7.0; 2.0 5.0 1.0; 8.0 1.0 4.0]
     a, b = cover_min(ϕ1, Aasym)
     nza = vec(count(!iszero, Aasym, dims=2))
@@ -309,9 +289,7 @@ end
 end
 
 @testset "AbsLinear multistart drivers (Ipopt)" begin
-    # The matrix on which the starts genuinely disagree: :geomean reaches a better
-    # AbsLinear{2} minimum than :hardcover, so a driver that tried only the latter
-    # would report the worse of the two.
+    # `:geomean` reaches the better `AbsLinear{2}` basin here.
     Abasin = [81.892035218799 1.06622031288736 29.4700945830419 0.0181293142917846;
               1.06622031288736 0.243512973596586 38.0236584552296 0.0279078887878805;
               29.4700945830419 38.0236584552296 8.96405068596511 26.5775238859338;
@@ -345,8 +323,7 @@ end
               cover_objective(ϕ, symcover_min(ϕ, Abasin), Abasin) * (1 + 1e-6) + 1e-8
     end
 
-    # On Abasin the :geomean start wins, so restricting the menu to :hardcover is
-    # observable — the driver is refining the menu it is given, not a fixed start.
+    # Restricting `strategies` changes the selected basin.
     ϕ = AbsLinear{2}()
     @test symcover_min(ϕ, Abasin; strategies=(:hardcover,)) ≈
           symcover_min!(ϕ, initialize_symcover(Abasin; strategy=:hardcover), Abasin)
@@ -372,8 +349,7 @@ end
 end
 
 @testset "error hint gated on argument types" begin
-    # Wrong-argument-type MethodError: no extension load would fix this,
-    # so the hint must not fire.
+    # Do not hint when loading an extension cannot fix the argument type.
     A = [4.0 1.0; 1.0 4.0]
     e = try
         symcover_min(AbsLog{2}(), "not a matrix")
@@ -384,9 +360,7 @@ end
     @test e isa MethodError
     @test !occursin("loading JuMP", sprint(showerror, e))
 
-    # Genuine missing-extension MethodError: run in a fresh process with
-    # JuMP/HiGHS/Ipopt unloaded (this test file loads them itself, which
-    # would otherwise mask the failure), so the hint should fire.
+    # Test missing-extension hints in a fresh process.
     script = """
     using MatrixCovers
     A = [4.0 1.0; 1.0 4.0]
@@ -399,10 +373,7 @@ end
     out = read(`$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script`, String)
     @test occursin("loading JuMP", out)
 
-    # The no-ϕ wrapper `soft_symcover_min(A)` exists in the base package, but the
-    # `AbsLinear{2}` method it forwards to lives in the MatrixCoversIpoptExt extension. The
-    # MethodError raised (and hinted on) is for the inner call, so the hint must
-    # still fire even though the outer, no-ϕ call is what the user wrote.
+    # The no-ϕ wrapper should preserve the inner missing-extension hint.
     script_noϕ = """
     using MatrixCovers
     A = [4.0 1.0; 1.0 4.0]
@@ -415,9 +386,7 @@ end
     out_noϕ = read(`$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script_noϕ`, String)
     @test occursin("loading JuMP", out_noϕ)
 
-    # soft_cover_min's AbsLog{1} is genuinely unimplemented rather than gated behind an
-    # extension, so its hint must say so rather than claim a package load would help — while
-    # still advising the load for the AbsLinear penalties, which Ipopt does provide.
+    # Distinguish an unimplemented penalty from a missing extension.
     e3 = try
         soft_cover_min(AbsLog{1}(), A)
         nothing
@@ -474,8 +443,7 @@ end
     @test !occursin("loading JuMP", sprint(showerror, e5))
 end
 
-# `HookOnlyMatrix` (defined in soft_covers.jl) throws from `getindex`, so a model
-# builder that materialized `A` in position space could not get this far.
+# `HookOnlyMatrix` verifies that model builders use support hooks.
 @testset "the solver entry points read through the support hook" begin
     entries = [(1, 1, 2.0), (1, 3, 1.5), (2, 2, 3.0), (2, 4, 0.5), (3, 4, 4.0), (4, 4, 1.0)]
     M = HookOnlyMatrix(entries, 4)
@@ -519,12 +487,7 @@ end
     end
 end
 
-# The `sym` AbsLinear solvers minimize the full-grid objective — each off-diagonal
-# pair twice, each diagonal entry once — which is what `cover_objective` reports.
-# This matrix discriminates between that and weighting each unordered pair once:
-# the latter convention puts the optimum near [2.0, 3.177, 1.574] instead. Most
-# matrices do not discriminate, because the binding constraints have zero residual
-# at the optimum and a zero residual is weight-independent.
+# This matrix distinguishes full-grid symmetric weighting from triangle weighting.
 @testset "cover_min balances a block-diagonal support (JuMP/HiGHS)" begin
     # Two connected components: the model constraint pins only the global gauge
     # direction, so the per-component balance must come from the post-solve

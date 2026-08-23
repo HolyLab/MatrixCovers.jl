@@ -31,9 +31,7 @@
     end
 
     @testset "coordinates on mixed scales" begin
-        # Coordinate 1 in m, coordinate 2 in mm. Julia promotes this to a common
-        # unit whenever the entries share a dimension, so an eltype that admits
-        # heterogeneous units is what preserves the scales as written.
+        # An abstract quantity eltype preserves heterogeneous written units.
         H = Quantity[4.0u"m^-2"        1.0u"m^-1*mm^-1";
                      1.0u"m^-1*mm^-1" 4.0u"mm^-2"]
         a = symcover(H)
@@ -51,9 +49,7 @@
         @test unit.(b) == [u"kg^-1", u"K^-1", u"s/m"]
         @test iscover(a, b, B; rtol=8eps())
 
-        # The unit gauge `a -> a*c`, `b -> b/c` is pinned by minimizing the total
-        # atomic-unit powers the two vectors carry, so a factor shared by every
-        # entry lands on whichever side has fewer of them.
+        # Minimize total atomic-unit powers to select the unit gauge.
         aJ, bJ = cover(B .* u"J")
         @test unit.(aJ) == [u"J/m", u"J/s"]
         @test unit.(bJ) == unit.(b)
@@ -63,8 +59,7 @@
     end
 
     @testset "cover reproduces symcover on symmetric input" begin
-        # The gauge takes its smallest-magnitude optimizer, which is trivial here:
-        # a symmetric matrix pins `unit(a[i])` outright via `a[i]^2 == A[i,i]`.
+        # Symmetric diagonal entries pin each scale unit.
         a, b = cover(A)
         @test unit.(a) == unit.(b) == UA
         @test a == b
@@ -72,9 +67,7 @@
     end
 
     @testset "uniform units" begin
-        # A concrete element type names one unit for every entry. The gauge's
-        # median interval is not a single point here -- `∑|t| + ∑|t+2|` is flat
-        # across `t ∈ [-2, 0]` -- so only its midpoint reproduces symcover.
+        # The median-interval midpoint makes `cover` agree with `symcover`.
         Uni = [4.0 1.0; 1.0 4.0] .* u"m^-2"
         @test isconcretetype(eltype(Uni))
         @test unit.(symcover(Uni)) == [u"m^-1", u"m^-1"]
@@ -109,9 +102,7 @@
     end
 
     @testset "balance convention holds in the caller's units" begin
-        # `A` is stripped as written rather than in a canonical system, so the
-        # (non-scale-invariant) balance that splits `a` from `b` is pinned to the
-        # scale the caller named.
+        # Written units determine the balance convention's parametrization.
         ru, cu = (u"m", u"s"), (u"kg", u"K", u"m/s")
         B = [1.0 / (r * c) for r in ru, c in cu] .* [1e3 1e-2 5.0; 2.0 1e4 1e-1]
         a, b = cover(B)
@@ -124,12 +115,11 @@
         @test_throws "units of `A` do not factor" symcover(E)
         @test_throws "unit(A[2,2])*unit(A[1,1]) = kg^2 m^2" symcover(E)
         @test_throws "unit(A[2,1])^2 = s^2" symcover(E)
-        @test_throws "`A*x` is undefined for every `x`" symcover(E)
+        @test_throws "terms in a row of `A*x` can have incompatible units" symcover(E)
         @test_throws "units of `A` do not factor" cover(E)
         @test_throws DimensionMismatch cover(E)
 
-        # Dimensionally consistent, but the off-diagonal is named at a scale the
-        # diagonal contradicts: every entry is 𝐋^-2, yet no `a` covers them.
+        # Dimensions agree, but written unit scales do not factor symmetrically.
         M = Quantity[1.0u"m^-2" 1.0u"m^-2"; 1.0u"m^-2" 1.0u"mm^-2"]
         @test all(==(dimension(u"m^-2")), dimension.(M))
         @test_throws "units of `A` do not factor" symcover(M)
@@ -223,8 +213,7 @@
         @test initialize_cover!(a, b, A) == (a, b)
         @test unit.(a) == unit.(b) == UA
 
-        # The `*_min!` family reads `a` as a start, so `initialize_*` feeds them
-        # directly: both sides name the units the same way.
+        # Initializer output is valid refiner input with matching units.
         a = initialize_symcover(A)
         @test symcover_min!(AbsLog{2}(), a, A) === a
         @test unit.(a) == UA
@@ -272,10 +261,7 @@
     end
 
     @testset "gramcover carries units" begin
-        # A rectangular matrix with a single uniform unit: the row/column split of
-        # `unit(A[i,j]) = unit(a[i])*unit(b[j])` need not be even (more rows than
-        # columns here pushes the whole unit onto `b`), but `gramcover` must carry
-        # whatever split `cover` returns through correctly regardless.
+        # `gramcover` must handle an uneven row/column unit split.
         J = [4.0 1.0; 1.0 3.0; 2.0 0.5] .* u"N/m"
         a, b = cover(J)
         s = gramcover(a, b, J)
@@ -288,8 +274,7 @@
         w = [1.0, 2.0, 0.5] .* u"s"
         sw = gramcover(a, b, J, w)
         @test unit.(sw) == unit(a[1]) .* unit.(b) .* unit(sqrt(1.0u"s"))
-        # Two-step product: the three-term `J' * Diagonal(w) * J` routes through a
-        # mixed-unit intermediate that throws a DimensionError on Julia 1.10.
+        # Form the weighted Gram product without a mixed-unit intermediate.
         Gw = J' * (Diagonal(w) * J)
         @test all(ustrip.(sw * sw') .>= ustrip.(abs.(Gw)))
     end
