@@ -321,19 +321,19 @@ end
 # `:woodbury` splits the same matrix as `C + U Uᵀ`, where `C` is sparse (its
 # off-diagonal pattern is the zero set `Z` of `A` together with the currently
 # violated entries `V`) and symmetric positive definite, and `U` has one column
-# (symmetric) or two (asymmetric). It has two sub-paths, both exact to rounding,
-# which is what the sign-stability stopping test in the continuation loop requires.
-# A sparse Cholesky of `C` plus a Sherman–Morrison (symmetric) or Woodbury
-# (asymmetric) update costs far less than the dense factorization whenever `A` is
-# close to fully supported. `C + U Uᵀ` can alternatively be applied without being
-# formed, at O(n + |Z| + |V|) per application; Gershgorin on `(κ−1)·L_V` against the
-# complete-support diagonal gives `1 + (κ−1)·2·maxdeg(V)/n` as an estimate of its
-# condition number (the sharp bound is a small multiple of that), and while the
-# estimate stays under `WOODBURY_CG_KAPPA`, Jacobi-preconditioned conjugate
-# gradients converge to rounding in a few hundred such applications — cheaper than a
-# factorization whose fill, on the near-random violated pattern of the early stages,
-# approaches dense. Above it the factorization runs, as it does for any CG run that
-# exhausts its iteration cap.
+# (symmetric) or two (asymmetric). `C` is assembled sparsely on every such solve, and
+# two sub-paths then take it, both exact to rounding, which is what the
+# sign-stability stopping test in the continuation loop requires. A sparse Cholesky
+# of `C` plus a Woodbury update — Sherman–Morrison, in the one-column symmetric case
+# — costs far less than the dense factorization whenever `A` is close to fully
+# supported. Alternatively `C + U Uᵀ` is applied as `C·x` plus the low-rank term, at
+# O(nnz(C)) per application; Gershgorin on `(κ−1)·L_V` against the complete-support
+# diagonal gives `1 + (κ−1)·2·maxdeg(V)/n` as an estimate of its condition number
+# (the sharp bound is a small multiple of that), and while the estimate stays under
+# `WOODBURY_CG_KAPPA`, Jacobi-preconditioned conjugate gradients converge to rounding
+# in a few hundred such applications — cheaper than a factorization whose fill, on the
+# near-random violated pattern of the early stages, approaches dense. Above it the
+# factorization runs, as it does for any CG run that exhausts its iteration cap.
 #
 # `C` is positive definite because the complete-support matrix contributes `n` (or
 # `m`) to each diagonal while the zero set subtracts a signless Laplacian `L_Z` with
@@ -373,55 +373,26 @@ const WOODBURY_CG_KAPPA = 1000
 # enough conditioned, and no factorization is formed.
 const LSQR_PRECOND_KAPPA = 1000
 
-# `B*x` for the symmetric Woodbury system
-# `B = dbase·I + e·eᵀ − L_Z + dκ·L_V` (`dbase = n + ridge`), applied without forming
-# a matrix: `L_X·x` accumulates `x[p] + x[q]` into `y[p]` over the directed edges of
-# `X`, so one application costs O(n + |Z| + |V|) rather than O(nnz).
-function _symwoodbury_mul!(y, x, dbase, zedges, vedges, dκ)
-    s = zero(eltype(y))
-    for p in eachindex(x)
-        s += x[p]
+# `(C + U·Uᵀ) x = f` solved from a factorization `F` of the sparse `C`, by the
+# Woodbury identity `x = y − Y·((I + Uᵀ·Y) \ (Uᵀ·y))` with `y = C\f` and `Y = C\U`.
+# One multi-right-hand-side solve of `[f U]` supplies both, and the capacitance is
+# `k×k` for `U` of `k` columns: `k = 1` for the symmetric gauge `e`, where this is
+# Sherman–Morrison, and `k = 2` for the asymmetric row and column indicators. `rhs`
+# is the `size(U, 1)×(k+1)` buffer the block right-hand side is staged in.
+function _woodbury_solve!(x, F, U, f, rhs)
+    k = size(U, 2)
+    copyto!(view(rhs, :, 1), f)
+    copyto!(view(rhs, :, 2:k+1), U)
+    sol = F \ rhs
+    y = view(sol, :, 1)
+    Y = view(sol, :, 2:k+1)
+    K = U' * Y
+    for i in axes(K, 1)
+        K[i, i] += oneunit(eltype(K))
     end
-    @. y = dbase * x + s
-    for (p, q) in zedges
-        y[p] -= x[p] + x[q]
-    end
-    for (p, q) in vedges
-        y[p] += dκ * (x[p] + x[q])
-    end
-    return y
-end
-
-# `B*x` for the asymmetric Woodbury system
-# `B = D + ridge·I + u_r·u_rᵀ + u_c·u_cᵀ − L_Z + dκ·L_V` on the stacked positions
-# `1:m` (rows) and `m+1:m+n` (columns), with `drow`/`dcol` the two diagonal blocks of
-# `D + ridge·I`. Every edge of `L_X` adds `x[p] + x[q]` at both of its ends.
-function _woodbury_mul!(y, x, m, drow, dcol, zedges, vedges, dκ)
-    sr = zero(eltype(y))
-    for p in 1:m
-        sr += x[p]
-    end
-    sc = zero(eltype(y))
-    for p in (m+1):length(x)
-        sc += x[p]
-    end
-    for p in 1:m
-        y[p] = drow * x[p] + sr
-    end
-    for p in (m+1):length(x)
-        y[p] = dcol * x[p] + sc
-    end
-    for (p, q) in zedges
-        t = x[p] + x[q]
-        y[p] -= t
-        y[q] -= t
-    end
-    for (p, q) in vedges
-        t = dκ * (x[p] + x[q])
-        y[p] += t
-        y[q] += t
-    end
-    return y
+    g = K \ (U' * y)
+    copyto!(x, y)
+    return mul!(x, Y, g, -1, 1)
 end
 
 # Jacobi-preconditioned conjugate gradients for the symmetric positive-definite
@@ -713,6 +684,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     Cj = Int[]
     Cv = T[]
     rhs = zeros(T, use_woodbury ? n : 0, 2)
+    Umat = ones(T, use_woodbury ? n : 0, 1)   # the gauge `e`, as the low-rank block
     cgx = zeros(T, use_woodbury ? n : 0)
     cgr = zeros(T, use_woodbury ? n : 0)
     cgz = zeros(T, use_woodbury ? n : 0)
@@ -857,7 +829,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             # `B = C + e·eᵀ` with `C = n·I − L_Z + (κ−1)·L_V`: the complete-support
             # matrix, corrected by the zero set `Z` and by the currently violated
             # entries `V`. One O(nnz) sweep collects the right-hand side, the violated
-            # set, and the diagonal of `B`; everything after it is O(n + |Z| + |V|).
+            # set, and the diagonal of `B`; everything after it is O(|Z| + |V|).
             dκ = κ === nothing ? zero(T) : T(κ) - oneunit(T)
             fill!(f, zero(T))
             copyto!(dg, czero)
@@ -888,24 +860,10 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             for p in 1:n
                 dg[p] += oneunit(T) + ridge
             end
-            # Gershgorin on `(κ−1)·L_V` against a diagonal of at least `n` estimates
-            # the condition number of `B`. While that estimate is small the structured
-            # matvec plus conjugate gradients reaches the same answer in a few hundred
-            # O(n + |Z| + |V|) iterations, which is far cheaper than a factorization
-            # whose fill, on the near-random violated pattern of the early stages, is
-            # close to dense.
-            κest = oneunit(T) + dκ * 2 * maxdegV / n
-            if κest <= WOODBURY_CG_KAPPA
-                copyto!(cgx, α)
-                dbase = T(n) + ridge
-                Bmul! = (y, x) -> _symwoodbury_mul!(y, x, dbase, zedges, vedges, dκ)
-                it, ok = _pcg!(Bmul!, cgx, dg, f, cgr, cgz, cgd, cgAd,
-                               50 + 20 * ceil(Int, sqrt(κest)), 100 * eps(T) * norm(f))
-                ncg[] += it
-                ok && return copy(cgx)
-            end
-            # `sparse` sums the duplicate triplets; the ridge rides on `C`'s diagonal.
-            nchol[] += 1
+            # `zedges` and `vedges` carry both orientations of every pair, so these
+            # triplets store `C` in full rather than in one triangle: the same matrix
+            # then serves the matvec below and the factorization after it. `sparse`
+            # sums the duplicates, and the ridge rides on the diagonal.
             empty!(Ci)
             empty!(Cj)
             empty!(Cv)
@@ -930,22 +888,29 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                 push!(Cj, q)
                 push!(Cv, dκ)
             end
-            F = cholesky(Symmetric(sparse(Ci, Cj, Cv, n, n)))
-            for p in 1:n
-                rhs[p, 1] = f[p]
-                rhs[p, 2] = oneunit(T)
+            C = sparse(Ci, Cj, Cv, n, n)
+            # Gershgorin on `(κ−1)·L_V` against a diagonal of at least `n` estimates
+            # the condition number of `B`. While that estimate is small, conjugate
+            # gradients on `C·x + e·(eᵀx)` reach the same answer in a few hundred
+            # O(nnz(C)) applications, which is far cheaper than a factorization whose
+            # fill, on the near-random violated pattern of the early stages, is close
+            # to dense.
+            κest = oneunit(T) + dκ * 2 * maxdegV / n
+            if κest <= WOODBURY_CG_KAPPA
+                copyto!(cgx, α)
+                Bmul! = function (y, x)
+                    mul!(y, C, x)
+                    s = sum(x)
+                    y .+= s
+                    return y
+                end
+                it, ok = _pcg!(Bmul!, cgx, dg, f, cgr, cgz, cgd, cgAd,
+                               50 + 20 * ceil(Int, sqrt(κest)), 100 * eps(T) * norm(f))
+                ncg[] += it
+                ok && return copy(cgx)
             end
-            # Sherman–Morrison: with y = C\f and u = C\e, (C + e·eᵀ)\f is
-            # y − u·(eᵀy)/(1 + eᵀu).
-            YU = F \ rhs
-            sy = zero(T)
-            su = zero(T)
-            for p in 1:n
-                sy += YU[p, 1]
-                su += YU[p, 2]
-            end
-            r = sy / (oneunit(T) + su)
-            return [YU[p, 1] - r * YU[p, 2] for p in 1:n]
+            nchol[] += 1
+            return _woodbury_solve!(zeros(T, n), cholesky(Symmetric(C)), Umat, f, rhs)
         else
             fill!(f, zero(T))
             B = zeros(T, n, n)
@@ -1199,6 +1164,16 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     Cj = Int[]
     Cv = T[]
     rhs = zeros(T, use_woodbury ? N : 0, 3)
+    # The row and column indicators, as the low-rank block.
+    Umat = zeros(T, use_woodbury ? N : 0, 2)
+    if use_woodbury
+        for ip in 1:m
+            Umat[ip, 1] = oneunit(T)
+        end
+        for jp in 1:n
+            Umat[m+jp, 2] = oneunit(T)
+        end
+    end
     cgx = zeros(T, use_woodbury ? N : 0)
     cgr = zeros(T, use_woodbury ? N : 0)
     cgz = zeros(T, use_woodbury ? N : 0)
@@ -1340,8 +1315,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             # `B + v0·v0ᵀ = C + U·Uᵀ` with `C = D − L_Z + (κ−1)·L_V`,
             # `D = diag(n·1_m, m·1_n)` and `U = [u_r u_c]` the row and column
             # indicators: the complete-support matrix, corrected by the zero set `Z`
-            # and by the currently violated entries `V`. `sparse` sums the duplicate
-            # triplets.
+            # and by the currently violated entries `V`.
             dκ = κ === nothing ? zero(T) : T(κ) - oneunit(T)
             fill!(f, zero(T))
             copyto!(dg, czero)
@@ -1381,19 +1355,10 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             # O(N + |Z| + |V|) iterations, which is far cheaper than a factorization
             # whose fill on the near-random violated pattern of the early stages
             # approaches dense.
-            κest = oneunit(T) + dκ * 2 * maxdegV / min(m, n)
-            if κest <= WOODBURY_CG_KAPPA
-                copyto!(cgx, x)
-                drow = T(n) + ridge
-                dcol = T(m) + ridge
-                Bmul! = (yy, xx) -> _woodbury_mul!(yy, xx, m, drow, dcol, zedges, vedges, dκ)
-                it, ok = _pcg!(Bmul!, cgx, dg, f, cgr, cgz, cgd, cgAd,
-                               50 + 20 * ceil(Int, sqrt(κest)), 100 * eps(T) * norm(f))
-                ncg[] += it
-                ok && return copy(cgx)
-            end
-            # `sparse` sums the duplicate triplets; the ridge rides on `C`'s diagonal.
-            nchol[] += 1
+            # `zedges` and `vedges` carry both ends of every pair, so these triplets
+            # store `C` in full rather than in one triangle: the same matrix then
+            # serves the matvec below and the factorization after it. `sparse` sums
+            # the duplicates, and the ridge rides on the diagonal.
             empty!(Ci)
             empty!(Cj)
             empty!(Cv)
@@ -1424,40 +1389,41 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                 push!(Cj, p)
                 push!(Cv, dκ)
             end
-            F = cholesky(Symmetric(sparse(Ci, Cj, Cv, N, N)))
-            fill!(rhs, zero(T))
-            for p in 1:N
-                rhs[p, 1] = f[p]
+            C = sparse(Ci, Cj, Cv, N, N)
+            # Gershgorin on `(κ−1)·L_V` against the smaller diagonal block estimates
+            # the condition number of `B`. While that estimate is small, conjugate
+            # gradients on `C·x + u_r·(u_rᵀx) + u_c·(u_cᵀx)` reach the same answer in a
+            # few hundred O(nnz(C)) applications, which is far cheaper than a
+            # factorization whose fill on the near-random violated pattern of the early
+            # stages approaches dense.
+            κest = oneunit(T) + dκ * 2 * maxdegV / min(m, n)
+            if κest <= WOODBURY_CG_KAPPA
+                copyto!(cgx, x)
+                Bmul! = function (yy, xx)
+                    mul!(yy, C, xx)
+                    sr = zero(T)
+                    for p in 1:m
+                        sr += xx[p]
+                    end
+                    sc = zero(T)
+                    for p in (m+1):N
+                        sc += xx[p]
+                    end
+                    for p in 1:m
+                        yy[p] += sr
+                    end
+                    for p in (m+1):N
+                        yy[p] += sc
+                    end
+                    return yy
+                end
+                it, ok = _pcg!(Bmul!, cgx, dg, f, cgr, cgz, cgd, cgAd,
+                               50 + 20 * ceil(Int, sqrt(κest)), 100 * eps(T) * norm(f))
+                ncg[] += it
+                ok && return copy(cgx)
             end
-            for ip in 1:m
-                rhs[ip, 2] = oneunit(T)
-            end
-            for jp in 1:n
-                rhs[m+jp, 3] = oneunit(T)
-            end
-            # Woodbury with a 2x2 capacitance: with y = C\f and Y = C\U,
-            # (C + U·Uᵀ)\f is y − Y·((I₂ + UᵀY)\(Uᵀy)).
-            YU = F \ rhs
-            ty = zero(T)
-            tz = zero(T)
-            k11 = zero(T)
-            k12 = zero(T)
-            k21 = zero(T)
-            k22 = zero(T)
-            for ip in 1:m
-                ty += YU[ip, 1]
-                k11 += YU[ip, 2]
-                k12 += YU[ip, 3]
-            end
-            for jp in 1:n
-                q = m + jp
-                tz += YU[q, 1]
-                k21 += YU[q, 2]
-                k22 += YU[q, 3]
-            end
-            K = [oneunit(T)+k11 k12; k21 oneunit(T)+k22]
-            g = K \ T[ty, tz]
-            return [YU[p, 1] - g[1] * YU[p, 2] - g[2] * YU[p, 3] for p in 1:N]
+            nchol[] += 1
+            return _woodbury_solve!(zeros(T, N), cholesky(Symmetric(C)), Umat, f, rhs)
         else
             fill!(f, zero(T))
             B = v0 * v0'
