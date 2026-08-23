@@ -22,6 +22,67 @@
         @test iscover(a, b, B; rtol=8eps(Float32))
     end
 
+    # The AbsLog{2} penalty continuation resolves descent of order `eps(T)` at penalty
+    # strengths up to 1e8, which `Float32` cannot represent: carried out in `Float32`
+    # throughout, every stage past the first makes no progress and the cover lands tens
+    # of percent from the optimum. The solve therefore runs in `Float64` whenever the
+    # working type is narrower, so a narrow answer is the `Float64` answer rounded, and
+    # the element and container types still follow the input.
+    @testset "narrow working types solve in Float64" begin
+        rng = StableRNG(77)
+        X = exp.(randn(rng, 60, 60))
+        Asym = (X .+ X') ./ 2
+        Agen = exp.(randn(rng, 60, 45))
+        aref = symcover_min(AbsLog{2}(), Asym)
+        sref = soft_symcover_min(AbsLog{2}(), Asym)
+        gref, href = cover_min(AbsLog{2}(), Agen)
+        A32 = Float32.(Asym)
+
+        # Every storage the solvers specialize on reaches the same cover.
+        @testset "$name" for (name, M) in ("Matrix" => A32,
+                                           "Symmetric" => Symmetric(A32),
+                                           "SparseMatrixCSC" => sparse(A32),
+                                           "Symmetric{SparseMatrixCSC}" => Symmetric(sparse(triu(A32))),
+                                           "Hermitian{ComplexF32}" => Hermitian(ComplexF32.(A32)))
+            a = symcover_min(AbsLog{2}(), M)
+            @test a isa Vector{Float32}
+            @test a ≈ aref rtol=1e-5
+        end
+
+        # Offset axes survive the promotion and the conversion back.
+        Ao = OffsetArray(A32, -1, -1)
+        ao = symcover_min(AbsLog{2}(), Ao)
+        @test ao isa OffsetVector{Float32}
+        @test axes(ao, 1) == axes(Ao, 1)
+        @test collect(ao) ≈ aref rtol=1e-5
+
+        # `Float16` pins the returned cover only to its own precision, which is what
+        # the looser tolerance measures; the solve behind it is the same `Float64` one.
+        a16 = symcover_min(AbsLog{2}(), Float16.(Asym))
+        @test a16 isa Vector{Float16}
+        @test a16 ≈ aref rtol=2e-3
+
+        # The soft cover is the same worker with no continuation and no boost.
+        s32 = soft_symcover_min(AbsLog{2}(), A32)
+        @test s32 isa Vector{Float32}
+        @test s32 ≈ sref rtol=1e-5
+
+        # Asymmetric: the product is the gauge-invariant object to compare.
+        G32 = Float32.(Agen)
+        g32, h32 = cover_min(AbsLog{2}(), G32)
+        @test g32 isa Vector{Float32} && h32 isa Vector{Float32}
+        @test g32 .* h32' ≈ gref .* href' rtol=1e-5
+        gs, hs = cover_min(AbsLog{2}(), sparse(G32))
+        @test gs .* hs' ≈ gref .* href' rtol=1e-5
+
+        # A type at least as wide as `Float64` is solved in itself.
+        Abig = BigFloat.(Asym[1:8, 1:8])
+        abig = symcover_min(AbsLog{2}(), Abig)
+        @test abig isa Vector{BigFloat}
+        @test Float64.(abig) ≈ symcover_min(AbsLog{2}(), Float64.(Abig)) rtol=1e-6
+        @test abig != BigFloat.(Float32.(abig))
+    end
+
     @testset "BigFloat flows through the family" begin
         A = BigFloat[4 1.5; 1.5 1]
         for a in (symcover(A), soft_symcover(A), symcover_min(AbsLog{2}(), A),
