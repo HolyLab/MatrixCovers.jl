@@ -411,6 +411,26 @@ end
     @test MatrixCovers._soft_cover_min_abslog2(Y)[3].linsolve === :woodbury
 end
 
+@testset "sparse soft AbsLog{2} defaults to matrix-free LSQR" begin
+    rng = StableRNG(19)
+    S0 = sprand(rng, 60, 60, 0.1)
+    Ssp = S0 + S0' + I     # supported diagonal keeps every component non-bipartite
+    a = soft_symcover_min(AbsLog{2}(), Ssp)
+    @test a isa Vector{Float64}
+    @test a == soft_symcover_min(AbsLog{2}(), Ssp; linsolve=:lsqr)
+    @test a ≈ soft_symcover_min(AbsLog{2}(), Matrix(Ssp); linsolve=:dense) rtol=1e-6
+    U = Symmetric(sparse(triu(Ssp)))
+    @test soft_symcover_min(AbsLog{2}(), U) == soft_symcover_min(AbsLog{2}(), U; linsolve=:lsqr)
+    # Asymmetric form; the cover products are gauge-free.
+    G = sprand(rng, 50, 40, 0.12)
+    ga, gb = soft_cover_min(AbsLog{2}(), G)
+    @test (ga, gb) == soft_cover_min(AbsLog{2}(), G; linsolve=:lsqr)
+    gad, gbd = soft_cover_min(AbsLog{2}(), Matrix(G); linsolve=:dense)
+    @test ga .* gb' ≈ gad .* gbd' rtol=1e-6
+    a0 = copy(a)
+    @test soft_symcover_min!(AbsLog{2}(), a0, Ssp) == a
+end
+
 @testset "soft_symcover!/soft_cover! refiners" begin
     Asym = [4.0 1.0 0.5; 1.0 3.0 1.0; 0.5 1.0 2.5]
     Agen = [1.0 2.0 0.5; 0.25 3.0 1.0]
