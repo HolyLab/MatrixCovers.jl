@@ -181,7 +181,9 @@ function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc:
         throw(DimensionMismatch("`W` couples support rows, so it must be square on the row axis: axes(W) must be $(string((sc.rowax, sc.rowax))), got $(string(axes(W)))"))
     ncomp = ncomponents(sc)
 
-    # Merge support components coupled by nonzero entries of `W`.
+    # Merge components coupled by `W`. Entries involving unsupported rows are
+    # ignored: their `a`-scales lie outside the cover, so summing them would
+    # corrupt the bound.
     parent = collect(1:ncomp)
     function find(p)
         while parent[p] != p
@@ -190,33 +192,28 @@ function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc:
         end
         return p
     end
-    merged = false
-    for i in sc.rowax
+    mergedref = Ref(false)
+    foreach_support(W) do i, ip, _
         ci = rowcomponent(sc, i)
-        iszero(ci) && continue
-        for ip in sc.rowax
-            cip = rowcomponent(sc, ip)
-            (iszero(cip) || ci == cip) && continue
-            iszero(abs(W[i, ip])) && continue
-            ri, rip = find(ci), find(cip)
-            ri == rip && continue
-            parent[ri] = rip
-            merged = true
-        end
+        cip = rowcomponent(sc, ip)
+        (iszero(ci) || iszero(cip) || ci == cip) && return
+        ri, rip = find(ci), find(cip)
+        ri == rip && return
+        parent[ri] = rip
+        mergedref[] = true
     end
 
     # Avoid group bookkeeping when all components remain independent.
-    if !merged
+    if !mergedref[]
         m = zeros(typeof(_gc_term(a, W)), ncomp)
         n = zeros(Int, ncomp)
-        for i in sc.rowax
+        # Without merges, each supported entry stays within one component.
+        foreach_support(W) do i, ip, v
             ci = rowcomponent(sc, i)
-            iszero(ci) && continue
-            for ip in sc.rowax
-                rowcomponent(sc, ip) == ci || continue
-                m[ci] += a[i] * abs(W[i, ip]) * a[ip]
-                n[ci] += 1
-            end
+            iszero(ci) && return
+            rowcomponent(sc, ip) == ci || return
+            m[ci] += a[i] * v * a[ip]
+            n[ci] += 1
         end
         return _write_gramcover!(s, b, sc.colcomp, first(sc.colax) - 1, m, n)
     end
@@ -244,19 +241,14 @@ function gramcover!(s::AbstractVector, a::AbstractVector, b::AbstractVector, sc:
         M[r] = zeros(T, k, k)
         nterm[r] = zeros(Int, k, k)
     end
-    for i in sc.rowax
+    # Every supported entry now has endpoints with the same root.
+    foreach_support(W) do i, ip, v
         ci = rowcomponent(sc, i)
-        iszero(ci) && continue
+        cip = rowcomponent(sc, ip)
+        (iszero(ci) || iszero(cip)) && return
         r = find(ci)
-        p = local_idx[ci]
-        for ip in sc.rowax
-            cip = rowcomponent(sc, ip)
-            iszero(cip) && continue
-            find(cip) == r || continue
-            q = local_idx[cip]
-            M[r][p, q] += a[i] * abs(W[i, ip]) * a[ip]
-            nterm[r][p, q] += 1
-        end
+        M[r][local_idx[ci], local_idx[cip]] += a[i] * v * a[ip]
+        nterm[r][local_idx[ci], local_idx[cip]] += 1
     end
 
     sq = _gc_group_scales(members, M, nterm, degenerate)

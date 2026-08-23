@@ -171,6 +171,22 @@
         @test all(sw * sw' .>= abs.(Matrix(Js)' * Diagonal(w) * Matrix(Js)))
     end
 
+    @testset "sparse W matches its dense reading" begin
+        rng = StableRNG(21)
+        B = randn(rng, 4, 3); C = randn(rng, 3, 2)
+        J = [B zeros(4, 2); zeros(3, 3) C]   # two support components
+        a, b = cover(J)
+        m = size(J, 1)
+        Wsp = sparse(1.0I, m, m)
+        Wsp[1, 5] = Wsp[5, 1] = 0.5
+        s = gramcover(a, b, J, Wsp)
+        @test s == gramcover(a, b, J, Matrix(Wsp))
+        @test all(s * s' .>= abs.(J' * Matrix(Wsp) * J))
+        # Uncoupled weights.
+        Dsp = sparse(2.0I, m, m)
+        @test gramcover(a, b, J, Dsp) == gramcover(a, b, J, Matrix(Dsp))
+    end
+
     @testset "empty column" begin
         J = [1.0 0.0; 2.0 0.0; 0.0 0.0]
         a, b = cover(J)
