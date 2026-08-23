@@ -80,9 +80,10 @@ end
 # Native AbsLog{2} MMC solvers on sparse supports default to the matrix-free LSQR
 # inner solve, whose per-iteration cost is O(nnz) and whose accuracy tracks the
 # conditioning of √W·R (≈ √κ) rather than that of the normal equations (≈ κ). This
-# is the intended path when nnz ≪ n²; pass `linsolve=:auto`/`:dense` to force the
-# dense factorization. Only AbsLog{2} is native; other penalties dispatch to the
-# JuMP extension.
+# is the intended path when nnz ≪ n². Pass `linsolve=:dense` to force the dense
+# factorization, or `linsolve=:auto` to let the solver choose between the Woodbury
+# split and the dense factorization. Only AbsLog{2} is native; other penalties
+# dispatch to the JuMP extension.
 function symcover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
     a, _ = _symcover_min_abslog2(A; linsolve, kwargs...)
     return a

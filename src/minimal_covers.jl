@@ -21,14 +21,18 @@ Supported ϕ values:
   linear solve). `:dense` factorizes the reweighted normal equations densely,
   at O(n³) per Newton step. `:woodbury` solves the same equations as a sparse
   correction of the complete-support ones: the matrix is a sparse symmetric
-  positive-definite matrix plus `e*eᵀ`, so a sparse Cholesky and a
-  Sherman–Morrison update replace the dense factorization. It requires
-  `Float64` arithmetic and a support missing at most `n ÷ 4` entries in any
-  row, and raises an `ArgumentError` otherwise. `:lsqr` uses matrix-free LSQR
-  (per-iteration cost O(nnz), intended for large sparse supports), right
-  preconditioned in `Float64` by a sparse Cholesky of the diagonal of the
-  unweighted normal matrix plus the rows the penalty currently weights, which
-  keeps its iteration count from growing with the penalty strength. `:auto`
+  positive-definite matrix `C` plus `e*eᵀ`. Well-conditioned penalty stages
+  apply that sum without forming it and solve by Jacobi-preconditioned
+  conjugate gradients; the rest take a sparse Cholesky of `C` and a
+  Sherman–Morrison update. Both are exact to rounding. `:woodbury` requires
+  `Float64` arithmetic, a support missing at most `n ÷ 4` entries in any row,
+  and at most `4n` zero entries in total, and raises an `ArgumentError`
+  otherwise. `:lsqr` uses matrix-free LSQR (per-iteration cost O(nnz),
+  intended for large sparse supports), right preconditioned in `Float64` by
+  the diagonal of the unweighted normal matrix, joined by the rows the penalty
+  currently weights — through a sparse Cholesky — once diagonal scaling alone
+  would leave the system ill conditioned; this keeps its iteration count from
+  growing with the penalty strength. `:auto`
   selects `:woodbury` where its requirements hold and `:dense` elsewhere.
   `linsolve` defaults to `:auto` for dense `A`; the
   `SparseMatrixCSC`/`Symmetric`/`Hermitian` sparse methods default to `:lsqr`
@@ -70,13 +74,17 @@ Supported ϕ values:
   linear solve). `:dense` factorizes the reweighted normal equations densely,
   at O((m+n)³) per Newton step. `:woodbury` solves the same equations as a
   sparse correction of the complete-support ones: the matrix is a sparse
-  symmetric positive-definite matrix plus a rank-two term, so a sparse Cholesky
-  and a Woodbury update replace the dense factorization. It requires `Float64`
-  arithmetic and a support missing at most `min(m, n) ÷ 4` entries in any row
-  or column, and raises an `ArgumentError` otherwise. `:lsqr` uses matrix-free
+  symmetric positive-definite matrix `C` plus a rank-two term. Well-conditioned
+  penalty stages apply that sum without forming it and solve by
+  Jacobi-preconditioned conjugate gradients; the rest take a sparse Cholesky of
+  `C` and a Woodbury update. Both are exact to rounding. `:woodbury` requires
+  `Float64` arithmetic, a support missing at most `min(m, n) ÷ 4` entries in
+  any row or column, and at most `4·max(m, n)` zero entries in total, and
+  raises an `ArgumentError` otherwise. `:lsqr` uses matrix-free
   LSQR (per-iteration cost O(nnz), intended for large sparse supports), right
-  preconditioned in `Float64` by a sparse Cholesky of the diagonal of the
-  unweighted normal matrix plus the rows the penalty currently weights, which
+  preconditioned in `Float64` by the diagonal of the unweighted normal matrix,
+  joined by the rows the penalty currently weights — through a sparse Cholesky
+  — once diagonal scaling alone would leave the system ill conditioned; this
   keeps its iteration count from growing with the penalty strength.
   `:auto` selects `:woodbury` where its requirements hold and `:dense`
   elsewhere. `linsolve` defaults to `:auto` for dense `A`; the
@@ -305,33 +313,65 @@ function _prepare_cover_start!(a::AbstractVector, b::AbstractVector, A::Abstract
 end
 
 
-# Inner linear solve for the AbsLog{2} MMC Newton steps. `:dense` forms and
-# factorizes the reweighted normal equations densely, at O(n³) per step.
+# Inner linear solve for the AbsLog{2} MMC Newton steps.
+#
+# `:dense` forms and factorizes the reweighted normal equations densely, at O(n³)
+# per step.
+#
 # `:woodbury` splits the same matrix as `C + U Uᵀ`, where `C` is sparse (its
-# off-diagonal pattern is the zero set of `A` together with the currently violated
-# entries) and symmetric positive definite, and `U` has one column (symmetric) or
-# two (asymmetric); a sparse Cholesky of `C` plus a Woodbury update then costs far
-# less than the dense factorization whenever `A` is close to fully supported.
-# It has two exact sub-paths. `C + U Uᵀ` can also be applied without being formed,
-# at O(n + |Z| + |V|) per application, and Gershgorin bounds its condition number by
-# `1 + (κ−1)·2·maxdeg(V)/n` against the complete-support diagonal; while that
-# estimate stays under 1000, Jacobi-preconditioned conjugate gradients converge to
-# rounding in a few hundred such applications, which beats a factorization whose
-# fill on the near-random violated pattern of the early stages approaches dense.
-# Above it, the factorization runs. Either way the answer is exact to rounding,
+# off-diagonal pattern is the zero set `Z` of `A` together with the currently
+# violated entries `V`) and symmetric positive definite, and `U` has one column
+# (symmetric) or two (asymmetric). It has two sub-paths, both exact to rounding,
 # which is what the sign-stability stopping test in the continuation loop requires.
-# `:auto` takes `:woodbury` where it applies and `:dense` otherwise. `:lsqr` forces
-# the matrix-free path, whose per-iteration cost is O(nnz); it is the intended
-# solve for large sparse supports (where nnz ≪ n²) and is used by the
-# structured/sparse methods. It is right preconditioned, which is what keeps its
-# iteration count from growing as the continuation raises κ.
+# A sparse Cholesky of `C` plus a Sherman–Morrison (symmetric) or Woodbury
+# (asymmetric) update costs far less than the dense factorization whenever `A` is
+# close to fully supported. `C + U Uᵀ` can alternatively be applied without being
+# formed, at O(n + |Z| + |V|) per application; Gershgorin on `(κ−1)·L_V` against the
+# complete-support diagonal gives `1 + (κ−1)·2·maxdeg(V)/n` as an estimate of its
+# condition number (the sharp bound is a small multiple of that), and while the
+# estimate stays under `WOODBURY_CG_KAPPA`, Jacobi-preconditioned conjugate
+# gradients converge to rounding in a few hundred such applications — cheaper than a
+# factorization whose fill, on the near-random violated pattern of the early stages,
+# approaches dense. Above it the factorization runs, as it does for any CG run that
+# exhausts its iteration cap.
 #
 # `C` is positive definite because the complete-support matrix contributes `n` (or
-# `m`) to each diagonal while the zero set subtracts a signless Laplacian `L_Z`
-# with λmax(L_Z) ≤ 2·maxdeg(Z); requiring at most a quarter of a row to be zero
-# keeps the difference bounded below by half the diagonal. CHOLMOD is the sparse
-# factorization behind it, and it is reliable only in `Float64`, so that is the
-# only working type the path accepts.
+# `m`) to each diagonal while the zero set subtracts a signless Laplacian `L_Z` with
+# λmax(L_Z) ≤ 2·maxdeg(Z); requiring at most a quarter of a row to be zero keeps the
+# difference bounded below by half the diagonal. A second requirement is about cost
+# rather than definiteness: `Z` enters every matvec and every factorization, so the
+# path is taken only while the total number of zeros is O(n). CHOLMOD is the sparse
+# factorization behind it, and it is reliable only in `Float64`, so that is the only
+# working type the path accepts.
+#
+# `:auto` takes `:woodbury` where it applies and `:dense` otherwise.
+#
+# `:lsqr` forces the matrix-free path, whose per-iteration cost is O(nnz); it is the
+# intended solve for large sparse supports (where nnz ≪ n²) and is used by the
+# structured/sparse methods. In `Float64` it is right preconditioned, which is what
+# keeps its iteration count from growing as the continuation raises κ. The
+# preconditioner is `M = diag(RᵀR) + (κ−1)·Σ_{e∈V} rₑ·rₑᵀ`: the diagonal of the
+# unweighted normal matrix, together with the exact contribution of the rows LSQR
+# weights by κ. All of the κ-dependence of `RᵀWR` sits in those rows, and every
+# generalized eigenvalue of `(RᵀWR, M)` is a mediant of eigenvalues of
+# `(RᵀR, diag(RᵀR))` and so lies in their range. `M = K·Kᵀ` and LSQR runs on
+# `√W·R·K⁻ᵀ` in the variable `y = Kᵀ·x`. While the same condition-number estimate,
+# taken against the unweighted diagonal, stays under `LSQR_PRECOND_KAPPA` the
+# violated rows are left out and `K` is the diagonal `sqrt.(diag(RᵀR))`, applied
+# without forming anything; above it they are included and `K` is the permuted sparse
+# Cholesky factor of `M`, applied through the CHOLMOD factor components `F.PtL` and
+# `F.UP`. `Kᵀ` is never needed as a product: the warm start `Kᵀ·x₀` is `K⁻¹·(M·x₀)`,
+# which those same components and one sparse matrix-vector product supply.
+
+# Condition-number estimate above which a Woodbury solve is factorized rather than
+# iterated: past it conjugate gradients need more applications than the sparse
+# Cholesky costs.
+const WOODBURY_CG_KAPPA = 1000
+
+# Condition-number estimate above which the LSQR preconditioner takes in the rows the
+# penalty currently weights; below it diagonal scaling alone leaves the system well
+# enough conditioned, and no factorization is formed.
+const LSQR_PRECOND_KAPPA = 1000
 
 # `B*x` for the symmetric Woodbury system
 # `B = dbase·I + e·eᵀ − L_Z + dκ·L_V` (`dbase = n + ridge`), applied without forming
@@ -384,19 +424,6 @@ function _woodbury_mul!(y, x, m, drow, dcol, zedges, vedges, dκ)
     return y
 end
 
-# Right preconditioner for the LSQR path. `M = diag(RᵀR) + (κ−1)·Σ_{e∈V} rₑ·rₑᵀ`
-# holds the diagonal of the unweighted normal matrix together with the exact
-# contribution of the rows LSQR weights by κ. All of the κ-dependence of `RᵀWR` sits
-# in those rows, and every generalized eigenvalue of `(RᵀWR, M)` is a mediant of
-# eigenvalues of `(RᵀR, diag(RᵀR))` and so lies in their range, which is what keeps
-# the preconditioned iteration count from growing with κ.
-#
-# `M = K·Kᵀ` with `K` the permuted Cholesky factor `PtL` of `M`. LSQR then runs on
-# `√W·R·K⁻ᵀ` in the variable `y = Kᵀ·x`, applying `K⁻¹` and `K⁻ᵀ` through the CHOLMOD
-# factor components `F.PtL` and `F.UP`. `Kᵀ` itself is never needed as a product: the
-# warm start is `Kᵀ·x₀ = K⁻¹·(M·x₀)`, which the same two objects and one sparse
-# matrix-vector product supply.
-
 # Jacobi-preconditioned conjugate gradients for the symmetric positive-definite
 # Woodbury system `B x = f`, with `Bmul!(y, x)` applying `B` and `dg` holding its
 # diagonal. `x` carries the warm start in and the iterate out; `r`, `z`, `d`, `Ad`
@@ -406,30 +433,48 @@ end
 # stopping test to mean what it says, so `tol` sits at the level of `eps` and a run
 # that exhausts `maxiter` reports failure instead of a partial answer; the caller
 # then falls back to the factorization, which is exact.
+#
+# `r` is carried by a recurrence that drifts from `f − B x`, so success is never
+# declared on it: a claim of convergence is confirmed against a freshly computed
+# residual, and a disagreement restarts the iteration there. The confirming
+# application counts against `maxiter` like any other.
 function _pcg!(Bmul!, x, dg, f, r, z, d, Ad, maxiter::Int, tol)
+    iters = 0
     Bmul!(r, x)
     @. r = f - r
     nrm = norm(r)
+    fresh = true          # `r` holds `f − B x`, not the recurrence's estimate of it
     @. z = r / dg
     copyto!(d, z)
     rz = dot(r, z)
-    iters = 0
-    for k in 1:maxiter
-        nrm <= tol && break
-        iters = k
+    while iters < maxiter
+        if nrm <= tol
+            fresh && return iters, true
+            iters += 1
+            Bmul!(Ad, x)
+            @. r = f - Ad
+            nrm = norm(r)
+            fresh = true
+            @. z = r / dg
+            copyto!(d, z)
+            rz = dot(r, z)
+            continue
+        end
+        iters += 1
         Bmul!(Ad, d)
         dAd = dot(d, Ad)
         dAd > 0 || break
         a = rz / dAd
         @. x += a * d
         @. r -= a * Ad
+        fresh = false
         nrm = norm(r)
         @. z = r / dg
         rznew = dot(r, z)
         @. d = z + (rznew / rz) * d
         rz = rznew
     end
-    return iters, nrm <= tol
+    return iters, fresh && nrm <= tol
 end
 
 # Matrix-free LSQR (Paige & Saunders) for the weighted least-squares problem
@@ -440,9 +485,9 @@ end
 # strength κ) rather than that of `MᵀM` (≈ κ); at κ = 1e8 the squared conditioning
 # breaks CG while LSQR stays accurate.
 #
-# The callers pass a right-preconditioned operator, so `x` here is the preconditioned
-# variable and `M` is `√W·R·K⁻ᵀ`; the preconditioner is described above `_lsqr`'s
-# callers in each worker.
+# A `Float64` caller passes a right-preconditioned operator, so `x` is then the
+# preconditioned variable and `M` is `√W·R·K⁻ᵀ`; see the description of `:lsqr` in the
+# inner-solve overview above. Other working types pass `√W·R` itself.
 #
 # The penalty least-squares problem is inconsistent (its optimal residual is
 # nonzero), so the stopping test is on the normal-equations residual
@@ -502,9 +547,10 @@ function _lsqr(Amul!, Atmul!, b::AbstractVector{T}, x0::AbstractVector{T};
 end
 
 # Worker for `symcover_min(::AbsLog{2})`. Returns `(a, stats)` where `stats` is a
-# NamedTuple `(; nsolves, lsqriters, cgiters, linsolve)` recording the number of inner
-# linear solves, the total LSQR and conjugate-gradient iterations (0 on paths that run
-# neither), and which path ran.
+# NamedTuple `(; nsolves, lsqriters, cgiters, cholsolves, linsolve)` recording the
+# number of inner linear solves, the total LSQR and conjugate-gradient iterations (0 on
+# paths that run neither), how many Woodbury solves fell to the sparse factorization,
+# and which path ran.
 # `linsolve` reports the path that ran: `:dense`, `:woodbury`, or `:lsqr`.
 # `start`, when given, is a positive cover of `A`
 # indexed like `axes(A, 1)` and supplies the first iterate in place of the cold
@@ -548,16 +594,25 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         maxzero = max(maxzero, n - length(slots))
     end
     ne = length(edges)
-    # The Woodbury path splits the normal equations around the complete-support
-    # matrix `n·I + e·eᵀ`, so its cost is set by the zero set `Z` rather than by `n`,
-    # and `n·I − L_Z` is positive definite only while `Z` stays thin.
+    # The Woodbury path splits the normal equations around the complete-support matrix
+    # `n·I + e·eᵀ`, so its cost is set by the zero set `Z` rather than by `n`. Two
+    # separate conditions gate it. Per row: `n·I − L_Z` is positive definite only
+    # while no row carries more than `n ÷ 4` zeros. In total: `Z` is materialized and
+    # then traversed by every matvec and every factorization, so the path is worth
+    # taking only while `|Z|` stays O(n) — a support that is merely thin per row can
+    # still carry Θ(n²) zeros, and the split would then be dense work under a name
+    # that promises otherwise.
+    nzero = n * n - ne
+    zbudget = 4 * n
     use_woodbury = false
     if !use_lsqr && linsolve !== :dense
-        ok = T === Float64 && maxzero <= n ÷ 4
+        ok = T === Float64 && maxzero <= n ÷ 4 && nzero <= zbudget
         if linsolve === :woodbury && !ok
             T === Float64 ||
                 throw(ArgumentError("linsolve=:woodbury requires Float64 arithmetic, but `A` works in $T; use :dense or :lsqr"))
-            throw(ArgumentError("linsolve=:woodbury requires every row of `A` to have at most n ÷ 4 = $(n ÷ 4) zeros; got $maxzero"))
+            maxzero <= n ÷ 4 ||
+                throw(ArgumentError("linsolve=:woodbury requires every row of `A` to have at most n ÷ 4 = $(n ÷ 4) zeros; got $maxzero"))
+            throw(ArgumentError("linsolve=:woodbury requires `A` to have at most 4n = $zbudget zeros in total; got $nzero"))
         end
         use_woodbury = ok
     end
@@ -624,9 +679,9 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     # Entries the frozen weights of the current solve treat as violated. A full Newton
     # step that leaves this pattern intact has landed on the stage's minimizer.
     vpat = falses(ne)
-    vedges = Tuple{Int,Int}[]   # the violated entries of the current solve
-    degV = zeros(Int, n)        # violated entries per row
-    dg = zeros(T, n)            # diagonal of `B`, for the ridge and the CG preconditioner
+    vedges = Tuple{Int,Int}[]              # the violated entries of the current solve
+    degV = zeros(Int, use_woodbury ? n : 0)  # violated entries per row
+    dg = zeros(T, use_woodbury ? n : 0)      # diagonal of `B`, for the ridge and the CG preconditioner
     # Diagonal of the unweighted normal matrix `RᵀR`, the base of the LSQR
     # preconditioner: each directed support entry puts 1 at each of its ends, and a
     # diagonal entry, whose row of `R` is `2·e_p`, puts 4. A support-free variable is
@@ -651,19 +706,22 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     Mv = T[]
     px = zeros(T, use_lsqr ? n : 0)      # scale vector recovered from the LSQR variable
     pg = zeros(T, use_lsqr ? n : 0)      # `Rᵀ√W y` before the preconditioner is applied
+    # `K` of the diagonal preconditioner, which is κ-independent and so built once.
+    psqrt = use_lsqr ? sqrt.(dpart) : T[]
     # COO triplets of `C`, refilled whenever a Woodbury solve is factorized.
     Ci = Int[]
     Cj = Int[]
     Cv = T[]
-    rhs = zeros(T, n, 2)
-    cgx = zeros(T, n)
-    cgr = zeros(T, n)
-    cgz = zeros(T, n)
-    cgd = zeros(T, n)
-    cgAd = zeros(T, n)
+    rhs = zeros(T, use_woodbury ? n : 0, 2)
+    cgx = zeros(T, use_woodbury ? n : 0)
+    cgr = zeros(T, use_woodbury ? n : 0)
+    cgz = zeros(T, use_woodbury ? n : 0)
+    cgd = zeros(T, use_woodbury ? n : 0)
+    cgAd = zeros(T, use_woodbury ? n : 0)
     nsolves = Ref(0)
     nlsqr = Ref(0)
     ncg = Ref(0)
+    nchol = Ref(0)
     solve_weighted = function (α, κ)
         nsolves[] += 1
         if use_lsqr
@@ -696,6 +754,30 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                 for p in 1:n
                     κest = max(κest, oneunit(T) + dκ * 2 * mdiag[p] / dpart[p])
                 end
+                if κest <= LSQR_PRECOND_KAPPA
+                    # `K` is diagonal here, so it is applied by a scaling and nothing
+                    # is assembled or factorized.
+                    Dmul! = function (y, yv)
+                        @. px = yv / psqrt
+                        for (e, (ip, jp)) in enumerate(edges)
+                            y[e] = ws[e] * (px[ip] + px[jp])
+                        end
+                        return y
+                    end
+                    Dtmul! = function (z, y)
+                        fill!(pg, zero(T))
+                        for (e, (ip, jp)) in enumerate(edges)
+                            t = ws[e] * y[e]
+                            pg[ip] += t
+                            pg[jp] += t
+                        end
+                        @. z = pg / psqrt
+                        return z
+                    end
+                    soly, it = _lsqr(Dmul!, Dtmul!, cv, psqrt .* α)
+                    nlsqr[] += it
+                    return soly ./ psqrt
+                end
                 empty!(Mi)
                 empty!(Mj)
                 empty!(Mv)
@@ -704,32 +786,33 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                     push!(Mj, p)
                     push!(Mv, dpart[p])
                 end
-                if κest > 1000
-                    for (p, q) in vedges
-                        if p == q
-                            push!(Mi, p)
-                            push!(Mj, p)
-                            push!(Mv, 4 * dκ)
-                        else
-                            push!(Mi, p)
-                            push!(Mj, p)
-                            push!(Mv, dκ)
-                            push!(Mi, q)
-                            push!(Mj, q)
-                            push!(Mv, dκ)
-                            push!(Mi, p)
-                            push!(Mj, q)
-                            push!(Mv, dκ)
-                            push!(Mi, q)
-                            push!(Mj, p)
-                            push!(Mv, dκ)
-                        end
+                for (p, q) in vedges
+                    if p == q
+                        push!(Mi, p)
+                        push!(Mj, p)
+                        push!(Mv, 4 * dκ)
+                    else
+                        push!(Mi, p)
+                        push!(Mj, p)
+                        push!(Mv, dκ)
+                        push!(Mi, q)
+                        push!(Mj, q)
+                        push!(Mv, dκ)
+                        push!(Mi, p)
+                        push!(Mj, q)
+                        push!(Mv, dκ)
+                        push!(Mi, q)
+                        push!(Mj, p)
+                        push!(Mv, dκ)
                     end
                 end
                 Msp = sparse(Mi, Mj, Mv, n, n)
                 MF = cholesky(Symmetric(Msp))
                 Kc = MF.PtL
                 Uc = MF.UP
+                # CHOLMOD exposes no in-place solve for a factor component, so each
+                # application returns a fresh vector; the transpose product copies it
+                # into the buffer LSQR hands over, which is the only copy avoidable here.
                 Pmul! = function (y, yv)
                     xv = Uc \ yv
                     for (e, (ip, jp)) in enumerate(edges)
@@ -750,7 +833,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                 mul!(px, Msp, α)
                 soly, it = _lsqr(Pmul!, Ptmul!, cv, Kc \ px)
                 nlsqr[] += it
-                return Uc \ soly
+                return (Uc \ soly)::Vector{T}
             end
             Amul! = function (y, x)
                 for (e, (ip, jp)) in enumerate(edges)
@@ -805,14 +888,14 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             for p in 1:n
                 dg[p] += oneunit(T) + ridge
             end
-            # Gershgorin on `(κ−1)·L_V` against a diagonal of at least `n` bounds the
-            # condition number of `B`. While that bound is small the structured matvec
-            # plus conjugate gradients reaches the same answer in a few hundred O(n +
-            # |Z| + |V|) iterations, which is far cheaper than a factorization whose
-            # fill, on the near-random violated pattern of the early stages, is close
-            # to dense.
+            # Gershgorin on `(κ−1)·L_V` against a diagonal of at least `n` estimates
+            # the condition number of `B`. While that estimate is small the structured
+            # matvec plus conjugate gradients reaches the same answer in a few hundred
+            # O(n + |Z| + |V|) iterations, which is far cheaper than a factorization
+            # whose fill, on the near-random violated pattern of the early stages, is
+            # close to dense.
             κest = oneunit(T) + dκ * 2 * maxdegV / n
-            if κest <= 1000
+            if κest <= WOODBURY_CG_KAPPA
                 copyto!(cgx, α)
                 dbase = T(n) + ridge
                 Bmul! = (y, x) -> _symwoodbury_mul!(y, x, dbase, zedges, vedges, dκ)
@@ -822,6 +905,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                 ok && return copy(cgx)
             end
             # `sparse` sums the duplicate triplets; the ridge rides on `C`'s diagonal.
+            nchol[] += 1
             empty!(Ci)
             empty!(Cj)
             empty!(Cv)
@@ -927,11 +1011,13 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         a[i] = hassupp[ip] ? exp(α[ip] + γ) : zero(T)
     end
     return a, (; nsolves=nsolves[], lsqriters=nlsqr[], cgiters=ncg[],
+               cholsolves=nchol[],
                linsolve=(use_lsqr ? :lsqr : use_woodbury ? :woodbury : :dense))
 end
 
 # Worker for `cover_min(::AbsLog{2})`. Returns `(a, b, stats)` with `stats` a
-# NamedTuple `(; nsolves, lsqriters, cgiters, linsolve)` (see `_symcover_min_abslog2`).
+# NamedTuple `(; nsolves, lsqriters, cgiters, cholsolves, linsolve)` (see
+# `_symcover_min_abslog2`).
 # `start`, when given, is a positive cover `(a, b)` indexed like the rows and columns
 # of `A`, supplying the first iterate in place of the cold unweighted solve.
 function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
@@ -985,13 +1071,23 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         maxzero = max(maxzero, m - nzcol[jp])
     end
     zbound = min(m, n) ÷ 4
+    # Two separate conditions gate the path. Per row and column: `D − L_Z` is positive
+    # definite only while neither carries more than `min(m, n) ÷ 4` zeros. In total:
+    # `Z` is materialized and then traversed by every matvec and every factorization,
+    # so the path is worth taking only while `|Z|` stays O(m + n) — a support that is
+    # merely thin per row can still carry Θ(m·n) zeros, and the split would then be
+    # dense work under a name that promises otherwise.
+    nzero = m * n - ne
+    zbudget = 4 * max(m, n)
     use_woodbury = false
     if !use_lsqr && linsolve !== :dense
-        ok = T === Float64 && maxzero <= zbound
+        ok = T === Float64 && maxzero <= zbound && nzero <= zbudget
         if linsolve === :woodbury && !ok
             T === Float64 ||
                 throw(ArgumentError("linsolve=:woodbury requires Float64 arithmetic, but `A` works in $T; use :dense or :lsqr"))
-            throw(ArgumentError("linsolve=:woodbury requires every row and column of `A` to have at most min(m, n) ÷ 4 = $zbound zeros; got $maxzero"))
+            maxzero <= zbound ||
+                throw(ArgumentError("linsolve=:woodbury requires every row and column of `A` to have at most min(m, n) ÷ 4 = $zbound zeros; got $maxzero"))
+            throw(ArgumentError("linsolve=:woodbury requires `A` to have at most 4·max(m, n) = $zbudget zeros in total; got $nzero"))
         end
         use_woodbury = ok
     end
@@ -1073,9 +1169,9 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     # Entries the frozen weights of the current solve treat as violated. A full Newton
     # step that leaves this pattern intact has landed on the stage's minimizer.
     vpat = falses(ne)
-    vedges = Tuple{Int,Int}[]   # the violated entries of the current solve
-    degV = zeros(Int, N)        # violated entries per row and per column
-    dg = zeros(T, N)            # diagonal of `B`, for the ridge and the CG preconditioner
+    vedges = Tuple{Int,Int}[]              # the violated entries of the current solve
+    degV = zeros(Int, use_woodbury ? N : 0)  # violated entries per row and per column
+    dg = zeros(T, use_woodbury ? N : 0)      # diagonal of `B`, for the ridge and the CG preconditioner
     # Diagonal of the unweighted normal matrix of the gauge-augmented system,
     # `RᵀR + v0·v0ᵀ`: the support degree at each position, plus the gauge row's 1. A
     # support-free variable takes that 1 alone, which keeps the preconditioner
@@ -1096,19 +1192,22 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     Mv = T[]
     px = zeros(T, use_lsqr ? N : 0)      # scale vector recovered from the LSQR variable
     pg = zeros(T, use_lsqr ? N : 0)      # `Rᵀ√W y` before the preconditioner is applied
+    # `K` of the diagonal preconditioner, which is κ-independent and so built once.
+    psqrt = use_lsqr ? sqrt.(dpart) : T[]
     # COO triplets of `C`, refilled whenever a Woodbury solve is factorized.
     Ci = Int[]
     Cj = Int[]
     Cv = T[]
-    rhs = zeros(T, N, 3)
-    cgx = zeros(T, N)
-    cgr = zeros(T, N)
-    cgz = zeros(T, N)
-    cgd = zeros(T, N)
-    cgAd = zeros(T, N)
+    rhs = zeros(T, use_woodbury ? N : 0, 3)
+    cgx = zeros(T, use_woodbury ? N : 0)
+    cgr = zeros(T, use_woodbury ? N : 0)
+    cgz = zeros(T, use_woodbury ? N : 0)
+    cgd = zeros(T, use_woodbury ? N : 0)
+    cgAd = zeros(T, use_woodbury ? N : 0)
     nsolves = Ref(0)
     nlsqr = Ref(0)
     ncg = Ref(0)
+    nchol = Ref(0)
     solve_weighted = function (x, κ)
         nsolves[] += 1
         if use_lsqr
@@ -1138,6 +1237,32 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                 for p in 1:N
                     κest = max(κest, oneunit(T) + dκ * 2 * mdiag[p] / dpart[p])
                 end
+                if κest <= LSQR_PRECOND_KAPPA
+                    # `K` is diagonal here, so it is applied by a scaling and nothing
+                    # is assembled or factorized.
+                    Dmul! = function (y, yv)
+                        @. px = yv / psqrt
+                        for (e, (p, q)) in enumerate(edges)
+                            y[e] = ws[e] * (px[p] + px[q])
+                        end
+                        y[g] = dot(v0, px)
+                        return y
+                    end
+                    Dtmul! = function (z, y)
+                        fill!(pg, zero(T))
+                        for (e, (p, q)) in enumerate(edges)
+                            t = ws[e] * y[e]
+                            pg[p] += t
+                            pg[q] += t
+                        end
+                        @. pg += v0 * y[g]
+                        @. z = pg / psqrt
+                        return z
+                    end
+                    soly, it = _lsqr(Dmul!, Dtmul!, cv, psqrt .* x)
+                    nlsqr[] += it
+                    return soly ./ psqrt
+                end
                 empty!(Mi)
                 empty!(Mj)
                 empty!(Mv)
@@ -1146,26 +1271,27 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                     push!(Mj, p)
                     push!(Mv, dpart[p])
                 end
-                if κest > 1000
-                    for (p, q) in vedges
-                        push!(Mi, p)
-                        push!(Mj, p)
-                        push!(Mv, dκ)
-                        push!(Mi, q)
-                        push!(Mj, q)
-                        push!(Mv, dκ)
-                        push!(Mi, p)
-                        push!(Mj, q)
-                        push!(Mv, dκ)
-                        push!(Mi, q)
-                        push!(Mj, p)
-                        push!(Mv, dκ)
-                    end
+                for (p, q) in vedges
+                    push!(Mi, p)
+                    push!(Mj, p)
+                    push!(Mv, dκ)
+                    push!(Mi, q)
+                    push!(Mj, q)
+                    push!(Mv, dκ)
+                    push!(Mi, p)
+                    push!(Mj, q)
+                    push!(Mv, dκ)
+                    push!(Mi, q)
+                    push!(Mj, p)
+                    push!(Mv, dκ)
                 end
                 Msp = sparse(Mi, Mj, Mv, N, N)
                 MF = cholesky(Symmetric(Msp))
                 Kc = MF.PtL
                 Uc = MF.UP
+                # CHOLMOD exposes no in-place solve for a factor component, so each
+                # application returns a fresh vector; the transpose product copies it
+                # into the buffer LSQR hands over, which is the only copy avoidable here.
                 Pmul! = function (y, yv)
                     xv = Uc \ yv
                     for (e, (p, q)) in enumerate(edges)
@@ -1188,7 +1314,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                 mul!(px, Msp, x)
                 soly, it = _lsqr(Pmul!, Ptmul!, cv, Kc \ px)
                 nlsqr[] += it
-                return Uc \ soly
+                return (Uc \ soly)::Vector{T}
             end
             Amul! = function (y, xx)
                 for (e, (p, q)) in enumerate(edges)
@@ -1249,14 +1375,14 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             for p in 1:N
                 dg[p] += oneunit(T) + ridge
             end
-            # Gershgorin on `(κ−1)·L_V` against the smaller diagonal block bounds the
-            # condition number of `B`. While that bound is small the structured matvec
-            # plus conjugate gradients reaches the same answer in a few hundred
+            # Gershgorin on `(κ−1)·L_V` against the smaller diagonal block estimates
+            # the condition number of `B`. While that estimate is small the structured
+            # matvec plus conjugate gradients reaches the same answer in a few hundred
             # O(N + |Z| + |V|) iterations, which is far cheaper than a factorization
             # whose fill on the near-random violated pattern of the early stages
             # approaches dense.
             κest = oneunit(T) + dκ * 2 * maxdegV / min(m, n)
-            if κest <= 1000
+            if κest <= WOODBURY_CG_KAPPA
                 copyto!(cgx, x)
                 drow = T(n) + ridge
                 dcol = T(m) + ridge
@@ -1267,6 +1393,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                 ok && return copy(cgx)
             end
             # `sparse` sums the duplicate triplets; the ridge rides on `C`'s diagonal.
+            nchol[] += 1
             empty!(Ci)
             empty!(Cj)
             empty!(Cv)
@@ -1452,6 +1579,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         b[j] = hascol[jp] ? exp(x[m+jp] - s[colcomp[jp]]) : zero(T)
     end
     return a, b, (; nsolves=nsolves[], lsqriters=nlsqr[], cgiters=ncg[],
+                  cholsolves=nchol[],
                   linsolve=(use_lsqr ? :lsqr : use_woodbury ? :woodbury : :dense))
 end
 

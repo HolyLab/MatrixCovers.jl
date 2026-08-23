@@ -155,14 +155,18 @@ end
 
     @testset "symmetric, n = $n" for n in (6, 30, 120)
         A = symlognormal(n)
-        variants = ["all nonzero" => A,
-                    "zero diagonal" => A - Diagonal(A)]
-        # A sparse symmetric zero set, thin enough to stay inside the n ÷ 4 guard.
+        # A symmetric zero set placed to sit inside both guards at every size tested:
+        # pairing consecutive indices gives exactly one zero per row, against a
+        # per-row allowance of `n ÷ 4` (which is 1 already at n = 6) and a total
+        # allowance of `4n`.
         Z = symlognormal(n)
-        mask = rand(rng, n, n) .< 0.5 / max(n ÷ 8, 1)
-        mask = mask .| mask'
-        Z[mask] .= 0.0
-        maximum(count(iszero, Z; dims=2)) <= n ÷ 4 && push!(variants, "sparse zeros" => Z)
+        for k in 1:(n ÷ 2)
+            Z[2k-1, 2k] = 0.0
+            Z[2k, 2k-1] = 0.0
+        end
+        variants = ["all nonzero" => A,
+                    "zero diagonal" => A - Diagonal(A),
+                    "paired zeros" => Z]
         for (name, M) in variants
             @testset "$name" begin
                 ad, sd = MatrixCovers._symcover_min_abslog2(M; linsolve=:dense)
@@ -178,7 +182,9 @@ end
                 # are well enough conditioned for conjugate gradients, the late ones
                 # are not, and both are exact.
                 @test sw.cgiters > 0
+                @test sw.cholsolves > 0
                 @test sd.cgiters == 0
+                @test sd.cholsolves == 0
             end
         end
     end
@@ -199,7 +205,9 @@ end
                 @test aw .* bw' ≈ ad .* bd' rtol=1e-7
                 @test iscover(aw, bw, M; atol=1e-7)
                 @test sw.cgiters > 0
+                @test sw.cholsolves > 0
                 @test sd.cgiters == 0
+                @test sd.cholsolves == 0
             end
         end
     end
@@ -230,18 +238,22 @@ end
     am, bm = cover_min(AbsLog{2}(), Matrix(Agv); linsolve=:woodbury)
     @test av .* bv' ≈ am .* bm' rtol=1e-10
 
-    # A single well-conditioned stage exercises the conjugate-gradient sub-path alone.
+    # A single stage at κ = 1e2 stays inside the conjugate-gradient regime throughout,
+    # so the factorization is never reached.
     A1 = symlognormal(24)
     c1, s1 = MatrixCovers._symcover_min_abslog2(A1; κs=(1e2,), linsolve=:woodbury)
     @test s1.cgiters > 0
+    @test s1.cholsolves == 0
     @test c1 ≈ MatrixCovers._symcover_min_abslog2(A1; κs=(1e2,), linsolve=:dense)[1] rtol=1e-8
     G1 = lognormal(24, 18)
     p1, q1, t1 = MatrixCovers._cover_min_abslog2(G1; κs=(1e2,), linsolve=:woodbury)
     pd1, qd1, _ = MatrixCovers._cover_min_abslog2(G1; κs=(1e2,), linsolve=:dense)
     @test t1.cgiters > 0
+    @test t1.cholsolves == 0
     @test p1 .* q1' ≈ pd1 .* qd1' rtol=1e-8
 
-    # The zero set must stay inside the guard, and the arithmetic must be Float64.
+    # No row may carry more than a quarter zeros — that is what keeps `C` positive
+    # definite — and the arithmetic must be Float64.
     holey = symlognormal(12)
     holey[1, 1:5] .= 0.0
     holey[1:5, 1] .= 0.0
@@ -251,6 +263,23 @@ end
     gholey[1, 1:5] .= 0.0
     @test_throws "at most min(m, n) ÷ 4 = 3 zeros; got 5" cover_min(AbsLog{2}(), gholey; linsolve=:woodbury)
     @test MatrixCovers._cover_min_abslog2(gholey)[3].linsolve === :dense
+
+    # A support thin enough per row can still carry a quadratic number of zeros, which
+    # would make the "sparse" correction dense work; the total budget rejects it.
+    wide = symlognormal(40)
+    for i in 1:40, j in 1:40
+        (i != j && (i + j) % 4 == 0) && (wide[i, j] = 0.0)
+    end
+    @test maximum(count(iszero, wide; dims=2)) <= 40 ÷ 4
+    @test count(iszero, wide) > 4 * 40
+    @test_throws "at most 4n = 160 zeros in total" symcover_min(AbsLog{2}(), wide; linsolve=:woodbury)
+    @test MatrixCovers._symcover_min_abslog2(wide)[2].linsolve === :dense
+    gwide = lognormal(40, 40)
+    for i in 1:40, j in 1:40
+        (i + j) % 4 == 0 && (gwide[i, j] = 0.0)
+    end
+    @test_throws "at most 4·max(m, n) = 160 zeros in total" cover_min(AbsLog{2}(), gwide; linsolve=:woodbury)
+    @test MatrixCovers._cover_min_abslog2(gwide)[3].linsolve === :dense
 
     A32 = Float32.(symlognormal(8))
     @test_throws "requires Float64 arithmetic" symcover_min(AbsLog{2}(), A32; linsolve=:woodbury)
@@ -273,7 +302,10 @@ end
     al, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
     @test ad ≈ al rtol=1e-6
     @test aw ≈ al rtol=1e-6
-    # One solve per κ stage is saved; `κs` has four stages by default.
+    # One solve per κ stage is saved; `κs` has four stages by default. The absolute
+    # bound guards against a regression in the count itself: this matrix takes 24
+    # solves on the exact paths against 28 on `:lsqr`, so 26 leaves two solves of
+    # headroom while still failing if the early stop stops firing.
     @test sd.nsolves == sw.nsolves
     @test sd.nsolves <= sl.nsolves - length((1e2, 1e4, 1e6, 1e8))
     @test sd.nsolves <= 26
@@ -286,6 +318,7 @@ end
     @test gw .* hw' ≈ gl .* hl' rtol=1e-6
     @test td.nsolves == tw.nsolves
     @test td.nsolves <= tl.nsolves - length((1e2, 1e4, 1e6, 1e8))
+    # 22 solves measured here against 26 on `:lsqr`; 24 leaves two of headroom.
     @test td.nsolves <= 24
 end
 
@@ -299,12 +332,15 @@ end
     ad, _ = MatrixCovers._symcover_min_abslog2(A; linsolve=:dense)
     al, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
     @test al ≈ ad rtol=1e-6
+    # 29.4 iterations per solve measured here; the bound doubles that, and an
+    # unpreconditioned run would sit in the hundreds by the last κ stage.
     @test sl.lsqriters <= 60 * sl.nsolves
 
     G = exp.(randn(rng, 120, 90))
     gd, hd, _ = MatrixCovers._cover_min_abslog2(G; linsolve=:dense)
     gl, hl, tl = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr)
     @test gl .* hl' ≈ gd .* hd' rtol=1e-6
+    # 41.4 iterations per solve measured here, against the same bound.
     @test tl.lsqriters <= 60 * tl.nsolves
 
     # A working type CHOLMOD cannot factor keeps the plain matrix-free iteration.
