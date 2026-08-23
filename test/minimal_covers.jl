@@ -289,6 +289,32 @@ end
     @test td.nsolves <= 24
 end
 
+# The LSQR preconditioner absorbs the rows the continuation weights by κ, so the
+# generalized spectrum it iterates on is the unweighted one and the iteration count
+# stops growing as κ rises. CHOLMOD factors it, so it applies only in Float64;
+# narrower and wider types run the plain matrix-free iteration.
+@testset "MMC :lsqr iteration count is bounded across the continuation" begin
+    rng = StableRNG(5)
+    A = (X = exp.(randn(rng, 120, 120)); (X .+ X') ./ 2)
+    ad, _ = MatrixCovers._symcover_min_abslog2(A; linsolve=:dense)
+    al, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
+    @test al ≈ ad rtol=1e-6
+    @test sl.lsqriters <= 60 * sl.nsolves
+
+    G = exp.(randn(rng, 120, 90))
+    gd, hd, _ = MatrixCovers._cover_min_abslog2(G; linsolve=:dense)
+    gl, hl, tl = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr)
+    @test gl .* hl' ≈ gd .* hd' rtol=1e-6
+    @test tl.lsqriters <= 60 * tl.nsolves
+
+    # A working type CHOLMOD cannot factor keeps the plain matrix-free iteration.
+    A32 = Float32.([4.0 1.0 0.5; 1.0 3.0 1.0; 0.5 1.0 2.5])
+    a32 = symcover_min(AbsLog{2}(), A32; linsolve=:lsqr)
+    @test a32 isa Vector{Float32}
+    @test a32 ≈ symcover_min(AbsLog{2}(), A32; linsolve=:dense) rtol=1e-5
+    @test iscover(a32, A32; rtol=1e-5)
+end
+
 @testset "MMC disconnected-support gauge" begin
     # A support graph that splits into k connected components carries k independent
     # (e; −e) gauges. The asymmetric dense normal equations pin only the global one

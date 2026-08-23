@@ -25,7 +25,10 @@ Supported ϕ values:
   Sherman–Morrison update replace the dense factorization. It requires
   `Float64` arithmetic and a support missing at most `n ÷ 4` entries in any
   row, and raises an `ArgumentError` otherwise. `:lsqr` uses matrix-free LSQR
-  (per-iteration cost O(nnz), intended for large sparse supports). `:auto`
+  (per-iteration cost O(nnz), intended for large sparse supports), right
+  preconditioned in `Float64` by a sparse Cholesky of the diagonal of the
+  unweighted normal matrix plus the rows the penalty currently weights, which
+  keeps its iteration count from growing with the penalty strength. `:auto`
   selects `:woodbury` where its requirements hold and `:dense` elsewhere.
   `linsolve` defaults to `:auto` for dense `A`; the
   `SparseMatrixCSC`/`Symmetric`/`Hermitian` sparse methods default to `:lsqr`
@@ -71,7 +74,10 @@ Supported ϕ values:
   and a Woodbury update replace the dense factorization. It requires `Float64`
   arithmetic and a support missing at most `min(m, n) ÷ 4` entries in any row
   or column, and raises an `ArgumentError` otherwise. `:lsqr` uses matrix-free
-  LSQR (per-iteration cost O(nnz), intended for large sparse supports).
+  LSQR (per-iteration cost O(nnz), intended for large sparse supports), right
+  preconditioned in `Float64` by a sparse Cholesky of the diagonal of the
+  unweighted normal matrix plus the rows the penalty currently weights, which
+  keeps its iteration count from growing with the penalty strength.
   `:auto` selects `:woodbury` where its requirements hold and `:dense`
   elsewhere. `linsolve` defaults to `:auto` for dense `A`; the
   `SparseMatrixCSC` sparse method defaults to `:lsqr` instead, since neither
@@ -317,7 +323,8 @@ end
 # `:auto` takes `:woodbury` where it applies and `:dense` otherwise. `:lsqr` forces
 # the matrix-free path, whose per-iteration cost is O(nnz); it is the intended
 # solve for large sparse supports (where nnz ≪ n²) and is used by the
-# structured/sparse methods.
+# structured/sparse methods. It is right preconditioned, which is what keeps its
+# iteration count from growing as the continuation raises κ.
 #
 # `C` is positive definite because the complete-support matrix contributes `n` (or
 # `m`) to each diagonal while the zero set subtracts a signless Laplacian `L_Z`
@@ -377,6 +384,19 @@ function _woodbury_mul!(y, x, m, drow, dcol, zedges, vedges, dκ)
     return y
 end
 
+# Right preconditioner for the LSQR path. `M = diag(RᵀR) + (κ−1)·Σ_{e∈V} rₑ·rₑᵀ`
+# holds the diagonal of the unweighted normal matrix together with the exact
+# contribution of the rows LSQR weights by κ. All of the κ-dependence of `RᵀWR` sits
+# in those rows, and every generalized eigenvalue of `(RᵀWR, M)` is a mediant of
+# eigenvalues of `(RᵀR, diag(RᵀR))` and so lies in their range, which is what keeps
+# the preconditioned iteration count from growing with κ.
+#
+# `M = K·Kᵀ` with `K` the permuted Cholesky factor `PtL` of `M`. LSQR then runs on
+# `√W·R·K⁻ᵀ` in the variable `y = Kᵀ·x`, applying `K⁻¹` and `K⁻ᵀ` through the CHOLMOD
+# factor components `F.PtL` and `F.UP`. `Kᵀ` itself is never needed as a product: the
+# warm start is `Kᵀ·x₀ = K⁻¹·(M·x₀)`, which the same two objects and one sparse
+# matrix-vector product supply.
+
 # Jacobi-preconditioned conjugate gradients for the symmetric positive-definite
 # Woodbury system `B x = f`, with `Bmul!(y, x)` applying `B` and `dg` holding its
 # diagonal. `x` carries the warm start in and the iterate out; `r`, `z`, `d`, `Ad`
@@ -419,6 +439,10 @@ end
 # equations because it works with the condition number of `M` (≈ √κ at penalty
 # strength κ) rather than that of `MᵀM` (≈ κ); at κ = 1e8 the squared conditioning
 # breaks CG while LSQR stays accurate.
+#
+# The callers pass a right-preconditioned operator, so `x` here is the preconditioned
+# variable and `M` is `√W·R·K⁻ᵀ`; the preconditioner is described above `_lsqr`'s
+# callers in each worker.
 #
 # The penalty least-squares problem is inconsistent (its optimal residual is
 # nonzero), so the stopping test is on the normal-equations residual
@@ -501,6 +525,9 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     T = float(real(eltype(A)))
     n = length(ax)
     use_lsqr = linsolve === :lsqr
+    # CHOLMOD, which factors the LSQR preconditioner, is reliable only in Float64;
+    # other working types run the plain matrix-free iteration.
+    use_precond = use_lsqr && T === Float64
     # Support entries, one per residual z_ij = α_i + α_j - log|A_ij|, with `cvals`
     # holding log|A_ij| alongside. The gather reports each off-diagonal pair in both
     # orientations and the diagonal once, which is the full-grid weighting the
@@ -600,6 +627,30 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     vedges = Tuple{Int,Int}[]   # the violated entries of the current solve
     degV = zeros(Int, n)        # violated entries per row
     dg = zeros(T, n)            # diagonal of `B`, for the ridge and the CG preconditioner
+    # Diagonal of the unweighted normal matrix `RᵀR`, the base of the LSQR
+    # preconditioner: each directed support entry puts 1 at each of its ends, and a
+    # diagonal entry, whose row of `R` is `2·e_p`, puts 4. A support-free variable is
+    # given 1 so the preconditioner stays positive definite.
+    dpart = zeros(T, use_lsqr ? n : 0)
+    if use_lsqr
+        for (ip, jp) in edges
+            if ip == jp
+                dpart[ip] += 4 * oneunit(T)
+            else
+                dpart[ip] += oneunit(T)
+                dpart[jp] += oneunit(T)
+            end
+        end
+        for p in 1:n
+            dpart[p] > 0 || (dpart[p] = oneunit(T))
+        end
+    end
+    mdiag = zeros(T, use_lsqr ? n : 0)   # the violated rows' diagonal, per unit of κ−1
+    Mi = Int[]                           # COO triplets of the preconditioner
+    Mj = Int[]
+    Mv = T[]
+    px = zeros(T, use_lsqr ? n : 0)      # scale vector recovered from the LSQR variable
+    pg = zeros(T, use_lsqr ? n : 0)      # `Rᵀ√W y` before the preconditioner is applied
     # COO triplets of `C`, refilled whenever a Woodbury solve is factorized.
     Ci = Int[]
     Cj = Int[]
@@ -616,12 +667,90 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     solve_weighted = function (α, κ)
         nsolves[] += 1
         if use_lsqr
+            dκ = κ === nothing ? zero(T) : T(κ) - oneunit(T)
+            empty!(vedges)
+            fill!(mdiag, zero(T))
             for (e, (ip, jp)) in enumerate(edges)
                 c = cvals[e]
-                w = κ === nothing ? oneunit(T) : ((α[ip] + α[jp] - c) < 0 ? T(κ) : oneunit(T))
-                sw = sqrt(w)
+                viol = κ !== nothing && (α[ip] + α[jp] - c) < 0
+                vpat[e] = viol
+                sw = sqrt(viol ? T(κ) : oneunit(T))
                 ws[e] = sw
                 cv[e] = sw * c
+                if viol && use_precond
+                    push!(vedges, (ip, jp))
+                    if ip == jp
+                        mdiag[ip] += 4 * oneunit(T)
+                    else
+                        mdiag[ip] += oneunit(T)
+                        mdiag[jp] += oneunit(T)
+                    end
+                end
+            end
+            if use_precond
+                # Diagonal scaling alone leaves a conditioning that grows with κ once
+                # the violated rows dominate a variable's diagonal; past that point
+                # they enter the preconditioner in full, and its Cholesky pays for
+                # itself in the iterations it removes.
+                κest = oneunit(T)
+                for p in 1:n
+                    κest = max(κest, oneunit(T) + dκ * 2 * mdiag[p] / dpart[p])
+                end
+                empty!(Mi)
+                empty!(Mj)
+                empty!(Mv)
+                for p in 1:n
+                    push!(Mi, p)
+                    push!(Mj, p)
+                    push!(Mv, dpart[p])
+                end
+                if κest > 1000
+                    for (p, q) in vedges
+                        if p == q
+                            push!(Mi, p)
+                            push!(Mj, p)
+                            push!(Mv, 4 * dκ)
+                        else
+                            push!(Mi, p)
+                            push!(Mj, p)
+                            push!(Mv, dκ)
+                            push!(Mi, q)
+                            push!(Mj, q)
+                            push!(Mv, dκ)
+                            push!(Mi, p)
+                            push!(Mj, q)
+                            push!(Mv, dκ)
+                            push!(Mi, q)
+                            push!(Mj, p)
+                            push!(Mv, dκ)
+                        end
+                    end
+                end
+                Msp = sparse(Mi, Mj, Mv, n, n)
+                MF = cholesky(Symmetric(Msp))
+                Kc = MF.PtL
+                Uc = MF.UP
+                Pmul! = function (y, yv)
+                    xv = Uc \ yv
+                    for (e, (ip, jp)) in enumerate(edges)
+                        y[e] = ws[e] * (xv[ip] + xv[jp])
+                    end
+                    return y
+                end
+                Ptmul! = function (z, y)
+                    fill!(pg, zero(T))
+                    for (e, (ip, jp)) in enumerate(edges)
+                        t = ws[e] * y[e]
+                        pg[ip] += t
+                        pg[jp] += t
+                    end
+                    copyto!(z, Kc \ pg)
+                    return z
+                end
+                mul!(px, Msp, α)
+                soly, it = _lsqr(Pmul!, Ptmul!, cv, Kc \ px)
+                nlsqr[] += it
+                return Uc \ soly
             end
             Amul! = function (y, x)
                 for (e, (ip, jp)) in enumerate(edges)
@@ -820,6 +949,9 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     n = length(axc)
     N = m + n
     use_lsqr = linsolve === :lsqr
+    # CHOLMOD, which factors the LSQR preconditioner, is reliable only in Float64;
+    # other working types run the plain matrix-free iteration.
+    use_precond = use_lsqr && T === Float64
     # Support entries as edges linking a row position ip to a column position m+jp,
     # with `cvals` holding log|A_ij| alongside. Internal positions 1:m index rows,
     # m+1:m+n index columns, and results are scattered back through axr/axc so A's
@@ -944,6 +1076,26 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     vedges = Tuple{Int,Int}[]   # the violated entries of the current solve
     degV = zeros(Int, N)        # violated entries per row and per column
     dg = zeros(T, N)            # diagonal of `B`, for the ridge and the CG preconditioner
+    # Diagonal of the unweighted normal matrix of the gauge-augmented system,
+    # `RᵀR + v0·v0ᵀ`: the support degree at each position, plus the gauge row's 1. A
+    # support-free variable takes that 1 alone, which keeps the preconditioner
+    # positive definite.
+    dpart = zeros(T, use_lsqr ? N : 0)
+    if use_lsqr
+        for (p, q) in edges
+            dpart[p] += oneunit(T)
+            dpart[q] += oneunit(T)
+        end
+        for p in 1:N
+            dpart[p] += oneunit(T)
+        end
+    end
+    mdiag = zeros(T, use_lsqr ? N : 0)   # the violated rows' diagonal, per unit of κ−1
+    Mi = Int[]                           # COO triplets of the preconditioner
+    Mj = Int[]
+    Mv = T[]
+    px = zeros(T, use_lsqr ? N : 0)      # scale vector recovered from the LSQR variable
+    pg = zeros(T, use_lsqr ? N : 0)      # `Rᵀ√W y` before the preconditioner is applied
     # COO triplets of `C`, refilled whenever a Woodbury solve is factorized.
     Ci = Int[]
     Cj = Int[]
@@ -960,14 +1112,84 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     solve_weighted = function (x, κ)
         nsolves[] += 1
         if use_lsqr
+            dκ = κ === nothing ? zero(T) : T(κ) - oneunit(T)
+            empty!(vedges)
+            fill!(mdiag, zero(T))
             for (e, (p, q)) in enumerate(edges)
                 c = cvals[e]
-                w = κ === nothing ? oneunit(T) : ((x[p] + x[q] - c) < 0 ? T(κ) : oneunit(T))
-                sw = sqrt(w)
+                viol = κ !== nothing && (x[p] + x[q] - c) < 0
+                vpat[e] = viol
+                sw = sqrt(viol ? T(κ) : oneunit(T))
                 ws[e] = sw
                 cv[e] = sw * c
+                if viol && use_precond
+                    push!(vedges, (p, q))
+                    mdiag[p] += oneunit(T)
+                    mdiag[q] += oneunit(T)
+                end
             end
             g = ne + 1   # index of the appended gauge row
+            if use_precond
+                # Diagonal scaling alone leaves a conditioning that grows with κ once
+                # the violated rows dominate a variable's diagonal; past that point
+                # they enter the preconditioner in full, and its Cholesky pays for
+                # itself in the iterations it removes.
+                κest = oneunit(T)
+                for p in 1:N
+                    κest = max(κest, oneunit(T) + dκ * 2 * mdiag[p] / dpart[p])
+                end
+                empty!(Mi)
+                empty!(Mj)
+                empty!(Mv)
+                for p in 1:N
+                    push!(Mi, p)
+                    push!(Mj, p)
+                    push!(Mv, dpart[p])
+                end
+                if κest > 1000
+                    for (p, q) in vedges
+                        push!(Mi, p)
+                        push!(Mj, p)
+                        push!(Mv, dκ)
+                        push!(Mi, q)
+                        push!(Mj, q)
+                        push!(Mv, dκ)
+                        push!(Mi, p)
+                        push!(Mj, q)
+                        push!(Mv, dκ)
+                        push!(Mi, q)
+                        push!(Mj, p)
+                        push!(Mv, dκ)
+                    end
+                end
+                Msp = sparse(Mi, Mj, Mv, N, N)
+                MF = cholesky(Symmetric(Msp))
+                Kc = MF.PtL
+                Uc = MF.UP
+                Pmul! = function (y, yv)
+                    xv = Uc \ yv
+                    for (e, (p, q)) in enumerate(edges)
+                        y[e] = ws[e] * (xv[p] + xv[q])
+                    end
+                    y[g] = dot(v0, xv)
+                    return y
+                end
+                Ptmul! = function (z, y)
+                    fill!(pg, zero(T))
+                    for (e, (p, q)) in enumerate(edges)
+                        t = ws[e] * y[e]
+                        pg[p] += t
+                        pg[q] += t
+                    end
+                    @. pg += v0 * y[g]
+                    copyto!(z, Kc \ pg)
+                    return z
+                end
+                mul!(px, Msp, x)
+                soly, it = _lsqr(Pmul!, Ptmul!, cv, Kc \ px)
+                nlsqr[] += it
+                return Uc \ soly
+            end
             Amul! = function (y, xx)
                 for (e, (p, q)) in enumerate(edges)
                     y[e] = ws[e] * (xx[p] + xx[q])
