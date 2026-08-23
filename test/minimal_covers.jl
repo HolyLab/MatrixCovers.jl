@@ -167,6 +167,9 @@ end
         variants = ["all nonzero" => A,
                     "zero diagonal" => A - Diagonal(A),
                     "paired zeros" => Z]
+        # Diagonal and off-diagonal zeros together put two per row, which needs a
+        # per-row allowance of at least two.
+        n ÷ 4 >= 2 && push!(variants, "zero diagonal and paired zeros" => Z - Diagonal(Z))
         for (name, M) in variants
             @testset "$name" begin
                 ad, sd = MatrixCovers._symcover_min_abslog2(M; linsolve=:dense)
@@ -236,7 +239,15 @@ end
     Agv = view(Ag, 2:13, 2:9)
     av, bv = cover_min(AbsLog{2}(), Agv; linsolve=:woodbury)
     am, bm = cover_min(AbsLog{2}(), Matrix(Agv); linsolve=:woodbury)
+    @test axes(av, 1) == axes(Agv, 1)
+    @test axes(bv, 1) == axes(Agv, 2)
     @test av .* bv' ≈ am .* bm' rtol=1e-10
+    Ago = OffsetArray(Ag, -2, 4)
+    ago, bgo = cover_min(AbsLog{2}(), Ago; linsolve=:woodbury)
+    agm, bgm = cover_min(AbsLog{2}(), Ag; linsolve=:woodbury)
+    @test axes(ago, 1) == axes(Ago, 1)
+    @test axes(bgo, 1) == axes(Ago, 2)
+    @test collect(ago) .* collect(bgo)' ≈ agm .* bgm' rtol=1e-10
 
     # A single stage at κ = 1e2 stays inside the conjugate-gradient regime throughout,
     # so the factorization is never reached.
