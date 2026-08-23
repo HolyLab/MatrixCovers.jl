@@ -525,6 +525,482 @@ function _lsqr(Amul!, Atmul!, b::AbstractVector{T}, x0::AbstractVector{T};
     return x, iters
 end
 
+# The support of `A` as the linear system the AbsLog{2} continuation solves. The
+# unknowns are stacked log-scales `x[1:N]` — the row scales alone for a symmetric
+# problem, the row scales followed by the column scales for an asymmetric one — and
+# each support entry contributes a residual `z = x[p] + x[q] - c`.
+#
+# Every support entry is stored once: in the symmetric case an off-diagonal entry and
+# its mirror are the single edge `(p, q)` with `p < q`, the diagonal is `(p, p)`, and
+# `symmetric = true` records that an off-diagonal edge stands for two residuals. Its multiplicity is therefore
+# `mult = (symmetric && p != q) ? 2 : 1`, and every weighted quantity below carries it.
+struct SupportSystem{T}
+    N::Int
+    edges::Vector{Tuple{Int,Int}}   # support entries as pairs of unknowns
+    cvals::Vector{T}                # log|A_ij| per stored edge
+    symmetric::Bool                 # an off-diagonal edge stands for both orientations
+    hassupp::BitVector              # unknowns carrying at least one support entry
+    dfull::Vector{T}                # complete-support diagonal (Woodbury path only)
+    zedges::Vector{Tuple{Int,Int}}  # zero set, stored like `edges` (Woodbury path only)
+    U::Matrix{T}                    # low-rank block of `B + v0·v0ᵀ = C + U·Uᵀ` (Woodbury path only)
+    v0::Vector{T}                   # gauge: dense adds `v0·v0ᵀ`, LSQR appends the row `v0ᵀx = 0`
+end
+
+# The AbsLog{2} penalty continuation on `sys`: a sequence of stages of increasing κ,
+# each a sequence of reweighted Newton steps with a backtracking line search, starting
+# from `x0` (or from the cold unweighted solve when `x0 === nothing`). Returns the
+# stacked log-scales and the `stats` NamedTuple the callers pass on. With `boost`, the
+# result is shifted uniformly to exact feasibility `x[p] + x[q] ≥ c` on the support.
+#
+# The objective counts each stored edge with its multiplicity, `f_κ(x) =
+# Σ_e mult_e·w_e·(x[p] + x[q] - c_e)²`, so a symmetric problem is weighted on the full
+# grid rather than on one triangle. The normal equations assembled below are that
+# system scaled by ½ — uniformly, so they have the same solution: a stored edge puts
+# `w` on `B[p,p]` and `B[p,q]` and `w·c` on `f[p]`, and the same again transposed when
+# `q != p`. A symmetric diagonal entry, whose row of `R` is `2·e_p`, thereby collects
+# `2w` on `B[p,p]` and `w·c` on `f[p]`.
+function _abslog2_continuation(sys::SupportSystem{T}, x0, use_woodbury::Bool;
+                               κs, maxiter::Int, linsolve::Symbol, boost::Bool) where {T}
+    N = sys.N
+    edges = sys.edges
+    cvals = sys.cvals
+    v0 = sys.v0
+    U = sys.U
+    ne = length(edges)
+    use_lsqr = linsolve === :lsqr
+    # CHOLMOD, which factors the LSQR preconditioner, is reliable only in Float64;
+    # other working types run the plain matrix-free iteration.
+    use_precond = use_lsqr && T === Float64
+    # Number of residuals a stored edge stands for.
+    symmetric = sys.symmetric
+    mult = (p, q) -> (symmetric && p != q) ? 2 : 1
+    # Diagonal of `C` before any entry is violated: the complete-support value, less
+    # one per zero entry at each of its ends (twice over for a symmetric zero on the
+    # diagonal, whose signless Laplacian row counts it at both).
+    czero = copy(sys.dfull)
+    for (p, q) in sys.zedges
+        czero[p] -= oneunit(T)
+        czero[q] -= oneunit(T)
+    end
+    fκ = function (x, κ)
+        v = zero(T)
+        for (e, (p, q)) in enumerate(edges)
+            z = x[p] + x[q] - cvals[e]
+            v += mult(p, q) * (z < 0 ? T(κ) : oneunit(T)) * z^2
+        end
+        return v
+    end
+    # The objective and the violated set at `x` from one sweep: the line search needs
+    # the value and the stage's stopping test needs to know whether the set still
+    # matches `pat`, and both read the same residuals.
+    fκpat = function (x, κ, pat)
+        v = zero(T)
+        same = true
+        for (e, (p, q)) in enumerate(edges)
+            z = x[p] + x[q] - cvals[e]
+            viol = z < 0
+            v += mult(p, q) * (viol ? T(κ) : oneunit(T)) * z^2
+            same &= viol == pat[e]
+        end
+        return v, same
+    end
+    # Each Newton step freezes the weights at the current `x` and solves the reweighted
+    # least-squares problem `min ‖√W (R x - c)‖`, `(R x)_e = x[p] + x[q]`, whose normal
+    # equations are the signless Laplacian system `B x = f`. The dense path forms
+    # `B + v0·v0ᵀ` and factorizes it (a support-free variable gets an identity row; a
+    # minimal scale-relative ridge lifts what the gauge term leaves singular — the
+    # bipartite null space of a symmetric support such as `[0 1; 1 0]`, and the extra
+    # gauge each connected component beyond the first carries in the asymmetric case).
+    # The Woodbury path solves the same regularized system exactly, splitting
+    # `B + v0·v0ᵀ` as `C + U·Uᵀ` around the complete-support matrix and correcting `C`
+    # for the zero set and the violated entries. The LSQR path applies `√W R` and its
+    # transpose matrix-free, with the gauge as an appended row, and warm-starts from
+    # the incoming iterate; it solves the least-squares form directly, so its accuracy
+    # tracks the conditioning of `√W R` (≈ √κ) rather than that of `B` (≈ κ).
+    f = zeros(T, N)
+    ws = zeros(T, ne)       # √weight per stored edge, frozen during one solve
+    cv = zeros(T, ne + 1)   # √weight · log|A_ij|, with a trailing 0 gauge target
+    # Entries the frozen weights of the current solve treat as violated. A full Newton
+    # step that leaves this pattern intact has landed on the stage's minimizer.
+    vpat = falses(ne)
+    vedges = Tuple{Int,Int}[]                # the violated entries of the current solve
+    degV = zeros(Int, use_woodbury ? N : 0)  # violated entries per unknown
+    dg = zeros(T, use_woodbury ? N : 0)      # diagonal of `B`, for the ridge and the CG preconditioner
+    # Diagonal of the unweighted normal matrix of the gauge-augmented system,
+    # `RᵀR + v0·v0ᵀ`, the base of the LSQR preconditioner: each stored edge puts its
+    # multiplicity at each of its ends, and an entry whose row of `R` is `2·e_p` puts 4.
+    # A variable with neither support nor gauge is given 1 so the preconditioner stays
+    # positive definite.
+    dpart = zeros(T, use_lsqr ? N : 0)
+    if use_lsqr
+        for (p, q) in edges
+            if p == q
+                dpart[p] += 4 * oneunit(T)
+            else
+                w = mult(p, q) * oneunit(T)
+                dpart[p] += w
+                dpart[q] += w
+            end
+        end
+        for p in 1:N
+            dpart[p] += v0[p]^2
+        end
+        for p in 1:N
+            dpart[p] > 0 || (dpart[p] = oneunit(T))
+        end
+    end
+    mdiag = zeros(T, use_lsqr ? N : 0)   # the violated rows' diagonal, per unit of κ−1
+    Mi = Int[]                           # COO triplets of the preconditioner
+    Mj = Int[]
+    Mv = T[]
+    px = zeros(T, use_lsqr ? N : 0)      # scale vector recovered from the LSQR variable
+    pg = zeros(T, use_lsqr ? N : 0)      # `Rᵀ√W y` before the preconditioner is applied
+    # `K` of the diagonal preconditioner, which is κ-independent and so built once.
+    psqrt = use_lsqr ? sqrt.(dpart) : T[]
+    # COO triplets of `C`, refilled whenever a Woodbury solve is factorized.
+    Ci = Int[]
+    Cj = Int[]
+    Cv = T[]
+    rhs = zeros(T, use_woodbury ? N : 0, size(U, 2) + 1)
+    dmin = use_woodbury ? minimum(sys.dfull) : oneunit(T)
+    cgx = zeros(T, use_woodbury ? N : 0)
+    cgr = zeros(T, use_woodbury ? N : 0)
+    cgz = zeros(T, use_woodbury ? N : 0)
+    cgd = zeros(T, use_woodbury ? N : 0)
+    cgAd = zeros(T, use_woodbury ? N : 0)
+    nsolves = Ref(0)
+    nlsqr = Ref(0)
+    ncg = Ref(0)
+    nchol = Ref(0)
+    solve_weighted = function (x, κ)
+        nsolves[] += 1
+        if use_lsqr
+            dκ = κ === nothing ? zero(T) : T(κ) - oneunit(T)
+            empty!(vedges)
+            fill!(mdiag, zero(T))
+            for (e, (p, q)) in enumerate(edges)
+                c = cvals[e]
+                viol = κ !== nothing && (x[p] + x[q] - c) < 0
+                vpat[e] = viol
+                sw = sqrt(mult(p, q) * (viol ? T(κ) : oneunit(T)))
+                ws[e] = sw
+                cv[e] = sw * c
+                if viol && use_precond
+                    push!(vedges, (p, q))
+                    if p == q
+                        mdiag[p] += 4 * oneunit(T)
+                    else
+                        w = mult(p, q) * oneunit(T)
+                        mdiag[p] += w
+                        mdiag[q] += w
+                    end
+                end
+            end
+            g = ne + 1   # index of the appended gauge row
+            if use_precond
+                # Diagonal scaling alone leaves a conditioning that grows with κ once
+                # the violated rows dominate a variable's diagonal; past that point
+                # they enter the preconditioner in full, and its Cholesky pays for
+                # itself in the iterations it removes.
+                κest = oneunit(T)
+                for p in 1:N
+                    κest = max(κest, oneunit(T) + dκ * 2 * mdiag[p] / dpart[p])
+                end
+                if κest <= LSQR_PRECOND_KAPPA
+                    # `K` is diagonal here, so it is applied by a scaling and nothing
+                    # is assembled or factorized.
+                    Dmul! = function (y, yv)
+                        @. px = yv / psqrt
+                        for (e, (p, q)) in enumerate(edges)
+                            y[e] = ws[e] * (px[p] + px[q])
+                        end
+                        y[g] = dot(v0, px)
+                        return y
+                    end
+                    Dtmul! = function (z, y)
+                        fill!(pg, zero(T))
+                        for (e, (p, q)) in enumerate(edges)
+                            t = ws[e] * y[e]
+                            pg[p] += t
+                            pg[q] += t
+                        end
+                        @. pg += v0 * y[g]
+                        @. z = pg / psqrt
+                        return z
+                    end
+                    soly, it = _lsqr(Dmul!, Dtmul!, cv, psqrt .* x)
+                    nlsqr[] += it
+                    return soly ./ psqrt
+                end
+                empty!(Mi)
+                empty!(Mj)
+                empty!(Mv)
+                for p in 1:N
+                    push!(Mi, p)
+                    push!(Mj, p)
+                    push!(Mv, dpart[p])
+                end
+                for (p, q) in vedges
+                    if p == q
+                        push!(Mi, p)
+                        push!(Mj, p)
+                        push!(Mv, 4 * dκ)
+                    else
+                        w = mult(p, q) * dκ
+                        push!(Mi, p)
+                        push!(Mj, p)
+                        push!(Mv, w)
+                        push!(Mi, q)
+                        push!(Mj, q)
+                        push!(Mv, w)
+                        push!(Mi, p)
+                        push!(Mj, q)
+                        push!(Mv, w)
+                        push!(Mi, q)
+                        push!(Mj, p)
+                        push!(Mv, w)
+                    end
+                end
+                Msp = sparse(Mi, Mj, Mv, N, N)
+                MF = cholesky(Symmetric(Msp))
+                Kc = MF.PtL
+                Uc = MF.UP
+                # CHOLMOD exposes no in-place solve for a factor component, so each
+                # application returns a fresh vector; the transpose product copies it
+                # into the buffer LSQR hands over, which is the only copy avoidable here.
+                Pmul! = function (y, yv)
+                    xv = Uc \ yv
+                    for (e, (p, q)) in enumerate(edges)
+                        y[e] = ws[e] * (xv[p] + xv[q])
+                    end
+                    y[g] = dot(v0, xv)
+                    return y
+                end
+                Ptmul! = function (z, y)
+                    fill!(pg, zero(T))
+                    for (e, (p, q)) in enumerate(edges)
+                        t = ws[e] * y[e]
+                        pg[p] += t
+                        pg[q] += t
+                    end
+                    @. pg += v0 * y[g]
+                    copyto!(z, Kc \ pg)
+                    return z
+                end
+                mul!(px, Msp, x)
+                soly, it = _lsqr(Pmul!, Ptmul!, cv, Kc \ px)
+                nlsqr[] += it
+                return (Uc \ soly)::Vector{T}
+            end
+            Amul! = function (y, xx)
+                for (e, (p, q)) in enumerate(edges)
+                    y[e] = ws[e] * (xx[p] + xx[q])
+                end
+                y[g] = dot(v0, xx)
+                return y
+            end
+            Atmul! = function (z, y)
+                fill!(z, zero(T))
+                for (e, (p, q)) in enumerate(edges)
+                    t = ws[e] * y[e]
+                    z[p] += t
+                    z[q] += t
+                end
+                @. z += v0 * y[g]
+                return z
+            end
+            sol, it = _lsqr(Amul!, Atmul!, cv, x)
+            nlsqr[] += it
+            return sol
+        elseif use_woodbury
+            # `B + v0·v0ᵀ = C + U·Uᵀ` with `C = D − L_Z + (κ−1)·L_V`: the
+            # complete-support diagonal `D`, corrected by the zero set `Z` and by the
+            # currently violated entries `V`. One O(nnz) sweep collects the right-hand
+            # side, the violated set, and the diagonal of `B`; everything after it is
+            # O(|Z| + |V|).
+            dκ = κ === nothing ? zero(T) : T(κ) - oneunit(T)
+            fill!(f, zero(T))
+            copyto!(dg, czero)
+            fill!(degV, 0)
+            empty!(vedges)
+            for (e, (p, q)) in enumerate(edges)
+                c = cvals[e]
+                viol = κ !== nothing && (x[p] + x[q] - c) < 0
+                vpat[e] = viol
+                w = viol ? T(κ) : oneunit(T)
+                f[p] += w * c
+                q != p && (f[q] += w * c)
+                if viol
+                    push!(vedges, (p, q))
+                    degV[p] += 1
+                    q != p && (degV[q] += 1)
+                    dg[p] += dκ
+                    dg[q] += dκ
+                end
+            end
+            # Same ridge as the dense path, so both solve the same regularized system:
+            # `U·Uᵀ` puts 1 on every diagonal of `B + v0·v0ᵀ`, and every variable has
+            # support here, so no identity row arises.
+            dmax = zero(T)
+            maxdegV = 0
+            for p in 1:N
+                dmax = max(dmax, dg[p] + oneunit(T))
+                maxdegV = max(maxdegV, degV[p])
+            end
+            ridge = (dmax > 0 ? dmax : oneunit(T)) * eps(T)
+            for p in 1:N
+                dg[p] += oneunit(T) + ridge
+            end
+            # These triplets store `C` in full rather than in one triangle: the same
+            # matrix then serves the matvec below and the factorization after it.
+            # `sparse` sums the duplicates, and the ridge rides on the diagonal. The
+            # zero set's diagonal contribution is already in `czero`, so only its
+            # off-diagonal entries are pushed here; the violated entries are assembled
+            # afresh on every solve, both diagonal and off-diagonal.
+            empty!(Ci)
+            empty!(Cj)
+            empty!(Cv)
+            for p in 1:N
+                push!(Ci, p)
+                push!(Cj, p)
+                push!(Cv, czero[p] + ridge)
+            end
+            for (p, q) in sys.zedges
+                p == q && continue
+                push!(Ci, p)
+                push!(Cj, q)
+                push!(Cv, -oneunit(T))
+                push!(Ci, q)
+                push!(Cj, p)
+                push!(Cv, -oneunit(T))
+            end
+            for (p, q) in vedges
+                push!(Ci, p)
+                push!(Cj, p)
+                push!(Cv, dκ)
+                push!(Ci, p)
+                push!(Cj, q)
+                push!(Cv, dκ)
+                if q != p
+                    push!(Ci, q)
+                    push!(Cj, q)
+                    push!(Cv, dκ)
+                    push!(Ci, q)
+                    push!(Cj, p)
+                    push!(Cv, dκ)
+                end
+            end
+            C = sparse(Ci, Cj, Cv, N, N)
+            # Gershgorin on `(κ−1)·L_V` against the smallest complete-support diagonal
+            # estimates the condition number of `B`. While that estimate is small,
+            # conjugate gradients on `C·x + U·(Uᵀx)` reach the same answer in a few
+            # hundred O(nnz(C)) applications, which is far cheaper than a factorization
+            # whose fill on the near-random violated pattern of the early stages
+            # approaches dense.
+            κest = oneunit(T) + dκ * 2 * maxdegV / dmin
+            if κest <= WOODBURY_CG_KAPPA
+                copyto!(cgx, x)
+                Bmul! = function (yy, xx)
+                    mul!(yy, C, xx)
+                    # The columns of `U` are indicator vectors, so the low-rank term is
+                    # a block sum broadcast back over the same block.
+                    for k in axes(U, 2)
+                        s = zero(T)
+                        for p in 1:N
+                            u = U[p, k]
+                            iszero(u) || (s += u * xx[p])
+                        end
+                        for p in 1:N
+                            u = U[p, k]
+                            iszero(u) || (yy[p] += u * s)
+                        end
+                    end
+                    return yy
+                end
+                it, ok = _pcg!(Bmul!, cgx, dg, f, cgr, cgz, cgd, cgAd,
+                               50 + 20 * ceil(Int, sqrt(κest)), 100 * eps(T) * norm(f))
+                ncg[] += it
+                ok && return copy(cgx)
+            end
+            nchol[] += 1
+            return _woodbury_solve!(zeros(T, N), cholesky(Symmetric(C)), U, f, rhs)
+        else
+            fill!(f, zero(T))
+            B = v0 * v0'
+            for (e, (p, q)) in enumerate(edges)
+                c = cvals[e]
+                viol = κ !== nothing && (x[p] + x[q] - c) < 0
+                vpat[e] = viol
+                w = viol ? T(κ) : oneunit(T)
+                f[p] += w * c
+                B[p, p] += w
+                B[p, q] += w
+                if q != p
+                    f[q] += w * c
+                    B[q, q] += w
+                    B[q, p] += w
+                end
+            end
+            # A minimal scale-relative ridge on the supported diagonals, sized by the
+            # largest of them, lifts the gauge directions `v0·v0ᵀ` does not pin: the
+            # bipartite null space of a symmetric support, and the independent gauge
+            # each connected component of an asymmetric support beyond the first
+            # carries. The right-hand side is orthogonal to every gauge null vector, so
+            # the ridge leaves the recovered scales essentially unperturbed, and the
+            # gauge it fixes is unobservable — no product a_i·b_j spans two components.
+            # Support-free variables get an identity row.
+            dmax = zero(T)
+            for p in 1:N
+                dmax = max(dmax, B[p, p])
+            end
+            ridge = (dmax > 0 ? dmax : oneunit(T)) * eps(T)
+            for p in 1:N
+                B[p, p] = sys.hassupp[p] ? B[p, p] + ridge : oneunit(T)
+            end
+            return Symmetric(B) \ f
+        end
+    end
+    x = x0 === nothing ? solve_weighted(zeros(T, N), nothing) : x0
+    for κ in κs
+        fcur = fκ(x, κ)
+        for _ in 1:maxiter
+            xnew = solve_weighted(x, κ)
+            t = one(T)
+            xt = xnew
+            fnew, stable = fκpat(xt, κ, vpat)
+            while fnew > fcur && t > 500_000 * eps(T)
+                t /= 2
+                xt = x .+ t .* (xnew .- x)
+                fnew = fκ(xt, κ)
+                stable = false
+            end
+            x = xt
+            # `f_κ` is convex and the dense and Woodbury steps solve its quadratic model
+            # exactly, so a whole step that leaves the violated set unchanged has reached
+            # the stage's minimizer: the gradient there is the model's, which is zero.
+            # The `:lsqr` solves are inexact and carry no such guarantee.
+            !use_lsqr && stable && break
+            fcur - fnew <= 5000 * eps(T) * max(fcur, one(T)) && break
+            fcur = fnew
+        end
+    end
+    # Uniform boost to exact feasibility: x[p] + x[q] ≥ log|A_ij| on the support.
+    # `boost=false` leaves the iterate untouched, for the soft objective, which
+    # imposes no coverage constraint and whose optimum the boost would move off.
+    if boost
+        γ = zero(T)
+        for (e, (p, q)) in enumerate(edges)
+            γ = max(γ, (cvals[e] - x[p] - x[q]) / 2)
+        end
+        for p in 1:N
+            x[p] += γ
+        end
+    end
+    return x, (; nsolves=nsolves[], lsqriters=nlsqr[], cgiters=ncg[],
+               cholsolves=nchol[],
+               linsolve=(use_lsqr ? :lsqr : use_woodbury ? :woodbury : :dense))
+end
+
 # Worker for `symcover_min(::AbsLog{2})`. Returns `(a, stats)` where `stats` is a
 # NamedTuple `(; nsolves, lsqriters, cgiters, cholsolves, linsolve)` recording the
 # number of inner linear solves, the total LSQR and conjugate-gradient iterations (0 on
@@ -566,29 +1042,30 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     end
     n = length(ax)
     use_lsqr = linsolve === :lsqr
-    # CHOLMOD, which factors the LSQR preconditioner, is reliable only in Float64;
-    # other working types run the plain matrix-free iteration.
-    use_precond = use_lsqr && T === Float64
-    # Support entries, one per residual z_ij = α_i + α_j - log|A_ij|, with `cvals`
-    # holding log|A_ij| alongside. The gather reports each off-diagonal pair in both
-    # orientations and the diagonal once, which is the full-grid weighting the
-    # objective is defined with. The Newton solve runs on 1-based positions 1:n and
-    # is scattered back onto `a` through `ax` so `A`'s own axes are honored.
+    # Support entries, one per unordered pair `{i, j}` of the support: the residuals
+    # `z_ij = α_i + α_j - log|A_ij|` of a pair and its mirror are the same, and
+    # `SupportSystem` weights the stored edge for both. `cvals` holds log|A_ij|
+    # alongside. The Newton solve runs on 1-based positions 1:n and is scattered back
+    # onto `a` through `ax` so `A`'s own axes are honored.
     G = _sym_support(A, T)
     edges = Tuple{Int,Int}[]
     cvals = T[]
     hassupp = falses(n)
+    nsupp = 0              # support entries of `A`, counted in both orientations
     maxzero = 0            # largest number of zeros in any row of `A`
     for (ip, i) in enumerate(ax)
         slots = _slots(G, i)
         for s in slots
-            push!(edges, (ip, G.idx[s] - first(ax) + 1))
-            push!(cvals, log(G.val[s]))
+            jp = G.idx[s] - first(ax) + 1
+            if jp >= ip
+                push!(edges, (ip, jp))
+                push!(cvals, log(G.val[s]))
+            end
         end
         hassupp[ip] = !isempty(slots)
+        nsupp += length(slots)
         maxzero = max(maxzero, n - length(slots))
     end
-    ne = length(edges)
     # The Woodbury path splits the normal equations around the complete-support matrix
     # `n·I + e·eᵀ`, so its cost is set by the zero set `Z` rather than by `n`. Two
     # separate conditions gate it. Per row: `n·I − L_Z` is positive definite only
@@ -597,7 +1074,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     # taking only while `|Z|` stays O(n) — a support that is merely thin per row can
     # still carry Θ(n²) zeros, and the split would then be dense work under a name
     # that promises otherwise.
-    nzero = n * n - ne
+    nzero = n * n - nsupp
     zbudget = 4 * n
     use_woodbury = false
     if !use_lsqr && linsolve !== :dense
@@ -611,397 +1088,37 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         end
         use_woodbury = ok
     end
-    # Zero set of `A` in the same convention as `edges`: both orientations of an
-    # off-diagonal pair, the diagonal once. It is the off-diagonal pattern of the
-    # sparse `C` the Woodbury path factorizes.
+    # Zero set of `A` in the same convention as `edges`: one entry per unordered pair.
+    # It is the off-diagonal pattern of the sparse `C` the Woodbury path factorizes.
     zedges = Tuple{Int,Int}[]
-    # Diagonal of `C` before any entry is violated: `n` from the complete-support
-    # matrix, less what `L_Z` puts there — one per zero entry of the row, and one more
-    # for a zero on the diagonal, which `L_Z` counts twice.
-    czero = fill(T(n), use_woodbury ? n : 0)
     if use_woodbury
         mark = falses(n)
         for (ip, i) in enumerate(ax)
             for s in _slots(G, i)
                 mark[G.idx[s] - first(ax) + 1] = true
             end
-            for jp in 1:n
-                mark[jp] && continue
-                push!(zedges, (ip, jp))
-                czero[ip] -= oneunit(T)
-                ip == jp && (czero[ip] -= oneunit(T))
+            for jp in ip:n
+                mark[jp] || push!(zedges, (ip, jp))
             end
             fill!(mark, false)
         end
     end
-    fκ = function (α, κ)
-        v = zero(T)
-        for (e, (ip, jp)) in enumerate(edges)
-            z = α[ip] + α[jp] - cvals[e]
-            v += (z < 0 ? T(κ) : oneunit(T)) * z^2
-        end
-        return v
-    end
-    # The objective and the violated set at `α` from one sweep: the line search needs
-    # the value and the stage's stopping test needs to know whether the set still
-    # matches `pat`, and both read the same residuals.
-    fκpat = function (α, κ, pat)
-        v = zero(T)
-        same = true
-        for (e, (ip, jp)) in enumerate(edges)
-            z = α[ip] + α[jp] - cvals[e]
-            viol = z < 0
-            v += (viol ? T(κ) : oneunit(T)) * z^2
-            same &= viol == pat[e]
-        end
-        return v, same
-    end
-    # Each Newton step freezes the weights at the current α and solves the reweighted
-    # least-squares problem `min ‖√W (Rα - c)‖`, `(Rα)_e = α_i + α_j`, whose normal
-    # equations are the signless Laplacian system `B α = f`. The dense path forms and
-    # factorizes `B` (a support-free variable gets an identity row; a minimal
-    # scale-relative ridge lifts the bipartite gauge null space, e.g. the `[0 1; 1 0]`
-    # support graph whose signless Laplacian is singular). The Woodbury path solves the
-    # same regularized system exactly, splitting `B` as `C + e·eᵀ` around the
-    # complete-support matrix `n·I + e·eᵀ` and correcting `C` for the zero set and the
-    # violated entries. The LSQR path applies `√W R`
-    # and its transpose matrix-free and warm-starts from the incoming iterate; it
-    # solves the least-squares form directly, so its accuracy tracks the conditioning
-    # of `√W R` (≈ √κ) rather than that of `B` (≈ κ).
-    ws = zeros(T, ne)   # √weight per support entry, frozen during one solve
-    cv = zeros(T, ne)   # √weight · log|A_ij| (LSQR right-hand side)
-    f = zeros(T, n)
-    # Entries the frozen weights of the current solve treat as violated. A full Newton
-    # step that leaves this pattern intact has landed on the stage's minimizer.
-    vpat = falses(ne)
-    vedges = Tuple{Int,Int}[]              # the violated entries of the current solve
-    degV = zeros(Int, use_woodbury ? n : 0)  # violated entries per row
-    dg = zeros(T, use_woodbury ? n : 0)      # diagonal of `B`, for the ridge and the CG preconditioner
-    # Diagonal of the unweighted normal matrix `RᵀR`, the base of the LSQR
-    # preconditioner: each directed support entry puts 1 at each of its ends, and a
-    # diagonal entry, whose row of `R` is `2·e_p`, puts 4. A support-free variable is
-    # given 1 so the preconditioner stays positive definite.
-    dpart = zeros(T, use_lsqr ? n : 0)
-    if use_lsqr
-        for (ip, jp) in edges
-            if ip == jp
-                dpart[ip] += 4 * oneunit(T)
-            else
-                dpart[ip] += oneunit(T)
-                dpart[jp] += oneunit(T)
-            end
-        end
-        for p in 1:n
-            dpart[p] > 0 || (dpart[p] = oneunit(T))
-        end
-    end
-    mdiag = zeros(T, use_lsqr ? n : 0)   # the violated rows' diagonal, per unit of κ−1
-    Mi = Int[]                           # COO triplets of the preconditioner
-    Mj = Int[]
-    Mv = T[]
-    px = zeros(T, use_lsqr ? n : 0)      # scale vector recovered from the LSQR variable
-    pg = zeros(T, use_lsqr ? n : 0)      # `Rᵀ√W y` before the preconditioner is applied
-    # `K` of the diagonal preconditioner, which is κ-independent and so built once.
-    psqrt = use_lsqr ? sqrt.(dpart) : T[]
-    # COO triplets of `C`, refilled whenever a Woodbury solve is factorized.
-    Ci = Int[]
-    Cj = Int[]
-    Cv = T[]
-    rhs = zeros(T, use_woodbury ? n : 0, 2)
-    Umat = ones(T, use_woodbury ? n : 0, 1)   # the gauge `e`, as the low-rank block
-    cgx = zeros(T, use_woodbury ? n : 0)
-    cgr = zeros(T, use_woodbury ? n : 0)
-    cgz = zeros(T, use_woodbury ? n : 0)
-    cgd = zeros(T, use_woodbury ? n : 0)
-    cgAd = zeros(T, use_woodbury ? n : 0)
-    nsolves = Ref(0)
-    nlsqr = Ref(0)
-    ncg = Ref(0)
-    nchol = Ref(0)
-    solve_weighted = function (α, κ)
-        nsolves[] += 1
-        if use_lsqr
-            dκ = κ === nothing ? zero(T) : T(κ) - oneunit(T)
-            empty!(vedges)
-            fill!(mdiag, zero(T))
-            for (e, (ip, jp)) in enumerate(edges)
-                c = cvals[e]
-                viol = κ !== nothing && (α[ip] + α[jp] - c) < 0
-                vpat[e] = viol
-                sw = sqrt(viol ? T(κ) : oneunit(T))
-                ws[e] = sw
-                cv[e] = sw * c
-                if viol && use_precond
-                    push!(vedges, (ip, jp))
-                    if ip == jp
-                        mdiag[ip] += 4 * oneunit(T)
-                    else
-                        mdiag[ip] += oneunit(T)
-                        mdiag[jp] += oneunit(T)
-                    end
-                end
-            end
-            if use_precond
-                # Diagonal scaling alone leaves a conditioning that grows with κ once
-                # the violated rows dominate a variable's diagonal; past that point
-                # they enter the preconditioner in full, and its Cholesky pays for
-                # itself in the iterations it removes.
-                κest = oneunit(T)
-                for p in 1:n
-                    κest = max(κest, oneunit(T) + dκ * 2 * mdiag[p] / dpart[p])
-                end
-                if κest <= LSQR_PRECOND_KAPPA
-                    # `K` is diagonal here, so it is applied by a scaling and nothing
-                    # is assembled or factorized.
-                    Dmul! = function (y, yv)
-                        @. px = yv / psqrt
-                        for (e, (ip, jp)) in enumerate(edges)
-                            y[e] = ws[e] * (px[ip] + px[jp])
-                        end
-                        return y
-                    end
-                    Dtmul! = function (z, y)
-                        fill!(pg, zero(T))
-                        for (e, (ip, jp)) in enumerate(edges)
-                            t = ws[e] * y[e]
-                            pg[ip] += t
-                            pg[jp] += t
-                        end
-                        @. z = pg / psqrt
-                        return z
-                    end
-                    soly, it = _lsqr(Dmul!, Dtmul!, cv, psqrt .* α)
-                    nlsqr[] += it
-                    return soly ./ psqrt
-                end
-                empty!(Mi)
-                empty!(Mj)
-                empty!(Mv)
-                for p in 1:n
-                    push!(Mi, p)
-                    push!(Mj, p)
-                    push!(Mv, dpart[p])
-                end
-                for (p, q) in vedges
-                    if p == q
-                        push!(Mi, p)
-                        push!(Mj, p)
-                        push!(Mv, 4 * dκ)
-                    else
-                        push!(Mi, p)
-                        push!(Mj, p)
-                        push!(Mv, dκ)
-                        push!(Mi, q)
-                        push!(Mj, q)
-                        push!(Mv, dκ)
-                        push!(Mi, p)
-                        push!(Mj, q)
-                        push!(Mv, dκ)
-                        push!(Mi, q)
-                        push!(Mj, p)
-                        push!(Mv, dκ)
-                    end
-                end
-                Msp = sparse(Mi, Mj, Mv, n, n)
-                MF = cholesky(Symmetric(Msp))
-                Kc = MF.PtL
-                Uc = MF.UP
-                # CHOLMOD exposes no in-place solve for a factor component, so each
-                # application returns a fresh vector; the transpose product copies it
-                # into the buffer LSQR hands over, which is the only copy avoidable here.
-                Pmul! = function (y, yv)
-                    xv = Uc \ yv
-                    for (e, (ip, jp)) in enumerate(edges)
-                        y[e] = ws[e] * (xv[ip] + xv[jp])
-                    end
-                    return y
-                end
-                Ptmul! = function (z, y)
-                    fill!(pg, zero(T))
-                    for (e, (ip, jp)) in enumerate(edges)
-                        t = ws[e] * y[e]
-                        pg[ip] += t
-                        pg[jp] += t
-                    end
-                    copyto!(z, Kc \ pg)
-                    return z
-                end
-                mul!(px, Msp, α)
-                soly, it = _lsqr(Pmul!, Ptmul!, cv, Kc \ px)
-                nlsqr[] += it
-                return (Uc \ soly)::Vector{T}
-            end
-            Amul! = function (y, x)
-                for (e, (ip, jp)) in enumerate(edges)
-                    y[e] = ws[e] * (x[ip] + x[jp])
-                end
-                return y
-            end
-            Atmul! = function (z, y)
-                fill!(z, zero(T))
-                for (e, (ip, jp)) in enumerate(edges)
-                    t = ws[e] * y[e]
-                    z[ip] += t
-                    z[jp] += t
-                end
-                return z
-            end
-            sol, it = _lsqr(Amul!, Atmul!, cv, α)
-            nlsqr[] += it
-            return sol
-        elseif use_woodbury
-            # `B = C + e·eᵀ` with `C = n·I − L_Z + (κ−1)·L_V`: the complete-support
-            # matrix, corrected by the zero set `Z` and by the currently violated
-            # entries `V`. One O(nnz) sweep collects the right-hand side, the violated
-            # set, and the diagonal of `B`; everything after it is O(|Z| + |V|).
-            dκ = κ === nothing ? zero(T) : T(κ) - oneunit(T)
-            fill!(f, zero(T))
-            copyto!(dg, czero)
-            fill!(degV, 0)
-            empty!(vedges)
-            for (e, (ip, jp)) in enumerate(edges)
-                c = cvals[e]
-                viol = κ !== nothing && (α[ip] + α[jp] - c) < 0
-                vpat[e] = viol
-                f[ip] += (viol ? T(κ) : oneunit(T)) * c
-                if viol
-                    push!(vedges, (ip, jp))
-                    degV[ip] += 1
-                    dg[ip] += dκ
-                    ip == jp && (dg[ip] += dκ)
-                end
-            end
-            # Same ridge as the dense path, so both solve the same regularized system:
-            # `e·eᵀ` puts 1 on every diagonal of `B`, and every variable has support
-            # here, so no identity row arises.
-            dmax = zero(T)
-            maxdegV = 0
-            for p in 1:n
-                dmax = max(dmax, dg[p] + oneunit(T))
-                maxdegV = max(maxdegV, degV[p])
-            end
-            ridge = (dmax > 0 ? dmax : oneunit(T)) * eps(T)
-            for p in 1:n
-                dg[p] += oneunit(T) + ridge
-            end
-            # `zedges` and `vedges` carry both orientations of every pair, so these
-            # triplets store `C` in full rather than in one triangle: the same matrix
-            # then serves the matvec below and the factorization after it. `sparse`
-            # sums the duplicates, and the ridge rides on the diagonal.
-            empty!(Ci)
-            empty!(Cj)
-            empty!(Cv)
-            for p in 1:n
-                push!(Ci, p)
-                push!(Cj, p)
-                push!(Cv, T(n) + ridge)
-            end
-            for (p, q) in zedges
-                push!(Ci, p)
-                push!(Cj, p)
-                push!(Cv, -oneunit(T))
-                push!(Ci, p)
-                push!(Cj, q)
-                push!(Cv, -oneunit(T))
-            end
-            for (p, q) in vedges
-                push!(Ci, p)
-                push!(Cj, p)
-                push!(Cv, dκ)
-                push!(Ci, p)
-                push!(Cj, q)
-                push!(Cv, dκ)
-            end
-            C = sparse(Ci, Cj, Cv, n, n)
-            # Gershgorin on `(κ−1)·L_V` against a diagonal of at least `n` estimates
-            # the condition number of `B`. While that estimate is small, conjugate
-            # gradients on `C·x + e·(eᵀx)` reach the same answer in a few hundred
-            # O(nnz(C)) applications, which is far cheaper than a factorization whose
-            # fill, on the near-random violated pattern of the early stages, is close
-            # to dense.
-            κest = oneunit(T) + dκ * 2 * maxdegV / n
-            if κest <= WOODBURY_CG_KAPPA
-                copyto!(cgx, α)
-                Bmul! = function (y, x)
-                    mul!(y, C, x)
-                    s = sum(x)
-                    y .+= s
-                    return y
-                end
-                it, ok = _pcg!(Bmul!, cgx, dg, f, cgr, cgz, cgd, cgAd,
-                               50 + 20 * ceil(Int, sqrt(κest)), 100 * eps(T) * norm(f))
-                ncg[] += it
-                ok && return copy(cgx)
-            end
-            nchol[] += 1
-            return _woodbury_solve!(zeros(T, n), cholesky(Symmetric(C)), Umat, f, rhs)
-        else
-            fill!(f, zero(T))
-            B = zeros(T, n, n)
-            for (e, (ip, jp)) in enumerate(edges)
-                c = cvals[e]
-                viol = κ !== nothing && (α[ip] + α[jp] - c) < 0
-                vpat[e] = viol
-                w = viol ? T(κ) : oneunit(T)
-                f[ip] += w * c
-                B[ip, ip] += w
-                B[ip, jp] += w
-            end
-            # Minimal scale-relative ridge, sized by the largest diagonal, lifts the
-            # bipartite gauge null space; support-free variables get an identity row.
-            dmax = zero(T)
-            for ip in 1:n
-                dmax = max(dmax, B[ip, ip])
-            end
-            ridge = (dmax > 0 ? dmax : oneunit(T)) * eps(T)
-            for ip in 1:n
-                B[ip, ip] += hassupp[ip] ? ridge : oneunit(T)
-            end
-            return Symmetric(B) \ f
-        end
-    end
-    α = start === nothing ? solve_weighted(zeros(T, n), nothing) :
-        T[hassupp[ip] ? log(T(start[i])) : zero(T) for (ip, i) in enumerate(ax)]
-    for κ in κs
-        fcur = fκ(α, κ)
-        for _ in 1:maxiter
-            αnew = solve_weighted(α, κ)
-            t = one(T)
-            αt = αnew
-            fnew, stable = fκpat(αt, κ, vpat)
-            while fnew > fcur && t > 500_000 * eps(T)
-                t /= 2
-                αt = α .+ t .* (αnew .- α)
-                fnew = fκ(αt, κ)
-                stable = false
-            end
-            α = αt
-            # `f_κ` is convex and the dense and Woodbury steps solve its quadratic model
-            # exactly, so a whole step that leaves the violated set unchanged has reached
-            # the stage's minimizer: the gradient there is the model's, which is zero.
-            # The `:lsqr` solves are inexact and carry no such guarantee.
-            !use_lsqr && stable && break
-            fcur - fnew <= 5000 * eps(T) * max(fcur, one(T)) && break
-            fcur = fnew
-        end
-    end
-    # Uniform boost to exact feasibility: α_i + α_j ≥ log|A_ij| for all support.
-    # `boost=false` leaves the iterate untouched, for the soft objective, which
-    # imposes no coverage constraint and whose optimum the boost would move off.
-    γ = zero(T)
-    if boost
-        for (e, (ip, jp)) in enumerate(edges)
-            γ = max(γ, (cvals[e] - α[ip] - α[jp]) / 2)
-        end
-    end
+    # Nothing here pins a gauge: `v0` is zero, so the dense path adds no rank-one term
+    # and the LSQR gauge row is inert. The ridge lifts what singularity remains — the
+    # null space of a bipartite support graph such as `[0 1; 1 0]`.
+    sys = SupportSystem{T}(n, edges, cvals, true, hassupp,
+                           use_woodbury ? fill(T(n), n) : T[], zedges,
+                           ones(T, use_woodbury ? n : 0, use_woodbury ? 1 : 0),
+                           zeros(T, n))
+    x0 = start === nothing ? nothing :
+         T[hassupp[ip] ? log(T(start[i])) : zero(T) for (ip, i) in enumerate(ax)]
+    α, stats = _abslog2_continuation(sys, x0, use_woodbury; κs, maxiter, linsolve, boost)
     # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     a = similar(Array{T}, ax)
     for (ip, i) in enumerate(ax)
-        a[i] = hassupp[ip] ? exp(α[ip] + γ) : zero(T)
+        a[i] = hassupp[ip] ? exp(α[ip]) : zero(T)
     end
-    return a, (; nsolves=nsolves[], lsqriters=nlsqr[], cgiters=ncg[],
-               cholsolves=nchol[],
-               linsolve=(use_lsqr ? :lsqr : use_woodbury ? :woodbury : :dense))
+    return a, stats
 end
 
 # Worker for `cover_min(::AbsLog{2})`. Returns `(a, b, stats)` with `stats` a
@@ -1038,9 +1155,6 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     n = length(axc)
     N = m + n
     use_lsqr = linsolve === :lsqr
-    # CHOLMOD, which factors the LSQR preconditioner, is reliable only in Float64;
-    # other working types run the plain matrix-free iteration.
-    use_precond = use_lsqr && T === Float64
     # Support entries as edges linking a row position ip to a column position m+jp,
     # with `cvals` holding log|A_ij| alongside. Internal positions 1:m index rows,
     # m+1:m+n index columns, and results are scattered back through axr/axc so A's
@@ -1095,17 +1209,19 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         use_woodbury = ok
     end
     # Zero set of `A` as stacked-position pairs missing from the support: the
-    # off-diagonal pattern of the sparse `C` the Woodbury path factorizes. `czero` is
-    # the diagonal of `C` before any entry is violated — the complete-support value
-    # `n` on rows and `m` on columns, less one per zero entry at each of its ends.
+    # off-diagonal pattern of the sparse `C` the Woodbury path factorizes. The
+    # complete-support diagonal it corrects is `n` on rows and `m` on columns.
     zedges = Tuple{Int,Int}[]
-    czero = zeros(T, use_woodbury ? N : 0)
+    dfull = zeros(T, use_woodbury ? N : 0)
+    Umat = zeros(T, use_woodbury ? N : 0, use_woodbury ? 2 : 0)
     if use_woodbury
         for ip in 1:m
-            czero[ip] = T(n)
+            dfull[ip] = T(n)
+            Umat[ip, 1] = oneunit(T)
         end
         for jp in 1:n
-            czero[m+jp] = T(m)
+            dfull[m+jp] = T(m)
+            Umat[m+jp, 2] = oneunit(T)
         end
         mark = falses(n)
         for (ip, i) in enumerate(axr)
@@ -1113,17 +1229,16 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                 mark[G.idx[s] - first(axc) + 1] = true
             end
             for jp in 1:n
-                mark[jp] && continue
-                q = m + jp
-                push!(zedges, (ip, q))
-                czero[ip] -= oneunit(T)
-                czero[q] -= oneunit(T)
+                mark[jp] || push!(zedges, (ip, m + jp))
             end
             fill!(mark, false)
         end
     end
-    # Gauge vector: ±1 on supported variables, 0 on support-free ones (which carry
-    # no constraint and are decoupled with an identity row in `solve_weighted`).
+    # Row and column scales share the global (e; −e) gauge, which every path pins
+    # through `v0`: ±1 on supported variables, 0 on support-free ones (which carry no
+    # constraint and are decoupled with an identity row instead). After the solve a
+    # closed-form shift, applied within each component, moves the result to the balance
+    # convention, so the pinned gauge is not observable.
     v0 = zeros(T, N)
     for ip in 1:m
         hasrow[ip] && (v0[ip] = one(T))
@@ -1131,429 +1246,27 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     for jp in 1:n
         hascol[jp] && (v0[m+jp] = -one(T))
     end
-    fκ = function (x, κ)
-        v = zero(T)
-        for (e, (p, q)) in enumerate(edges)
-            z = x[p] + x[q] - cvals[e]
-            v += (z < 0 ? T(κ) : oneunit(T)) * z^2
-        end
-        return v
-    end
-    # The objective and the violated set at `x` from one sweep: the line search needs
-    # the value and the stage's stopping test needs to know whether the set still
-    # matches `pat`, and both read the same residuals.
-    fκpat = function (x, κ, pat)
-        v = zero(T)
-        same = true
-        for (e, (p, q)) in enumerate(edges)
-            z = x[p] + x[q] - cvals[e]
-            viol = z < 0
-            v += (viol ? T(κ) : oneunit(T)) * z^2
-            same &= viol == pat[e]
-        end
-        return v, same
-    end
-    # Each Newton step solves the reweighted least-squares problem for the stacked
-    # scales x = (α; β), residuals z_ij = α_i + β_j - log|A_ij|. Row and column scales
-    # share the global (e; −e) gauge; every path pins it. The dense path adds the rank-1
-    # term v0*v0ᵀ to the normal equations `B x = f` and factorizes (support-free
-    # variables get an identity row; a support with more than one connected component
-    # carries additional per-component gauges, lifted by the ridge below). The Woodbury
-    # path solves the same regularized system exactly: `B + v0·v0ᵀ = C + U·Uᵀ` with `U`
-    # the row and column indicators, so a sparse Cholesky of `C` and a rank-two update
-    # replace the dense factorization. The LSQR
-    # path appends one gauge row `v0ᵀ x = 0` to the least-squares system so `√W R` has
-    # full column rank, applies it matrix-free, and warm-starts from the incoming
-    # iterate. After the solve a closed-form shift, applied within each component,
-    # moves the result to the balance convention, so the pinned gauge is not observable.
-    f = zeros(T, N)
-    ws = zeros(T, ne)       # √weight per support entry (LSQR path)
-    cv = zeros(T, ne + 1)   # √weight · log|A_ij|, with a trailing 0 gauge target
-    # Entries the frozen weights of the current solve treat as violated. A full Newton
-    # step that leaves this pattern intact has landed on the stage's minimizer.
-    vpat = falses(ne)
-    vedges = Tuple{Int,Int}[]              # the violated entries of the current solve
-    degV = zeros(Int, use_woodbury ? N : 0)  # violated entries per row and per column
-    dg = zeros(T, use_woodbury ? N : 0)      # diagonal of `B`, for the ridge and the CG preconditioner
-    # Diagonal of the unweighted normal matrix of the gauge-augmented system,
-    # `RᵀR + v0·v0ᵀ`: the support degree at each position, plus the gauge row's 1. A
-    # support-free variable takes that 1 alone, which keeps the preconditioner
-    # positive definite.
-    dpart = zeros(T, use_lsqr ? N : 0)
-    if use_lsqr
-        for (p, q) in edges
-            dpart[p] += oneunit(T)
-            dpart[q] += oneunit(T)
-        end
-        for p in 1:N
-            dpart[p] += oneunit(T)
-        end
-    end
-    mdiag = zeros(T, use_lsqr ? N : 0)   # the violated rows' diagonal, per unit of κ−1
-    Mi = Int[]                           # COO triplets of the preconditioner
-    Mj = Int[]
-    Mv = T[]
-    px = zeros(T, use_lsqr ? N : 0)      # scale vector recovered from the LSQR variable
-    pg = zeros(T, use_lsqr ? N : 0)      # `Rᵀ√W y` before the preconditioner is applied
-    # `K` of the diagonal preconditioner, which is κ-independent and so built once.
-    psqrt = use_lsqr ? sqrt.(dpart) : T[]
-    # COO triplets of `C`, refilled whenever a Woodbury solve is factorized.
-    Ci = Int[]
-    Cj = Int[]
-    Cv = T[]
-    rhs = zeros(T, use_woodbury ? N : 0, 3)
-    # The row and column indicators, as the low-rank block.
-    Umat = zeros(T, use_woodbury ? N : 0, 2)
-    if use_woodbury
-        for ip in 1:m
-            Umat[ip, 1] = oneunit(T)
-        end
-        for jp in 1:n
-            Umat[m+jp, 2] = oneunit(T)
-        end
-    end
-    cgx = zeros(T, use_woodbury ? N : 0)
-    cgr = zeros(T, use_woodbury ? N : 0)
-    cgz = zeros(T, use_woodbury ? N : 0)
-    cgd = zeros(T, use_woodbury ? N : 0)
-    cgAd = zeros(T, use_woodbury ? N : 0)
-    nsolves = Ref(0)
-    nlsqr = Ref(0)
-    ncg = Ref(0)
-    nchol = Ref(0)
-    solve_weighted = function (x, κ)
-        nsolves[] += 1
-        if use_lsqr
-            dκ = κ === nothing ? zero(T) : T(κ) - oneunit(T)
-            empty!(vedges)
-            fill!(mdiag, zero(T))
-            for (e, (p, q)) in enumerate(edges)
-                c = cvals[e]
-                viol = κ !== nothing && (x[p] + x[q] - c) < 0
-                vpat[e] = viol
-                sw = sqrt(viol ? T(κ) : oneunit(T))
-                ws[e] = sw
-                cv[e] = sw * c
-                if viol && use_precond
-                    push!(vedges, (p, q))
-                    mdiag[p] += oneunit(T)
-                    mdiag[q] += oneunit(T)
-                end
-            end
-            g = ne + 1   # index of the appended gauge row
-            if use_precond
-                # Diagonal scaling alone leaves a conditioning that grows with κ once
-                # the violated rows dominate a variable's diagonal; past that point
-                # they enter the preconditioner in full, and its Cholesky pays for
-                # itself in the iterations it removes.
-                κest = oneunit(T)
-                for p in 1:N
-                    κest = max(κest, oneunit(T) + dκ * 2 * mdiag[p] / dpart[p])
-                end
-                if κest <= LSQR_PRECOND_KAPPA
-                    # `K` is diagonal here, so it is applied by a scaling and nothing
-                    # is assembled or factorized.
-                    Dmul! = function (y, yv)
-                        @. px = yv / psqrt
-                        for (e, (p, q)) in enumerate(edges)
-                            y[e] = ws[e] * (px[p] + px[q])
-                        end
-                        y[g] = dot(v0, px)
-                        return y
-                    end
-                    Dtmul! = function (z, y)
-                        fill!(pg, zero(T))
-                        for (e, (p, q)) in enumerate(edges)
-                            t = ws[e] * y[e]
-                            pg[p] += t
-                            pg[q] += t
-                        end
-                        @. pg += v0 * y[g]
-                        @. z = pg / psqrt
-                        return z
-                    end
-                    soly, it = _lsqr(Dmul!, Dtmul!, cv, psqrt .* x)
-                    nlsqr[] += it
-                    return soly ./ psqrt
-                end
-                empty!(Mi)
-                empty!(Mj)
-                empty!(Mv)
-                for p in 1:N
-                    push!(Mi, p)
-                    push!(Mj, p)
-                    push!(Mv, dpart[p])
-                end
-                for (p, q) in vedges
-                    push!(Mi, p)
-                    push!(Mj, p)
-                    push!(Mv, dκ)
-                    push!(Mi, q)
-                    push!(Mj, q)
-                    push!(Mv, dκ)
-                    push!(Mi, p)
-                    push!(Mj, q)
-                    push!(Mv, dκ)
-                    push!(Mi, q)
-                    push!(Mj, p)
-                    push!(Mv, dκ)
-                end
-                Msp = sparse(Mi, Mj, Mv, N, N)
-                MF = cholesky(Symmetric(Msp))
-                Kc = MF.PtL
-                Uc = MF.UP
-                # CHOLMOD exposes no in-place solve for a factor component, so each
-                # application returns a fresh vector; the transpose product copies it
-                # into the buffer LSQR hands over, which is the only copy avoidable here.
-                Pmul! = function (y, yv)
-                    xv = Uc \ yv
-                    for (e, (p, q)) in enumerate(edges)
-                        y[e] = ws[e] * (xv[p] + xv[q])
-                    end
-                    y[g] = dot(v0, xv)
-                    return y
-                end
-                Ptmul! = function (z, y)
-                    fill!(pg, zero(T))
-                    for (e, (p, q)) in enumerate(edges)
-                        t = ws[e] * y[e]
-                        pg[p] += t
-                        pg[q] += t
-                    end
-                    @. pg += v0 * y[g]
-                    copyto!(z, Kc \ pg)
-                    return z
-                end
-                mul!(px, Msp, x)
-                soly, it = _lsqr(Pmul!, Ptmul!, cv, Kc \ px)
-                nlsqr[] += it
-                return (Uc \ soly)::Vector{T}
-            end
-            Amul! = function (y, xx)
-                for (e, (p, q)) in enumerate(edges)
-                    y[e] = ws[e] * (xx[p] + xx[q])
-                end
-                y[g] = dot(v0, xx)
-                return y
-            end
-            Atmul! = function (z, y)
-                fill!(z, zero(T))
-                for (e, (p, q)) in enumerate(edges)
-                    t = ws[e] * y[e]
-                    z[p] += t
-                    z[q] += t
-                end
-                @. z += v0 * y[g]
-                return z
-            end
-            sol, it = _lsqr(Amul!, Atmul!, cv, x)
-            nlsqr[] += it
-            return sol
-        elseif use_woodbury
-            # `B + v0·v0ᵀ = C + U·Uᵀ` with `C = D − L_Z + (κ−1)·L_V`,
-            # `D = diag(n·1_m, m·1_n)` and `U = [u_r u_c]` the row and column
-            # indicators: the complete-support matrix, corrected by the zero set `Z`
-            # and by the currently violated entries `V`.
-            dκ = κ === nothing ? zero(T) : T(κ) - oneunit(T)
-            fill!(f, zero(T))
-            copyto!(dg, czero)
-            fill!(degV, 0)
-            empty!(vedges)
-            for (e, (p, q)) in enumerate(edges)
-                c = cvals[e]
-                viol = κ !== nothing && (x[p] + x[q] - c) < 0
-                vpat[e] = viol
-                w = viol ? T(κ) : oneunit(T)
-                f[p] += w * c
-                f[q] += w * c
-                if viol
-                    push!(vedges, (p, q))
-                    degV[p] += 1
-                    degV[q] += 1
-                    dg[p] += dκ
-                    dg[q] += dκ
-                end
-            end
-            # Same ridge as the dense path, so both solve the same regularized system:
-            # `U·Uᵀ` puts 1 on every diagonal of `B + v0·v0ᵀ`, and every variable has
-            # support here, so no identity row arises.
-            dmax = zero(T)
-            maxdegV = 0
-            for p in 1:N
-                dmax = max(dmax, dg[p] + oneunit(T))
-                maxdegV = max(maxdegV, degV[p])
-            end
-            ridge = (dmax > 0 ? dmax : oneunit(T)) * eps(T)
-            for p in 1:N
-                dg[p] += oneunit(T) + ridge
-            end
-            # Gershgorin on `(κ−1)·L_V` against the smaller diagonal block estimates
-            # the condition number of `B`. While that estimate is small the structured
-            # matvec plus conjugate gradients reaches the same answer in a few hundred
-            # O(N + |Z| + |V|) iterations, which is far cheaper than a factorization
-            # whose fill on the near-random violated pattern of the early stages
-            # approaches dense.
-            # `zedges` and `vedges` carry both ends of every pair, so these triplets
-            # store `C` in full rather than in one triangle: the same matrix then
-            # serves the matvec below and the factorization after it. `sparse` sums
-            # the duplicates, and the ridge rides on the diagonal.
-            empty!(Ci)
-            empty!(Cj)
-            empty!(Cv)
-            for p in 1:N
-                push!(Ci, p)
-                push!(Cj, p)
-                push!(Cv, czero[p] + ridge)
-            end
-            for (p, q) in zedges
-                push!(Ci, p)
-                push!(Cj, q)
-                push!(Cv, -oneunit(T))
-                push!(Ci, q)
-                push!(Cj, p)
-                push!(Cv, -oneunit(T))
-            end
-            for (p, q) in vedges
-                push!(Ci, p)
-                push!(Cj, p)
-                push!(Cv, dκ)
-                push!(Ci, q)
-                push!(Cj, q)
-                push!(Cv, dκ)
-                push!(Ci, p)
-                push!(Cj, q)
-                push!(Cv, dκ)
-                push!(Ci, q)
-                push!(Cj, p)
-                push!(Cv, dκ)
-            end
-            C = sparse(Ci, Cj, Cv, N, N)
-            # Gershgorin on `(κ−1)·L_V` against the smaller diagonal block estimates
-            # the condition number of `B`. While that estimate is small, conjugate
-            # gradients on `C·x + u_r·(u_rᵀx) + u_c·(u_cᵀx)` reach the same answer in a
-            # few hundred O(nnz(C)) applications, which is far cheaper than a
-            # factorization whose fill on the near-random violated pattern of the early
-            # stages approaches dense.
-            κest = oneunit(T) + dκ * 2 * maxdegV / min(m, n)
-            if κest <= WOODBURY_CG_KAPPA
-                copyto!(cgx, x)
-                Bmul! = function (yy, xx)
-                    mul!(yy, C, xx)
-                    sr = zero(T)
-                    for p in 1:m
-                        sr += xx[p]
-                    end
-                    sc = zero(T)
-                    for p in (m+1):N
-                        sc += xx[p]
-                    end
-                    for p in 1:m
-                        yy[p] += sr
-                    end
-                    for p in (m+1):N
-                        yy[p] += sc
-                    end
-                    return yy
-                end
-                it, ok = _pcg!(Bmul!, cgx, dg, f, cgr, cgz, cgd, cgAd,
-                               50 + 20 * ceil(Int, sqrt(κest)), 100 * eps(T) * norm(f))
-                ncg[] += it
-                ok && return copy(cgx)
-            end
-            nchol[] += 1
-            return _woodbury_solve!(zeros(T, N), cholesky(Symmetric(C)), Umat, f, rhs)
-        else
-            fill!(f, zero(T))
-            B = v0 * v0'
-            for (e, (p, q)) in enumerate(edges)
-                c = cvals[e]
-                viol = κ !== nothing && (x[p] + x[q] - c) < 0
-                vpat[e] = viol
-                w = viol ? T(κ) : oneunit(T)
-                f[p] += w * c
-                f[q] += w * c
-                B[p, p] += w
-                B[q, q] += w
-                B[p, q] += w
-                B[q, p] += w
-            end
-            # A support whose bipartite graph splits into k connected components carries k
-            # independent (e; −e) gauges; v0*v0ᵀ pins only the global one, leaving k−1
-            # singular directions. A minimal scale-relative ridge on the supported
-            # diagonals lifts them (the same device the symmetric solver uses for the
-            # bipartite null space). The RHS is orthogonal to every gauge null vector, so
-            # the ridge leaves the recovered scales essentially unperturbed, and the
-            # per-component gauge it fixes is unobservable — no product a_i·b_j spans two
-            # components. Support-free variables get an identity row.
-            dmax = zero(T)
-            for p in 1:N
-                dmax = max(dmax, B[p, p])
-            end
-            ridge = (dmax > 0 ? dmax : oneunit(T)) * eps(T)
-            for ip in 1:m
-                B[ip, ip] = hasrow[ip] ? B[ip, ip] + ridge : one(T)
-            end
-            for jp in 1:n
-                q = m + jp
-                B[q, q] = hascol[jp] ? B[q, q] + ridge : one(T)
-            end
-            return Symmetric(B) \ f
-        end
-    end
-    x = if start === nothing
-        solve_weighted(zeros(T, N), nothing)
+    sys = SupportSystem{T}(N, edges, cvals, false, vcat(hasrow, hascol), dfull, zedges, Umat, v0)
+    x0 = if start === nothing
+        nothing
     else
         sa, sb = start
-        x0 = zeros(T, N)
+        s0 = zeros(T, N)
         for (ip, i) in enumerate(axr)
-            hasrow[ip] && (x0[ip] = log(T(sa[i])))
+            hasrow[ip] && (s0[ip] = log(T(sa[i])))
         end
         for (jp, j) in enumerate(axc)
-            hascol[jp] && (x0[m+jp] = log(T(sb[j])))
+            hascol[jp] && (s0[m+jp] = log(T(sb[j])))
         end
-        x0
+        s0
     end
-    for κ in κs
-        fcur = fκ(x, κ)
-        for _ in 1:maxiter
-            xnew = solve_weighted(x, κ)
-            t = one(T)
-            xt = xnew
-            fnew, stable = fκpat(xt, κ, vpat)
-            while fnew > fcur && t > 500_000 * eps(T)
-                t /= 2
-                xt = x .+ t .* (xnew .- x)
-                fnew = fκ(xt, κ)
-                stable = false
-            end
-            x = xt
-            # `f_κ` is convex and the dense and Woodbury steps solve its quadratic model
-            # exactly, so a whole step that leaves the violated set unchanged has reached
-            # the stage's minimizer: the gradient there is the model's, which is zero.
-            # The `:lsqr` solves are inexact and carry no such guarantee.
-            !use_lsqr && stable && break
-            fcur - fnew <= 5000 * eps(T) * max(fcur, one(T)) && break
-            fcur = fnew
-        end
-    end
-    # Uniform boost to exact feasibility: α_i + β_j ≥ log|A_ij| on the support.
-    # `boost=false` leaves the iterate untouched, for the soft objective, which
-    # imposes no coverage constraint and whose optimum the boost would move off.
-    # The balance shift below still applies: the gauge is a convention, not a
-    # constraint, and every cover this package returns satisfies it.
-    if boost
-        γ = zero(T)
-        for (e, (p, q)) in enumerate(edges)
-            γ = max(γ, (cvals[e] - x[p] - x[q]) / 2)
-        end
-        for p in 1:N
-            x[p] += γ
-        end
-    end
+    x, stats = _abslog2_continuation(sys, x0, use_woodbury; κs, maxiter, linsolve, boost)
     # Shift along the (e; -e) gauges to the balance convention ∑ nzaᵢ αᵢ = ∑ nzbⱼ βⱼ,
     # imposed within each connected component of the support: the gauge acts
     # independently on each component, so a single global shift would leave the
-    # per-component splits wherever the ridge (or LSQR's gauge row) put them.
+    # per-component splits wherever the ridge (or LSQR's gauge row) put them. It
+    # applies whether or not the iterate was boosted: the gauge is a convention, not a
+    # constraint, and every cover this package returns satisfies it.
     rowcomp, colcomp, ncomp = _support_components(A)
     Lα = zeros(T, ncomp)
     Lβ = zeros(T, ncomp)
@@ -1582,9 +1295,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     for (jp, j) in enumerate(axc)
         b[j] = hascol[jp] ? exp(x[m+jp] - s[colcomp[jp]]) : zero(T)
     end
-    return a, b, (; nsolves=nsolves[], lsqriters=nlsqr[], cgiters=ncg[],
-                  cholsolves=nchol[],
-                  linsolve=(use_lsqr ? :lsqr : use_woodbury ? :woodbury : :dense))
+    return a, b, stats
 end
 
 # Workers for the soft (unconstrained) AbsLog{2} covers. The soft objective
