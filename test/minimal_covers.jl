@@ -295,6 +295,31 @@ end
     @test MatrixCovers._cover_min_abslog2(Gbig)[3].linsolve === :dense
 end
 
+@testset "MMC :auto measures the stored support" begin
+    T3 = SymTridiagonal(fill(4.0, 30), fill(1.0, 29))
+    aT, sT = MatrixCovers._symcover_min_abslog2(T3)
+    @test sT.linsolve === :lsqr
+    @test aT ≈ MatrixCovers._symcover_min_abslog2(Matrix(T3); linsolve=:dense)[1] rtol=1e-6
+    @test iscover(aT, T3; rtol=1e-8)
+
+    # Wrapped sparse support selects LSQR.
+    rng = StableRNG(3)
+    S0 = sprand(rng, 40, 40, 0.05)
+    Sw = Symmetric(S0 + S0' + I)
+    aw, bw, stw = MatrixCovers._cover_min_abslog2(Sw)
+    @test stw.linsolve === :lsqr
+    @test iscover(aw, bw, Sw; rtol=1e-8)
+
+    X8 = exp.(randn(rng, 8, 8))
+    @test MatrixCovers._symcover_min_abslog2((X8 .+ X8') ./ 2)[2].linsolve === :woodbury
+
+    # The threshold includes equality.
+    D4 = Matrix(Diagonal([4.0, 9.0, 1.0, 16.0]))
+    @test MatrixCovers._symcover_min_abslog2(D4)[2].linsolve === :lsqr
+    D4[1, 2] = D4[2, 1] = 1.0
+    @test MatrixCovers._symcover_min_abslog2(D4)[2].linsolve === :dense
+end
+
 # Exact inner solves stop a stage when the violated set is unchanged; LSQR uses
 # the decrease test.
 @testset "MMC exact paths stop on a sign-stable Newton step" begin
@@ -353,7 +378,7 @@ end
     singletons(vals) = Matrix(sparse(1:length(vals), 1:length(vals), float.(vals)))  # k singleton components
     block2(k) = cat(([2.0+i i; i 3.0+i] for i in 1:k)...; dims = (1, 2))              # k dense 2×2 components
     for M in (singletons([4.0, 9.0, 1.0]), singletons(1.0:6.0), block2(3), block2(6))
-        ad, bd = cover_min(AbsLog{2}(), M)                    # :auto = dense + ridge
+        ad, bd = cover_min(AbsLog{2}(), M; linsolve = :dense)   # ridge lifts the unpinned gauges
         al, bl = cover_min(AbsLog{2}(), M; linsolve = :lsqr)
         @test iscover(ad, bd, M; atol=1e-8)
         @test iscover(al, bl, M; atol=1e-8)

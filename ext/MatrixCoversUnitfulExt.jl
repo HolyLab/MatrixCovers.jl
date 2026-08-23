@@ -274,11 +274,23 @@ MC.soft_symcover_min!(a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_sym
 MC.soft_cover_min(A::QMatrix; kwargs...) = asym(MC.soft_cover_min, A; kwargs...)
 MC.soft_cover_min!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover_min!, a, b, A; kwargs...)
 
-# Resolve the overlap between sparse refiner and unitful matrix methods.
+# Disambiguate sparse unitful matrices without losing sparse storage.
 const QSparse = SparseMatrixCSC{<:Quantity}
 const QSparseSym = Union{QSparse,
                          Symmetric{<:Quantity,<:SparseMatrixCSC},
                          Hermitian{<:Quantity,<:SparseMatrixCSC}}
+
+MC.symcover_min(ϕ::AbsLog{2}, A::QSparseSym; kwargs...) =
+    sym(MC.symcover_min, A, ϕ; kwargs...)
+
+MC.cover_min(ϕ::AbsLog{2}, A::QSparse; kwargs...) =
+    asym(MC.cover_min, A, ϕ; kwargs...)
+
+MC.soft_symcover_min(ϕ::AbsLog{2}, A::QSparseSym; kwargs...) =
+    sym(MC.soft_symcover_min, A, ϕ; kwargs...)
+
+MC.soft_cover_min(ϕ::AbsLog{2}, A::QSparse; kwargs...) =
+    asym(MC.soft_cover_min, A, ϕ; kwargs...)
 
 MC.symcover_min!(ϕ::AbsLog{2}, a::QVector, A::QSparseSym; kwargs...) =
     symstart!(MC.symcover_min!, a, A, ϕ; kwargs...)

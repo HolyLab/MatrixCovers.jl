@@ -93,7 +93,12 @@
         @test all(unit.(v) == fill(u"m^-1", 3) for v in cover(S))
         @test unit.(symcover(Symmetric(S))) == fill(u"m^-1", 3)
 
-        # The refiners are where the sparse methods and MatrixCoversUnitfulExt overlap.
+        @test unit.(symcover_min(AbsLog{2}(), S)) == fill(u"m^-1", 3)
+        @test unit.(symcover_min(AbsLog{2}(), Symmetric(S))) == fill(u"m^-1", 3)
+        @test all(unit.(v) == fill(u"m^-1", 3) for v in cover_min(AbsLog{2}(), S))
+        @test unit.(soft_symcover_min(AbsLog{2}(), S)) == fill(u"m^-1", 3)
+        @test unit.(soft_symcover_min(AbsLog{2}(), Symmetric(S))) == fill(u"m^-1", 3)
+        @test all(unit.(v) == fill(u"m^-1", 3) for v in soft_cover_min(AbsLog{2}(), S))
         a = initialize_symcover(S)
         @test unit.(symcover_min!(AbsLog{2}(), a, S)) == fill(u"m^-1", 3)
         @test unit.(symcover_min!(AbsLog{2}(), a, Symmetric(S))) == fill(u"m^-1", 3)

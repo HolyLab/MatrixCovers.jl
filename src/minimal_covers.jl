@@ -32,7 +32,8 @@ The native solver accepts `κs` (penalty-continuation schedule), `maxiter`
   requires at most `n ÷ 4` missing entries per row and `4n` in total.
 - `:lsqr` is matrix-free with O(nnz) work per iteration and is the sparse-matrix
   default.
-- `:auto` chooses `:woodbury` when supported and `:dense` otherwise.
+- `:auto` chooses `:woodbury` when supported, `:lsqr` when the stored support
+  fills at most a quarter of the grid, and `:dense` otherwise.
 
 The native solver computes in `Float64` for narrower input types, then converts
 the result to the required element type.
@@ -253,7 +254,13 @@ end
 #   It is not interchangeable with CG on the normal equations: LSQR's accuracy
 #   tracks the condition number of `M` (≈ √κ), CG's that of `MᵀM` (≈ κ), and at
 #   κ = 1e8 the latter exhausts double precision.
-# - `:auto` selects `:woodbury` when supported and `:dense` otherwise.
+# - `:auto` selects `:woodbury` when supported, `:lsqr` when the stored support
+#   fills at most `AUTO_LSQR_MAX_DENSITY` of the grid, and `:dense` otherwise.
+
+# Maximum support density for the `:auto` LSQR path. At or above it the exact
+# dense solve is the better bargain: it terminates a stage on a sign-stable
+# Newton step and has smaller constants.
+const AUTO_LSQR_MAX_DENSITY = 1 // 4
 
 # Condition estimate above which Woodbury uses sparse Cholesky instead of CG.
 const WOODBURY_CG_KAPPA = 1000
@@ -1058,6 +1065,10 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         end
         use_woodbury = ok
     end
+    if linsolve === :auto && !use_woodbury && nsupp <= AUTO_LSQR_MAX_DENSITY * (n * n)
+        use_lsqr = true
+        linsolve = :lsqr
+    end
     # Woodbury uses a grid; dense and LSQR use an edge list.
     supp = if use_woodbury
         C = fill(T(-Inf), n, n)
@@ -1171,6 +1182,10 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             throw(ArgumentError("linsolve=:woodbury requires `A` to have at most 4·max(m, n) = $zbudget zeros in total; got $nzero"))
         end
         use_woodbury = ok
+    end
+    if linsolve === :auto && !use_woodbury && ne <= AUTO_LSQR_MAX_DENSITY * (m * n)
+        use_lsqr = true
+        linsolve = :lsqr
     end
     # Woodbury uses a grid; dense and LSQR use an edge list.
     supp = if use_woodbury
