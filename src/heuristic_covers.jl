@@ -496,9 +496,7 @@ function boost_feasible!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix
     return a, b
 end
 
-# Sequential nearest-neighbor feasibility propagation in increasing diagonal
-# offset. Zero scales are unresolved; deferred pairs are revisited, then split
-# equally if neither endpoint acquires a scale. The method costs O(n²).
+# Sequential nearest-neighbor feasibility propagation by diagonal offset.
 function boost_feasible_seq!(a::AbstractVector{T}, A::AbstractMatrix) where T
     ax = eachindex(a)
     axes(A) == (ax, ax) || throw(DimensionMismatch("`boost_feasible_seq!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(string(axes(A))), axes(a)=$(string(axes(a))))"))
@@ -530,31 +528,46 @@ function boost_feasible_seq!(a::AbstractVector{T}, A::AbstractMatrix) where T
         end
     end
 
-    # Resolve deferred constraints: re-scan until no more progress, then equal-split.
-    while !isempty(deferred)
-        changed = false
-        filter!(deferred) do (k, l, v)
+    # Each vertex is assigned at most once, so worklist resolution is linear in
+    # the number of deferred pairs.
+    if !isempty(deferred)
+        o = first(ax) - 1
+        inc = [Int[] for _ in eachindex(ax)]   # deferred pairs touching each vertex
+        for (e, (k, l, _)) in enumerate(deferred)
+            push!(inc[k-o], e)
+            push!(inc[l-o], e)
+        end
+        done = falses(length(deferred))
+        queue = collect(eachindex(deferred))
+        qi = firstindex(queue)
+        while qi <= lastindex(queue)
+            e = queue[qi]
+            qi += 1
+            done[e] && continue
+            k, l, v = deferred[e]
             ak, al = a[k], a[l]
-            if !iszero(ak) && !iszero(al)
+            if iszero(ak) && iszero(al)
+                continue
+            elseif iszero(al)
+                a[l] = v / ak
+                done[e] = true
+                append!(queue, inc[l-o])
+            elseif iszero(ak)
+                a[k] = v / al
+                done[e] = true
+                append!(queue, inc[k-o])
+            else
                 aprod = ak * al
                 if aprod < v
                     s = sqrt(v / aprod)
                     a[k] *= s; a[l] *= s
                 end
-            elseif !iszero(ak)
-                a[l] = v / ak
-            elseif !iszero(al)
-                a[k] = v / al
-            else
-                return true   # still unresolvable; keep in list
+                done[e] = true
             end
-            changed = true
-            return false      # resolved; drop from list
         end
-        changed && continue
-        # No progress: all remaining have both indices zero.
-        # Process in order so earlier equal-splits can inform later ones in the same pass.
-        for (k, l, v) in deferred
+        # Split components that no diagonal scale reached, preserving order.
+        for (e, (k, l, v)) in enumerate(deferred)
+            done[e] && continue
             ak, al = a[k], a[l]
             if iszero(ak) && iszero(al)
                 a[k] = a[l] = sqrt(v)
@@ -570,7 +583,6 @@ function boost_feasible_seq!(a::AbstractVector{T}, A::AbstractMatrix) where T
                 end
             end
         end
-        break
     end
 
     return a

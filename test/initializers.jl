@@ -88,6 +88,28 @@
         @test ah[3] < ag[3]
     end
 
+    @testset ":diagfeasible propagates from sparse anchors" begin
+        # Propagate the diagonal scale backward through a path.
+        n = 6
+        P = SymTridiagonal([zeros(n - 1); 4.0], fill(2.0, n - 1))
+        a = initialize_symcover(P; strategy=:diagfeasible, feasible=:none)
+        @test iscover(a, P)
+        @test a[n] == 2.0
+        @test all(a[i] * a[i+1] == 2.0 for i in 1:n-1)
+
+        # A component with no diagonal at all falls back to equal splits.
+        Q = [0.0 9.0; 9.0 0.0]
+        aq = initialize_symcover(Q; strategy=:diagfeasible, feasible=:none)
+        @test iscover(aq, Q)
+        @test aq == [3.0, 3.0]
+
+        # Guard against quadratic rescans.
+        n = 100_000
+        P = SymTridiagonal([zeros(n - 1); 4.0], fill(2.0, n - 1))
+        a = initialize_symcover(P; strategy=:diagfeasible, feasible=:none)
+        @test iscover(a, P)
+    end
+
     @testset "no penalty argument" begin
         # Initializers depend on `A`, not on a penalty.
         @test_throws MethodError initialize_symcover(AbsLog{2}(), Asyms[1])
