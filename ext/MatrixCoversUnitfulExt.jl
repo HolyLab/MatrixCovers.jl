@@ -12,10 +12,7 @@ const MC = MatrixCovers
 # halves the diagonal's exponents.
 const UnitExps = Dict{FreeUnits,Rational{Int}}
 
-# A cover objective is dimensionless, so it accumulates in the quantity's own
-# numeric type. This is stated for `Quantity{T}` rather than a concrete quantity
-# type because a matrix whose entries carry different units has exactly that
-# abstract element type.
+# Cover objectives are dimensionless and accumulate in the quantity's numeric type.
 MC.scalar_type(::Type{<:Quantity{T}}) where {T} = MC.scalar_type(T)
 const QMatrix = AbstractMatrix{<:Quantity}
 const QVector = AbstractVector{<:Quantity}
@@ -24,22 +21,13 @@ const QVector = AbstractVector{<:Quantity}
 # Unit algebra
 # ============================================================
 
-# Unitful exposes no public accessor for the atomic units of a `FreeUnits`, and no
-# supported way to iterate them, so the code below reads its representation
-# directly: `FreeUnits{N,D,A}` carries `N` as a tuple of `Unit{U,D}`, each with
-# fields `tens::Int` and `power::Rational{Int}`. That layout is what the
-# `Unitful.Unit` and `Unitful.FreeUnits` docstrings specify. The decomposition
-# cannot be replaced by unit arithmetic: `gauge` takes a per-atom median over
-# rational exponents, which `*`, `/`, and `^` cannot express.
+# Decompose `FreeUnits{N,D,A}` through its documented type parameters. Gauge
+# selection needs per-atom rational exponents, which unit arithmetic cannot expose.
 
-# An atomic unit at the first power. A prefix belongs to the atom -- `mm` and `m`
-# are distinct -- so a coordinate named in `mm` keeps `mm` in its cover.
+# Atomic unit at the first power; prefixes remain distinct atoms.
 atomic(x::Unit{N,D}) where {N,D} = FreeUnits{(Unit{N,D}(x.tens, 1//1),), D, nothing}()
 
-# The third parameter of `FreeUnits` is the affine offset, `nothing` for an
-# ordinary unit. An affine unit measures from a shifted origin, so `a[i]*b[j]`
-# does not scale it and there is no cover to find; Unitful likewise refuses to
-# multiply affine units.
+# Reject affine units because multiplicative covers require an absolute zero.
 function exps(u::FreeUnits{N,D,A}) where {N,D,A}
     A === nothing || throw(ArgumentError("""
     affine units are not supported: `$u` measures from a shifted origin, so no \
@@ -54,17 +42,14 @@ function exps(u::FreeUnits{N,D,A}) where {N,D,A}
     return d
 end
 
-# `ContextUnits` and `FixedUnits` carry a conversion context this code does not
-# read, so they are refused by name rather than reaching `atomic` as a
-# `MethodError` on an unexported internal.
+# Context-dependent units are unsupported.
 exps(u::Unitful.Units) = throw(ArgumentError(
     "unsupported unit type $(nameof(typeof(u))) for `$u`: MatrixCovers reads `FreeUnits`. " *
     "Convert with `uconvert(FreeUnits(u), x)`."))
 
 exps(q::Quantity) = exps(unit(q))
 
-# Zero exponents are pruned throughout so that `==` on a `UnitExps` compares
-# units rather than representations.
+# Remove zero exponents so equality compares units, not representations.
 function combine(f, d1::UnitExps, d2::UnitExps)
     d = UnitExps()
     for k in union(keys(d1), keys(d2))
@@ -83,26 +68,20 @@ freeunits(d::UnitExps) = isempty(d) ? Unitful.NoUnits : prod(k^v for (k, v) in d
 # Rank-1 unit factorization
 # ============================================================
 
-# A cover needs `unit(A[i,j]) == unit(a[i])*unit(b[j])`: the unit exponents form a
-# rank-1 additive matrix, and any violation is witnessed by a 2x2 minor. The message
-# quotes that minor, so it names only entries the caller wrote.
+# Unit exponents must form a rank-1 additive matrix. A failing 2×2 minor
+# identifies a mismatch.
 function throw_nofactor(lhs, rhs, lhsname, rhsname)
     throw(DimensionMismatch("""
     units of `A` do not factor: $lhsname = $lhs, but $rhsname = $rhs.
     A cover requires `unit(A[i,j]) == unit(a[i])*unit(b[j])`, which forces these two \
-    products to agree. Any matrix that models the physical world satisfies this: \
-    without it the terms of a row of `A*x` do not share units, so `A*x` is undefined \
-    for every `x`."""))
+    products to agree. Without this factorization, the terms in a row of `A*x` \
+    can have incompatible units."""))
 end
 
-# A concrete element type names one unit for every entry, structural zeros
-# included, so there is nothing to verify and nothing to read: `A` contributes only
-# `unit(eltype(A))`. This is the only shape a sparse `A` can take, since sparse
-# storage synthesizes its structural zeros with `zero(eltype(A))`.
+# A concrete element type gives every entry, including structural zeros, one unit.
 uniform_unit(A::QMatrix) = isconcretetype(eltype(A)) ? exps(unit(eltype(A))) : nothing
 
-# `unit(a[i])` and `unit(b[j])` up to the gauge `a -> a*c`, `b -> b/c`, taken
-# relative to the first row and column.
+# Factor row and column units relative to the first row and column.
 function factor_units(A::QMatrix)
     ax1, ax2 = axes(A)
     uas = similar(Array{UnitExps}, ax1)
@@ -138,8 +117,7 @@ function factor_units(A::QMatrix)
     return ua, ub
 end
 
-# `a[i]*a[i] == A[i,i]` pins `unit(a[i])` outright: the symmetric gauge `a -> a*c`
-# would scale every product by `c^2`, so only `c = 1` preserves them.
+# Diagonal entries fix symmetric scale units directly.
 function factor_units_sym(A::QMatrix)
     ax = axes(A, 1)
     uas = similar(Array{UnitExps}, ax)
@@ -163,23 +141,12 @@ function factor_units_sym(A::QMatrix)
     return ua
 end
 
-# The gauge `a -> a*c`, `b -> b/c` leaves every product `a[i]*b[j]` unchanged, so
-# the factorization fixes the units only up to `c`. Pin it by minimizing the total
-# atomic-unit powers carried by the two scale vectors,
+# Choose the unit gauge by minimizing total atomic-unit powers:
 #
 #     minimize_c  ∑_i ‖exps(ua[i]*c)‖₁ + ∑_j ‖exps(ub[j]/c)‖₁,
 #
-# which separates over atoms into subproblems ∑_i |t + αᵢ| + ∑_j |t - βⱼ|, each
-# minimized on the median interval of {-αᵢ} ∪ {βⱼ}.
-#
-# That interval is a single point only when the atom's exponents pin it; otherwise
-# the objective is flat across it and the choice within it is the whole content of
-# the convention. Take its midpoint, which makes `cover` reproduce `symcover` on
-# symmetric input. There, `unit(A[i,j])` has exponents `dᵢ + dⱼ`, so `αᵢ = dᵢ - d₀`
-# and `βⱼ = d₀ + dⱼ` relative to the reference row `i0`, and the points
-# `{d₀ - dᵢ} ∪ {d₀ + dⱼ}` are distributed symmetrically about `d₀`. The midpoint is
-# therefore `d₀` exactly, which is the shift that returns `unit(a[i])` with
-# exponents `dᵢ` -- what `a[i]*a[i] == A[i,i]` demands.
+# Each atom reduces to a median interval; its midpoint makes `cover` agree with
+# `symcover` on symmetric input.
 function gauge(uas, ubs)
     atoms = Set{FreeUnits}()
     for d in uas
@@ -211,17 +178,11 @@ end
 # Strip and reattach
 # ============================================================
 
-# `A` is stripped in the units the caller wrote, not in a canonical system. The
-# cover itself is scale-invariant, but the balance convention that splits `a` from
-# `b` is not, so the strip scale selects the parametrization; the caller's units
-# are their statement of the scale they want it pinned to. Stripping requires the
-# units to factor as written -- otherwise entries on incommensurate scales
-# (`1.0mm^-2` and `1.0m^-2` both strip to `1.0`) would be covered as if comparable.
+# Strip values in their written units so the balance convention follows the
+# caller's parametrization. Units must factor before stripping.
 strip_matrix(A::QMatrix) = ustrip.(A)
 
-# The `*_min!` family reads `a` as a start, so its units must be the cover's. Any
-# dimensionally equivalent spelling is accepted and converted; `ustrip` raises on
-# a start that is not.
+# Refiners accept dimensionally equivalent start units and convert them.
 strip_start(a::QVector, ua) = map(ustrip, ua, a)
 
 reattach(a, ua) = a .* ua
@@ -238,9 +199,7 @@ function asym(f, A::QMatrix, ϕ...; kwargs...)
     return reattach(a, ua), reattach(b, ub)
 end
 
-# `a` is overwritten, so neither its values nor its units are read: the scratch it
-# is stripped into takes its element type from `A`, matching what the unitless
-# methods allocate. An `a` of undefined references is a valid destination.
+# Allocating scratch from `A` permits uninitialized destination vectors.
 function sym!(f, a::QVector, A::QMatrix, ϕ...; kwargs...)
     ua = factor_units_sym(A)
     An = strip_matrix(A)
@@ -275,12 +234,7 @@ function asymstart!(f, a::QVector, b::QVector, A::QMatrix, ϕ...; kwargs...)
     return a, b
 end
 
-# Every penalty slot below mirrors MatrixCovers's own method table: where it
-# accepts any `AbstractCoverPenalty` these do too, and where it dispatches on
-# concrete penalties these enumerate the same ones. Each method is then strictly more specific than the
-# one it shadows -- including those in the JuMP and Ipopt extensions, which leave the
-# matrix slot untyped -- so no ambiguity arises. A penalty the package does not
-# support raises a `MethodError` here exactly as it does on a unitless matrix.
+# Mirror the core penalty dispatch while specializing on unitful matrices.
 const PENALTIES = (:(AbsLog{1}), :(AbsLog{2}), :(AbsLinear{1}), :(AbsLinear{2}))
 
 # Heuristic covers and initializers: `ϕ` is checked but not consulted.
@@ -294,7 +248,7 @@ MC.cover(ϕ::MC.AbstractCoverPenalty, A::QMatrix; kwargs...) = asym(MC.cover, A,
 MC.cover!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover!, a, b, A; kwargs...)
 MC.cover!(ϕ::MC.AbstractCoverPenalty, a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover!, a, b, A, ϕ; kwargs...)
 
-# `cover`/`cover!` dispatch on `Adjoint`/`Transpose` upstream without an eltype
+# Core `cover`/`cover!` methods dispatch on `Adjoint`/`Transpose` without an eltype
 # bound, so a wrapped `Quantity` matrix needs these to stay unambiguous.
 for W in (:(LinearAlgebra.Adjoint{<:Quantity}), :(LinearAlgebra.Transpose{<:Quantity}))
     @eval begin
@@ -308,7 +262,7 @@ MC.initialize_symcover!(a::QVector, A::QMatrix; kwargs...) = sym!(MC.initialize_
 MC.initialize_cover(A::QMatrix; kwargs...) = asym(MC.initialize_cover, A; kwargs...)
 MC.initialize_cover!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.initialize_cover!, a, b, A; kwargs...)
 
-# Soft covers and the `*_min` family: `ϕ` is dispatched on upstream.
+# Soft covers and the `*_min` family preserve core penalty dispatch.
 MC.soft_symcover(A::QMatrix; kwargs...) = sym(MC.soft_symcover, A; kwargs...)
 MC.soft_cover(A::QMatrix; kwargs...) = asym(MC.soft_cover, A; kwargs...)
 MC.symcover_min(A::QMatrix; kwargs...) = sym(MC.symcover_min, A; kwargs...)
@@ -320,13 +274,7 @@ MC.soft_symcover_min!(a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_sym
 MC.soft_cover_min(A::QMatrix; kwargs...) = asym(MC.soft_cover_min, A; kwargs...)
 MC.soft_cover_min!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover_min!, a, b, A; kwargs...)
 
-# MatrixCovers types the matrix slot of its sparse refiners, where the methods above
-# type the element: neither is more specific for a sparse matrix of quantities, so the
-# two are ambiguous there. These methods resolve that pair. They are the only overlap --
-# every other sparse method leaves its matrix slot untyped.
-#
-# Sparse storage synthesizes structural zeros with `zero(eltype)`, so the element type
-# is concrete and every entry carries the same unit.
+# Resolve the overlap between sparse refiner and unitful matrix methods.
 const QSparse = SparseMatrixCSC{<:Quantity}
 const QSparseSym = Union{QSparse,
                          Symmetric{<:Quantity,<:SparseMatrixCSC},

@@ -6,27 +6,15 @@ using MatrixCovers
 using MatrixCovers: AbsLinear
 using MatrixCovers: _edge_list, _sym_edge_list, _degrees
 
-# The models are built over 1-based positions 1:n; `pr`/`pc` map each position to the
-# corresponding axis index of `A`, and results are scattered back onto vectors
-# whose axes match `A`'s so offset axes are honored. A row/column of `A` with no
-# nonzero entry appears in no constraint or objective term; its scale is set to
-# exactly 0, matching the native solvers.
-#
-# `A` is read through the support hook and gathered into a flat edge list in position
-# space — `ei`/`ej` the endpoints, `elog` the log-magnitude — so a model costs O(nnz)
-# to build rather than O(length(A)). The symmetric list is the full-grid reading; the
-# hard-cover models below sum over its `ei <= ej` half instead, per the objective each
-# one is defined by.
+# Models use 1-based positions and scatter results back to `A`'s axes. Support is
+# gathered as an O(nnz) edge list; unsupported scales are zero.
 
-# Ipopt returns a local minimum selected by the start. These kernels therefore
-# implement the mutating refiners; the main package supplies multistart drivers.
+# Ipopt kernels refine one start; the main package supplies multistart drivers.
 
 check_solved(model, fname) =
     MatrixCovers.check_solved(JuMP.termination_status(model), "Ipopt", fname)
 
-# `set_silent` alone still lets Ipopt print its startup banner, once per session, from
-# its C++ core; `sb` ("suppress banner") is the option that covers it. Every model here
-# is solved for a caller who asked for a cover, not for solver output.
+# Suppress both solver output and Ipopt's startup banner.
 function _ipopt_model()
     model = JuMP.Model(Ipopt.Optimizer)
     JuMP.set_silent(model)
@@ -34,10 +22,7 @@ function _ipopt_model()
     return model
 end
 
-# The `i ≤ j` half of a symmetric gather, paired with the multiplicity `w` each entry
-# stands for in the full grid: an off-diagonal pair is two entries of `A`, a diagonal
-# entry one. Carrying the weight is equivalent to summing over both orientations and
-# costs half the terms — and, for the AbsLinear{1} models, half the auxiliary variables.
+# Symmetric triangle with full-grid multiplicities.
 function _triangle(fi, fj, flog)
     keep = [e for e in eachindex(fi) if fi[e] <= fj[e]]
     return fi[keep], fj[keep], flog[keep], [fi[e] == fj[e] ? 1 : 2 for e in keep]
@@ -112,16 +97,8 @@ end
 
 # ============================================================
 # Hard cover: cover_min!(::AbsLinear{p}, a, b, A)
-# The bipartite analog of symcover_min!: row scales α = log a, column scales
-# β = log b, residuals over every stored (i, j) rather than over i ≤ j. The product
-# a[i]*b[j] is invariant under (α, β) → (α + s, β - s), so — unlike the symmetric
-# problem, which has no such freedom — the model is degenerate along that direction
-# until the balance constraint ∑ nzaᵢ αᵢ = ∑ nzbⱼ βⱼ pins it, exactly as
-# cover_min(::AbsLog{1}) does. That constraint pins only the global gauge direction;
-# a support with more than one connected component carries one such gauge per
-# component (see MatrixCovers._support_components), so each kernel below finishes
-# with a post-solve balance shift (`_balance_cover!`, then `inflate_feasible!` to
-# restore exact coverage) that pins the rest.
+# Asymmetric hard-cover model in row and column log scales. The model pins the
+# global gauge; post-processing balances components and restores feasibility.
 # ============================================================
 
 function MatrixCovers.cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractVector, A)
@@ -196,9 +173,7 @@ end
 
 # ============================================================
 # Soft cover: soft_symcover_min!(::AbsLinear{p}, a, A)
-# Same objective, no coverage constraints — so the start need not cover `A`, and the
-# raw geometric mean (the exact soft AbsLog{2} optimum) is a natural one. The multistart
-# driver over these kernels is native; see soft_symcover_min.
+# Same objective without coverage constraints; starts need not cover `A`.
 # ============================================================
 
 function MatrixCovers.soft_symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
@@ -255,14 +230,8 @@ end
 
 # ============================================================
 # Soft cover: soft_cover_min!(::AbsLinear{p}, a, b, A)
-# The bipartite analog of soft_symcover_min!, and the unconstrained analog of cover_min!:
-# no coverage constraints, but the same row/column gauge, pinned in the model by the same
-# balance constraint ∑ nzaᵢ αᵢ = ∑ nzbⱼ βⱼ. As in cover_min!, that constraint pins only the
-# global gauge direction, so each kernel below finishes with a post-solve `_balance_cover!`
-# that pins the rest (one per connected component of the support); unlike the hard-cover
-# kernels, no `inflate_feasible!` follows, since the soft objective imposes no coverage
-# constraint for it to restore. A zero entry of `A` contributes ϕ(0) = 1 whatever the
-# scales, so the count of zeros enters the objective as a constant, matching cover_objective.
+# Asymmetric soft-cover model. Post-processing balances component gauges; zero
+# entries contribute the constant `ϕ(0) = 1`.
 # ============================================================
 
 function MatrixCovers.soft_cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractVector, A)

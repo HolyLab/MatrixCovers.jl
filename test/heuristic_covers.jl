@@ -192,9 +192,7 @@ end
     dr, dc = exp.(randn(rng, n)), exp.(randn(rng, m))
     @test covaries(A -> cover(AbsLog{2}(), A; maxiter=0), Ag, dr, dc; rtol=1e-10)
 
-    # Quality gate: median log-optimality-gap of the 3-iteration heuristic over
-    # this fixed corpus, with a generous 1.5x margin over the measured value; a
-    # tighter algorithm may lower it, a regression will trip it.
+    # Bound the median objective gap across the fixed corpus.
     qrng = StableRNG(20260708)
     gaps = Float64[]
     for _ in 1:15
@@ -226,11 +224,7 @@ end
     M = Matrix(T40)
     @test iscover(a, M; rtol=8eps())
 
-    # Float32 dynamic range wide enough that linear-domain deficit ratios overflow.
-    # The boost's apply! step shifts log(a[i]) by h = z/2, where z ~ 120 for this
-    # matrix; exp(log(a[i]) + h) then carries forward the rounding error already
-    # present in h at that magnitude, so the achievable relative precision is set
-    # by eps(Float32) scaled by |h|, not by a fixed few-ulp bound.
+    # Float32 range where linear-domain deficit ratios overflow.
     A32 = fill(1f-35, 6, 6); A32[1, 2] = A32[2, 1] = 3f37
     a32 = symcover(AbsLog{2}(), A32)
     @test all(isfinite, a32)

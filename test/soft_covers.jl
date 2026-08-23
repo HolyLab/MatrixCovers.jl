@@ -1,7 +1,6 @@
 # Unconstrained AbsLinear soft covers: descent, multistart, and start provenance.
 
-# Committed 5x5 matrix libraries (`symmetric_matrices`, `general_matrices`); the guard
-# permits re-inclusion of this file in an already-initialized session.
+# Reuse the committed 5×5 matrix libraries when already loaded.
 if !isdefined(@__MODULE__, :symmetric_matrices)
     include("testmatrices.jl")
 end
@@ -54,9 +53,7 @@ end
         end
     end
 
-    # Continuity as a near-zero entry vanishes: AbsLinear has no discontinuity at r=0, so
-    # the soft cover varies continuously as A[2,2] → 0. The leave-one-out start drops the
-    # most-outlying small entry, reaching the same basin as the exact-zero case.
+    # `AbsLinear` remains continuous as an entry vanishes.
     γ = 0.5
     A_zero  = [γ 1.0; 1.0 0.0]
     A_small = [γ 1.0; 1.0 1e-10]
@@ -66,14 +63,7 @@ end
         @test a_small ≈ a_zero atol=1e-5
     end
 
-    # Covariance must survive the regime where the leave-one-out start wins: the entry
-    # dropped is selected by the scale-invariant log-residuals, so which basin wins
-    # cannot depend on the frame. (Weighting entries by raw |A[i,j]|² fails here: the
-    # entries' physical units differ, so their sums are incommensurate and a rescaling
-    # can flip the winning basin.) For A_small the residuals of the two diagonal entries
-    # tie exactly (true of every symmetric 2×2), where the tie-break uses raw magnitude;
-    # the scaling below preserves the magnitude ordering, as covariance under
-    # order-flipping scalings is unachievable on that degenerate class.
+    # The leave-one-out basin selection is covariant away from its documented tie.
     for ϕ in (AbsLinear{1}(), AbsLinear{2}())
         for (B, d) in ((A_small, [50.0, 0.02]),
                        ([3.0 7.6e-10; 7.6e-10 80.0], [35.0, 3400.0]))
@@ -89,17 +79,13 @@ end
 end
 
 @testset "soft_cover" begin
-    # Closed form on Aε = [1 ε; ε 1]: the uniform-product critical point has
-    # a*b' ≡ (1+ε²)/(1+ε) on every entry. A single geometric-mean start converges to
-    # it. For small ε this is only a local minimizer — a strongly asymmetric solution
-    # that covers three entries and sacrifices one off-diagonal has lower objective —
-    # so the default multistart may (correctly) return a different, better product.
+    # Closed-form uniform-basin critical point for `Aε = [1 ε; ε 1]`.
     for ε in (0.5, 0.1, 1e-3)
         Aε = [1.0 ε; ε 1.0]
         target = (1 + ε^2) / (1 + ε)
         a, b = soft_cover(Aε; starts=1, maxiter=200)
         @test all(≈(target; atol=1e-10), a * b')
-        # The multistart never does worse than this uniform-basin local minimizer.
+        # Multistart cannot be worse than the included single start.
         am, bm = soft_cover(Aε; maxiter=200)
         @test cover_objective(AbsLinear{2}(), am, bm, Aε) <=
               cover_objective(AbsLinear{2}(), a, b, Aε) + 1e-12
@@ -201,9 +187,7 @@ end
     @test az[1] == 0
     @test all(isfinite, az) && all(isfinite, bz)
 
-    # On a symmetric matrix this does not reduce to `soft_symcover`: freeing `a` from `b`
-    # relaxes the problem, so the two descents are minimizing over different sets and their
-    # fixed points differ. Only exact coverability forces them to agree.
+    # Free row and column factors need not match the symmetric solution.
     S = [4.0 1.0 2.0; 1.0 9.0 3.0; 2.0 3.0 16.0]
     S1 = (v = [2.0, 0.5, 3.0]; v * v')
     a, b = soft_cover(AbsLog{1}(), S1)
@@ -234,8 +218,7 @@ end
     @test_throws "specify only one" soft_cover(A; σ=1.5, sigma=2.0)
     @test_throws "specify only one" soft_symcover(As; σ=1.5, sigma=2.0)
 
-    # best-of-8 never exceeds the single-start objective on the committed libraries
-    # (the multistart's incumbent is the single start, replaced only on improvement).
+    # Best-of-eight cannot exceed the included single-start objective.
     for (_, M) in general_matrices
         Mf = float.(M)
         a1, b1 = soft_cover(Mf; starts=1)
@@ -259,15 +242,11 @@ end
     d = [2.0, 0.5, 3.0]
     @test covaries(soft_symcover, As, d; rtol=1e-7)
 
-    # The objective is the sharp covariant: it depends on the cover only through the
-    # scale-invariant ratios |A[i,j]|/(a[i]*b[j]), so it matches across frames to roundoff
-    # even where the cover itself does not (see "converged cover covariance" below).
+    # Objectives match across rescaled frames to roundoff.
     @test covaries_objective(AbsLinear{2}(), soft_cover, Ac, dr, dc; rtol=1e-12)
     @test covaries_objective(AbsLinear{2}(), soft_symcover, As, d; rtol=1e-12)
 
-    # On a hard lognormal-σ=5 ensemble the multistart strictly lowers the objective on a
-    # substantial fraction of a fixed corpus. Both the corpus and the solver's internal
-    # perturbation draws use `StableRNG`, so the count is fixed across Julia versions.
+    # Stable RNGs make the fixed-corpus multistart comparison reproducible.
     rng = StableRNG(2024)
     imp_sym = 0; imp_gen = 0
     for k in 1:40
@@ -280,37 +259,26 @@ end
         cover_objective(AbsLinear{2}(), g8a, g8b, G) <
             cover_objective(AbsLinear{2}(), g1a, g1b, G) - 1e-9 && (imp_gen += 1)
     end
-    # Gate set a modest margin below the measured counts on this corpus (29 and 24 of 40):
-    # multistart must beat the single start on a solid fraction of instances. The counts
-    # depend on `maxiter`: the better each start converges, the less room a rival start has
-    # to improve on it, so raising `maxiter` lowers them.
+    # Require improvement on a substantial fraction of the corpus.
     @test imp_sym >= 24
     @test imp_gen >= 19
 end
 
 @testset "feasible start and provenance" begin
-    # The multistart fills caller-supplied `labels`/`objs` in place; the winner is
-    # `labels[_multistart_select(objs)]`, using the same selection rule as the solver.
-    # The positional arguments mirror `soft_symcover`'s `maxiter`, `starts` and `σ` defaults,
-    # so the instrumented call reproduces the public entry point exactly (asserted below).
+    # Instrumented multistart exposes candidate labels and objectives.
     function provenance(A; rng=StableRNG(0))
         labels = String[]; objs = Float64[]
         a = MatrixCovers._soft_symcover_abslinear2(A, 32, 5, 2.0, rng; labels, objs)
         return a, labels[MatrixCovers._multistart_select(objs)], labels, objs
     end
 
-    # The greedy feasible cover (`init_feasible_diag!`) is offered as a start only when `A` has a
-    # zero entry. On this matrix every geometric-mean-derived start lands in one basin while
-    # `feasible` reaches a distinctly better one, so it is the selected winner.
+    # The feasible start reaches the better basin for this matrix with zeros.
     Afe = Float64[0 11 18 0 12; 11 0 1 0 20; 18 1 0 3 18; 0 0 3 18 0; 12 20 18 0 17]
     a, winner, labels, objs = provenance(Afe)
     @test winner == "feasible"
     # The instrumented call returns exactly what the public entry point selects.
     @test a == soft_symcover(Afe; rng=StableRNG(0))
-    # `feasible` wins by a genuine basin gap, not descent-tolerance noise: it is
-    # co-optimal in the best basin (a perturbed start may also reach that basin and
-    # tie it to within the descent tolerance), and that basin beats every start in a
-    # different basin by a wide margin.
+    # The winning basin is separated beyond descent tolerance.
     fi = findfirst(==("feasible"), labels)
     @test objs[fi] <= minimum(objs) * (1 + 1e-6)
     other_basin = minimum(o for o in objs if o > objs[fi] * (1 + 1e-6))
@@ -337,32 +305,21 @@ end
 end
 
 @testset "converged cover covariance" begin
-    # A cover driven to convergence pins the objective to `eps` but its own entries only to
-    # `sqrt(eps)`. The objective is stationary at the minimizer, so a displacement `δ` along a
-    # direction of low curvature changes it by only `O(δ²)`; two frames of the same problem,
-    # whose entries differ by roundoff, therefore settle `O(sqrt(eps))` apart in `a` and `b`
-    # while agreeing on the objective to `O(eps)`. Most matrices have no such soft direction
-    # and co-vary to roundoff; this one does.
+    # A low-curvature direction permits O(sqrt(eps)) factor differences while
+    # objectives agree to O(eps).
     rng = StableRNG(1)
     B = exp.(2 .* randn(rng, 40, 40)) .* randn(rng, 40, 40)
     A = (B + B') / 2
     dr = exp.(randn(rng, 40)); dc = exp.(randn(rng, 40))
 
     @test covaries_objective(AbsLinear{2}(), soft_cover, A, dr, dc; rtol=1e-12)
-    # With the row/column gauge pinned, the two frames converge to the same cover and not
-    # merely to the same objective: the agreement is roundoff, far inside the `sqrt(eps)` a
-    # low-curvature direction would otherwise allow. Leaving the gauge free costs six orders
-    # of magnitude here, which is what makes the balance convention worth enforcing rather
-    # than merely documenting.
+    # Gauge balancing makes the rescaled factors agree to roundoff.
     @test covaries(soft_cover, A, dr, dc; rtol=1e-9)
 end
 
 @testset "soft AbsLog{2} is the exact unconstrained minimum" begin
-    # The soft AbsLog{2} objective is a linear least-squares in log space, so an
-    # oracle needs no solver: `pinv(M) * z` settles it directly. `M` always carries
-    # the (e; −e) gauge null direction in the asymmetric case and can be singular in
-    # the symmetric one (bipartite support), so compare objectives — which the gauge
-    # cannot move — rather than the scale vectors.
+    # Direct log-space least squares supplies the oracle; compare gauge-invariant
+    # objectives because `M` may be singular.
     function exact_sym(A)
         n = size(A, 1)
         S = [(i, j) for i in 1:n, j in 1:n if !iszero(A[i, j])]
@@ -413,8 +370,7 @@ end
         @test isbalanced(a, b, A)
     end
 
-    # The geometric mean is the minimum only on a full support. Were the solvers to
-    # fall back to it, the sparse cases above would silently regress.
+    # Sparse support distinguishes the exact minimum from the geometric mean.
     @test cover_objective(AbsLog{2}(), initialize_symcover(sym_dense; strategy=:geomean, feasible=:none), sym_dense) ≈
           cover_objective(AbsLog{2}(), soft_symcover_min(AbsLog{2}(), sym_dense), sym_dense) rtol=1e-8
     @test cover_objective(AbsLog{2}(), initialize_symcover(sym_zeros; strategy=:geomean, feasible=:none), sym_zeros) >
@@ -473,10 +429,7 @@ end
         @test soft_cover!(b1, c1, Agen) == soft_cover!(AbsLinear{2}(), b2, c2, Agen)
     end
 
-    # The refiner descends from the start it is handed; the multistart owns a menu.
-    # Under the convex AbsLog{2} the start is honored but cannot be seen in the result,
-    # while a non-convex AbsLinear{2} objective with two basins reports whichever the
-    # start lies in.
+    # Convex refiners ignore the basin; nonconvex refiners do not.
     @testset "start-dependence" begin
         Abasins = [0.021778451276962405 1.5690256886348526
                    1.5690256886348526  0.20473123461805692]
@@ -541,9 +494,7 @@ end
     end
 end
 
-# A matrix readable only through the support hook: any full-grid scan hits the
-# throwing `getindex`. Both traversals are defined so the sym and asym kernels
-# can be driven from the same fixture.
+# Matrix readable only through support hooks; `getindex` throws.
 struct HookOnlyMatrix{T} <: AbstractMatrix{T}
     entries::Vector{Tuple{Int,Int,T}}   # `i <= j` only; the transpose is implied
     n::Int
@@ -565,8 +516,7 @@ function MatrixCovers.foreach_support(f, M::HookOnlyMatrix)
     end
     return nothing
 end
-# Storing one member of each pair makes `abs`-symmetry structural, so the
-# precondition check is a no-op — as it must be, since it cannot index `M`.
+# One stored orientation makes magnitude symmetry structural.
 MatrixCovers.require_abs_symmetric(::HookOnlyMatrix, fname) = nothing
 
 @testset "the soft-cover kernels read through the support hook" begin
@@ -578,9 +528,7 @@ MatrixCovers.require_abs_symmetric(::HookOnlyMatrix, fname) = nothing
     end
     start() = [1.3, 0.7, 2.1, 0.9]
 
-    # Reaching a result at all proves the kernel never indexed `M`; matching the
-    # dense run proves the gathered support is the same set of entries carrying the
-    # same full-grid multiplicity.
+    # Match the dense result without indexing `M`.
     for kernel! in (MatrixCovers._abslog1_iter!, MatrixCovers._abslinear1_iter!,
                     MatrixCovers._abslinear2_iter!)
         @test kernel!(start(), M, 50) ≈ kernel!(start(), dense, 50) rtol=1e-10
@@ -594,8 +542,7 @@ MatrixCovers.require_abs_symmetric(::HookOnlyMatrix, fname) = nothing
     end
 end
 
-# The kernels above are only half the path: the public entry points reach them
-# through the initializers, so a full-grid scan in either one would surface here.
+# Exercise support-only traversal through public initialization paths.
 @testset "the cover entry points read through the support hook" begin
     entries = [(1, 1, 2.0), (1, 3, 1.5), (2, 2, 3.0), (2, 4, 0.5), (3, 4, 4.0), (4, 4, 1.0)]
     M = HookOnlyMatrix(entries, 4)

@@ -154,12 +154,7 @@ end
     @test symcover(Bidiagonal([3.0, 2.0, 1.0], [0.0, 0.0], :U)) isa AbstractVector
 end
 
-# The kernels that gather the support into per-group neighbor lists read those
-# lists in place of the matrix, so the gather must reproduce the matrix exactly —
-# including multiplicity. `_sym_support` in particular enters each off-diagonal
-# pair in both orientations, which is what gives a kernel accumulating over its
-# groups the full-grid weighting of `cover_objective` (each off-diagonal pair
-# twice, each diagonal entry once) rather than a halved one.
+# Grouped support must preserve entries and symmetric full-grid multiplicity.
 @testset "grouped support reproduces the matrix" begin
     function regroup(S, groups_are_rows::Bool, sz)
         R = zeros(Float64, sz)
@@ -198,10 +193,7 @@ end
     @test sort([(SO.idx[s], SO.val[s]) for s in MatrixCovers._slots(SO, -1)]) == [(-1, 2.0), (0, 1.0)]
 end
 
-# The gauge freedom of an asymmetric cover (`a -> γ*a`, `b -> b/γ`) acts independently
-# on each connected component of the bipartite support graph, so the balance
-# convention that pins it must be imposed per component; these tests check the
-# labeling `_support_components` builds directly.
+# Check connected-component labels used for per-component gauge balancing.
 @testset "_support_components" begin
     rng = StableRNG(11)
 
@@ -256,9 +248,7 @@ end
         @test ocolcomp == colcomp
     end
 
-    # The public `SupportComponents` wraps `_support_components` with accessors that
-    # take the matrix's own indices, so `gramcover` (and any other caller) can hold
-    # the structure and query it without re-traversing.
+    # Public component accessors use the matrix's own indices.
     @testset "SupportComponents accessors" begin
         B = randn(rng, 3, 2)
         C = randn(rng, 2, 4)

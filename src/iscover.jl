@@ -1,5 +1,4 @@
-# The cover predicate. Kept beside the traversal it is built on: checking coverage is
-# exactly a walk over the support, since an entry that is zero constrains nothing.
+# Cover predicates.
 
 """
     iscover(a, b, A; rtol=0, atol=0)
@@ -13,12 +12,10 @@ requires `A` to be square.
 
     a[i]*b[j] >= abs(A[i,j])*(1 - rtol) - atol
 
-The default for both tolerances is zero (no slack, test that the cover condition
-holds); note that `atol != 0` breaks scale-invariance.
+Both tolerances default to zero. A nonzero `atol` breaks scale invariance.
 
 `a` and `b` must be nonnegative; a negative scale raises an `ArgumentError`.
-Zero is allowed, and is what every solver here returns for a row or column with
-no support.
+Zero is allowed for unsupported rows and columns.
 
 `eachindex(a)` must match `axes(A, 1)` and `eachindex(b)` must match `axes(A,
 2)`.
@@ -46,8 +43,7 @@ function iscover(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; rtol=0
         throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
     _require_nonneg(a, "a")
     _require_nonneg(b, "b")
-    # Zero entries of `A` are skipped by `foreach_support`, and need no check: they demand
-    # `a[i]*b[j] >= 0`, which nonnegative scales satisfy outright.
+    # Zero entries impose no constraint and are skipped by the traversal.
     covered = Ref(true)
     foreach_support(A) do i, j, v
         covered[] &= _iscovered(a[i] * b[j], v, rtol, atol)
@@ -65,9 +61,8 @@ _iscovered(p, v, rtol, atol) = iszero(atol) ? p >= v * (1 - rtol) : p >= v * (1 
 
 function _require_nonneg(x::AbstractVector, name::String)
     for i in eachindex(x)
-        # `zero(x[i])`, not `zero(eltype(x))`: a dimensional scale carries its units in the
-        # value, and `zero(Quantity{Float64})` is undefined. Also rejects NaN, which fails
-        # every comparison.
+        # Ask the value for zero because dimensional abstract element types may
+        # not define `zero(eltype(x))`. This also rejects NaN.
         x[i] >= zero(x[i]) ||
             throw(ArgumentError("iscover requires nonnegative scales, got $name[$(string(i))] = $(string(x[i]))"))
     end

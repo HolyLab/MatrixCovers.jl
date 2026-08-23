@@ -1,24 +1,13 @@
-# Traversal of a matrix's stored support, shared by the cover heuristics
-# (geometric-mean init, feasibility boost, tightening) so each is written once
-# instead of once per storage type.
-#
-# Both are higher-order functions rather than iterators so that `f` is
-# specialized and inlined into a tight loop at each call site; every index
-# used is the matrix's own (`axes`, `eachindex`), so offset axes are honored.
+# Traversal hooks for matrix support. Callbacks specialize at each call site,
+# and indices follow the matrix axes.
 
 """
     foreach_support(f, A)
 
-Call `f(i, j, v)` once for every entry of `A` whose magnitude
-`v = abs(A[i, j])` is nonzero, and return `nothing`. Entries that are zero are
-skipped, so `f` never sees `v == 0`. The order is whatever suits `A`'s storage
-and is not part of the contract; `i` and `j` are `A`'s own indices, so offset
-axes are honored.
+Call `f(i, j, abs(A[i,j]))` once per nonzero entry and return `nothing`.
+Traversal order is unspecified; indices follow `axes(A)`.
 
-This is the hook through which cover algorithms read a matrix. Specializing it
-is what lets a storage type be covered in time proportional to its support
-rather than to `length(A)` — the package's own `SparseMatrixCSC` methods, which
-walk `nzrange` instead of the full grid, are the model.
+Specialize this hook to support custom sparse storage in O(nnz) time.
 
 # Extending
 
@@ -26,12 +15,8 @@ To support a new matrix type, define
 
     MatrixCovers.foreach_support(f, A::MyMatrix)
 
-which must call `f(i, j, abs(A[i, j]))` exactly once for each `(i, j)` with
-`abs(A[i, j]) != 0`, must not call `f` for any other entry (a stored zero is
-still a zero), and must return `nothing`. Emitting an entry twice double-counts
-it in the objective; omitting one silently drops a constraint, yielding a
-"cover" that does not cover. Whatever `f` returns is ignored, so a traversal
-runs to completion and must not be stopped early on the strength of it.
+It must emit each nonzero entry exactly once, skip stored zeros, ignore callback
+return values, and return `nothing`.
 
 See also: [`foreach_support_sym`](@ref).
 """
@@ -49,31 +34,15 @@ end
     foreach_support_sym(f, A)
 
 Symmetric counterpart of [`foreach_support`](@ref): call `f(i, j, v)` once per
-unordered index pair rather than once per entry, and return `nothing`. Pairs are
-reported in the canonical orientation `i <= j`, the diagonal included, with
-`v = abs(A[i, j])`; zero pairs are skipped. `A` must be square, or a
-`DimensionMismatch` is thrown.
+nonzero unordered pair in canonical order `i <= j`, including the diagonal.
 
-`abs.(A)` must also be **symmetric**, not merely square. That is what makes
-reporting one member of each pair sufficient: a symmetric cover constrains
-`a[i]*a[j]` by a single magnitude, so visiting `(j, i)` as well would only
-duplicate it. Note the predicate is on the magnitudes, so a complex `Hermitian`
-satisfies it — `|A[i,j]| == |conj(A[j,i])|`.
-
-This traversal does not check the precondition; the public `sym` entry points do,
-before they call it (`MatrixCovers.require_abs_symmetric`).
+`A` must be square and `abs.(A)` symmetric. Public symmetric solvers check this
+precondition before calling the traversal.
 
 # Objective weighting
 
-Because each pair is reported once, a caller accumulating a cover objective must
-supply the multiplicity itself: `w = (i == j) ? 1 : 2`. That reproduces the
-`∑_{i,j}` convention of [`cover_objective`](@ref), which runs over the full grid
-and so counts each off-diagonal pair twice and each diagonal entry once. The
-constraint set needs no such correction — `a[i]*a[j] >= |A[i,j]|` and its
-transpose are the same constraint, so imposing it on the `i <= j` triangle alone
-is equivalent to imposing it everywhere. Every solver in this package minimizes
-the full-grid objective, so a cover's reported score and the quantity that was
-minimized agree.
+For full-grid objective weighting, use multiplicity 1 on the diagonal and 2
+off-diagonal. Constraints need no multiplicity.
 
 # Extending
 
@@ -81,16 +50,9 @@ To support a new matrix type, define
 
     MatrixCovers.foreach_support_sym(f, A::MyMatrix)
 
-which must call `f(i, j, v)` exactly once for each pair `i <= j` with
-`v = abs(A[i, j]) != 0`, must not call `f` for zero pairs, and must return
-`nothing`. Whatever `f` returns is ignored, so a traversal runs to completion
-and must not be stopped early on the strength of it.
-Reporting the same pair in both orientations double-counts it: the off-diagonal
-weight of 2 is the caller's to apply, per *Objective weighting* above, so a pair
-emitted twice is weighted 4. A
-type whose storage is triangular (`Symmetric{<:Any,<:SparseMatrixCSC}` in this
-package's own extension) must map stored `(i, j)` with `i > j` back to `(j, i)`
-rather than emit it as found.
+It must emit each nonzero pair once in canonical order, skip zero pairs, ignore
+callback return values, and return `nothing`. Triangular storage must map lower
+entries back to `(j, i)`.
 
 See also: [`foreach_support`](@ref).
 """
@@ -117,16 +79,8 @@ const ASYMMETRY_ULPS = 8
 """
     MatrixCovers.require_abs_symmetric(A, fname)
 
-Throw unless `abs.(A)` is symmetric to within roundoff, naming `fname` and the
-first offending index pair. Return `nothing` otherwise.
-
-This is the precondition of [`foreach_support_sym`](@ref), enforced at the public
-`sym` entry points rather than inside the traversal, which runs many times per
-solve. An unchecked violation is not a visible failure: the cover returned would
-be a cover of a symmetrization of `A`, plausible-looking and wrong.
-
-The predicate is on the magnitudes rather than on `A` itself, which is both what
-the traversal reads and what admits a complex `Hermitian`.
+Throw unless `abs.(A)` is symmetric to within roundoff. The error names `fname`
+and the first offending pair.
 """
 function require_abs_symmetric(A::AbstractMatrix, fname)
     ax = axes(A, 1)
@@ -208,20 +162,9 @@ Connected components of a matrix's bipartite support graph, as returned by
 [`support_components`](@ref): one vertex per row and one per column, one edge per
 stored nonzero.
 
-Component ids run `1:ncomponents(sc)`. A row or column of empty support belongs
-to no component and reports `0`. Query an id with [`rowcomponent`](@ref) or
-[`colcomponent`](@ref), which take the matrix's own indices, so offset axes need
-no special case at the call site.
-
-The gauge orbit of an asymmetric cover has one dimension per component: the
-rescaling `a -> γ*a`, `b -> b/γ` acts independently on each, because no product
-`a[i]*b[j]` spans two components. Any convention pinning the split between `a`
-and `b` must therefore be imposed per component; a single global constraint
-leaves `ncomponents(sc) - 1` directions unpinned.
-
-Constructing this once and passing it to [`gramcover!`](@ref) lets a caller that
-already knows the component structure — or that obtains it by some route other
-than traversing a matrix — skip the traversal entirely.
+Component ids run `1:ncomponents(sc)`; unsupported rows and columns report `0`.
+Use [`rowcomponent`](@ref) and [`colcomponent`](@ref) with the matrix's own
+indices. Pass this object to [`gramcover`](@ref) to reuse the traversal.
 """
 struct SupportComponents{R<:AbstractUnitRange,C<:AbstractUnitRange}
     rowcomp::Vector{Int}
@@ -234,9 +177,8 @@ end
 """
     support_components(A) -> sc::SupportComponents
 
-Connected components of the bipartite support graph of `A`, read through
-[`foreach_support`](@ref) so a sparse storage type costs its support rather than
-`length(A)`.
+Return the connected components of `A`'s bipartite support graph. The matrix is
+read through [`foreach_support`](@ref).
 
 See also: [`SupportComponents`](@ref).
 """

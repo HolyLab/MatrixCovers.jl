@@ -46,16 +46,8 @@
     end
 
     @testset "one component: the global bound is attained" begin
-        # With a single support component there is nothing to accumulate separately, so the
-        # per-component construction returns exactly the global pair bound `norm(a)*b`. The
-        # agreement is two-sided: an inequality alone would also pass for a construction that
-        # gave up slack it did not have to.
-        #
-        # It is not bitwise, and the deviation is one-sided by design. Each `sqrt` is inflated by
-        # `1 + (n+3)*eps` so the cover holds despite naive summation; `norm` accumulates its own
-        # `n` terms with no such margin. So the tolerance is `(2n+3)*eps` — the declared inflation
-        # plus the reference's own roundoff — and `all(s .<= norm(a) .* b)` is *false* by a few
-        # ulps. That inequality is exposition, not a test.
+        # A single component matches `norm(a)*b` within the documented roundoff
+        # inflation.
         for (seed, m, k) in ((3, 5, 4), (7, 4, 4), (11, 12, 3))
             rng = StableRNG(seed)
             J = randn(rng, m, k)
@@ -77,10 +69,7 @@
         a, b = cover(J)
         s = gramcover(a, b, J)
 
-        # gramcover on the joint (a, b) restricted to a block equals gramcover on
-        # that block alone with the corresponding sub-vectors: the computation is
-        # a function of the connected component, and block-diagonal J has disjoint
-        # components per block.
+        # Each block-diagonal support component is independent.
         sB = gramcover(a[1:4], b[1:3], B)
         sC = gramcover(a[5:7], b[4:5], C)
         @test isapprox(s, vcat(sB, sC); rtol=1e-9)
@@ -106,9 +95,7 @@
         s2 = gramcover(a2, b2, J)
         @test isapprox(s, s2; rtol=1e-12)
 
-        # A `W` coupling the two components merges them, and the gauge then acts
-        # with a different `γ` on each half of every cross-block sum. The bound
-        # must still not depend on which gauge the solver happened to return.
+        # Coupled components remain invariant under independent input gauges.
         m = size(J, 1)
         for W in (Matrix(2.0I, m, m) + [i == 1 && ip == 5 for i in 1:m, ip in 1:m],
                   fill(0.5, m, m) + Diagonal(1:m))
@@ -295,9 +282,7 @@
     end
 
     @testset "two coupled components, both diagonal blocks nonzero" begin
-        # For a 2x2 `Ms` with positive diagonal, the minimal cover is
-        # `σ[p] = sqrt(Ms[p,p]) * sqrt(max(1, κ))`, `κ = Ms[1,2]/sqrt(Ms[1,1]*Ms[2,2])`:
-        # below `κ = 1` the diagonal constraints bind alone, above it the coupling does.
+        # Closed form for a 2×2 `Ms` with positive diagonal.
         rng = StableRNG(9)
         B = randn(rng, 4, 3); C = randn(rng, 3, 2)
         J = [B zeros(4, 2); zeros(3, 3) C]

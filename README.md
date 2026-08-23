@@ -16,12 +16,10 @@ for all `i` and `j`, this simple construct finds applications that range from
 of data to the design of well-behaved numerical algorithms (thanks, e.g., 
 to [bounds on $`\hat A`$'s eigenvalues](https://en.wikipedia.org/wiki/Gershgorin_circle_theorem)).
 
-Fast O(mn) heuristics (`symcover`, `cover`) are provided for everyday use, along
-with *soft* covers (`soft_symcover`, `soft_cover`) that penalize under-coverage
-rather than forbid it.  Objective-minimal hard covers (`symcover_min`,
-`cover_min`) minimize a penalty subject to the coverage constraint: the default
-squared-log-excess penalty is solved natively, with no external solver, while
-the other penalties are available when JuMP and HiGHS (or Ipopt) are loaded.
+The package provides O(mn) heuristics (`symcover`, `cover`), *soft* covers that
+penalize violations (`soft_symcover`, `soft_cover`), and objective-minimal hard
+covers (`symcover_min`, `cover_min`). The default squared-log penalty uses a
+built-in solver; other penalties use JuMP with HiGHS or Ipopt.
 
 ## Example
 
@@ -44,7 +42,7 @@ julia> iscover(a, A)
 true
 ```
 
-Covers are scale-covariant: rescaling the matrix rescales the cover the same way.
+Covers are scale-covariant:
 
 ```julia
 julia> D = Diagonal([10.0, 0.5]);
@@ -53,9 +51,8 @@ julia> symcover(D * A * D) ≈ D * a
 true
 ```
 
-Non-symmetric matrices get separate row and column scales from `cover`, and
-`cover_min`/`symcover_min` trade the fast heuristic for a cover that minimizes a
-penalty subject to the same constraint:
+For nonsymmetric matrices, `cover` returns separate row and column scales.
+`cover_min` minimizes a penalty subject to the coverage constraint:
 
 ```julia
 julia> M = [1.0 2.0 3.0; 6.0 5.0 4.0];
@@ -65,11 +62,11 @@ julia> a, b = cover(M);
 julia> iscover(a, b, M)
 true
 
-julia> aq, bq = cover_min(AbsLog{2}(), M);   # minimal, solved natively
+julia> aq, bq = cover_min(AbsLog{2}(), M);
 
 julia> cover_objective(AbsLog{2}(), aq, bq, M) <= cover_objective(AbsLog{2}(), a, b, M)
 true
 ```
 
-See the [documentation](https://HolyLab.github.io/MatrixCovers.jl/dev/)
-for motivation, examples, and a full API reference.
+See the [documentation](https://HolyLab.github.io/MatrixCovers.jl/dev/) for the
+algorithm guide and API reference.

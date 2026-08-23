@@ -78,11 +78,8 @@ Given a matrix `A`, return vectors `a` and `b` such that
 and column geometric means, covers the most-violated entries first, then applies
 `maxiter` tightening iterations.
 
-Only the products `a[i] * b[j]` are determined by the problem: `a -> c*a`, `b -> b/c`
-leaves every one of them unchanged. The split is fixed by the balance convention
-`∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` (`nzaᵢ`, `nzbⱼ` = nonzero counts of row `i`,
-column `j`), imposed within each connected component of the support (the gauge acts
-independently on each), as it is throughout the package; see [`cover_min`](@ref).
+The factors use the per-component balance convention described by
+[`cover_min`](@ref).
 
 `ϕ` is accepted for API compatibility but is currently ignored.
 For a cover that provably minimizes a given `ϕ`, use [`cover_min`](@ref).
@@ -161,35 +158,9 @@ end
 # ============================================================
 # Internal helpers
 # ============================================================
-# Shift `(a, b)` along the gauge `a -> c*a`, `b -> b/c`, which leaves every product
-# `a[i]*b[j]` — and hence every objective and every coverage constraint — untouched,
-# onto the balance convention `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` that every asymmetric
-# cover in the package reports its result in. Summing `log a[i]` over the support counts
-# row `i` exactly `nzaᵢ` times, which is those weighted sums. Nothing else pins the gauge:
-# the objective cannot see it, so without a convention the split between `a` and `b` would
-# be an artifact of whichever pass last touched them.
-#
-# The gauge acts independently on each connected component of the bipartite
-# support graph (`_support_components`), so the convention is imposed per
-# component: within every component, the row-side and column-side weighted log
-# sums agree to within the rounding described below. This makes the split a
-# well-defined function of the support and the products — block-diagonal
-# assembly commutes with balancing — rather than pinning only the global scalar
-# and leaving the per-component splits to whichever solver internals ran last.
-# Rows and columns with empty support belong to no component and are left
-# untouched.
-#
-# The shift is rounded to a whole power of two before it is applied. Scaling `a`
-# by `2^k` and `b` by `2^-k` is exact in binary floating point, so every product
-# `a[i]*b[j]` is preserved bit for bit and no cover is perturbed into
-# infeasibility by the act of pinning its gauge. The balance is therefore met to
-# within a factor of `√2` rather than exactly — a bound on the residual
-# imbalance, traded for exactness of the quantity that carries the meaning.
-#
-# Two points differing only by the gauge land on the same point here, so a refiner given
-# either start cannot tell them apart. The uniform inflation to feasibility raises every
-# supported scale of `a` and `b` alike, and within each component
-# `∑ nzaᵢ = ∑ nzbⱼ = nnz`, so it preserves the balance it finds.
+# Apply the row/column balance convention independently to each support
+# component. Rounding the shift to a power of two preserves cover products
+# exactly, at the cost of balancing only within a factor of `sqrt(2)`.
 function _balance_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
     T = float(promote_type(eltype(a), eltype(b)))
     rowcomp, colcomp, ncomp = _support_components(A)
@@ -205,8 +176,7 @@ function _balance_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix
         Lβ[c] += log2(T(b[j]))
         nnz[c] += 1
     end
-    # `Lα`, `Lβ` are log2 sums, so the shift is already an exponent: rounding it
-    # to an integer is what makes the rescaling below exact.
+    # An integer base-2 exponent makes the rescaling exact.
     gamma = [exp2(round((Lβ[c] - Lα[c]) / (2 * nnz[c]))) for c in 1:ncomp]
     for i in eachindex(a)
         c = rowcomp[i-or]
@@ -222,10 +192,10 @@ function _balance_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix
 end
 
 
-# Compute the analytical minimizer of the unconstrained AbsLog{2} symmetric objective
+# Analytical minimizer of the unconstrained `AbsLog{2}` symmetric objective
 #   ∑_{i,j: A[i,j]≠0} (log(a[i]*a[j]) - log|A[i,j]|)²
-# Fills `a` in-place and returns nza[i] = number of nonzero entries in row i.
-# For efficiency, uses a Sherman-Morrison approximation for the pattern of nonzeros. (It's exact when there are no zeros.)
+# Returns row support counts. The Sherman-Morrison approximation is exact on
+# complete support.
 function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, A::AbstractMatrix) where T
     ax = eachindex(a)
     axes(A) == (ax, ax) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(string(axes(A))), axes(a)=$(string(axes(a)))"))
@@ -299,14 +269,8 @@ function init_feasible_diag!(a::AbstractVector{T}, A::AbstractMatrix) where T
     return boost_feasible_seq!(a, A)
 end
 
-# Shrink x by exp(lr/2) (lr = log of the cover-to-entry ratio for the tightest
-# entry touching x). The direct quotient degenerates to exact zero when
-# exp(lr/2) overflows or the division underflows; recomputing in log space
-# recovers any representable result, and the floatmin clamp handles genuine
-# underflow: x is supported (nonzero going in), and an exact zero would make
-# every entry through it permanently uncoverable, whereas floatmin keeps it
-# representable and, being the smallest normal positive magnitude, changes the
-# resulting cover products negligibly.
+# Shrink `x` by `exp(lr/2)` in log space, clamping supported scales at
+# `floatmin` on underflow.
 function _tighten_shrink(x, lr)
     T = float(promote_type(typeof(x), typeof(lr)))
     y = T(x) / exp(T(lr) / 2)
@@ -393,26 +357,12 @@ function tighten_cover!(a::AbstractVector, b::AbstractVector, A::Transpose; kwar
     return a, b
 end
 
-# Feasibility boost by approximate greedy max-deficit. `entries` holds the
-# support entries; `deficit(e)` returns the log-deficit z = log|A[i,j]| minus
-# the log of the current cover product, > 0 iff violated; `apply!(e, z)` grows
-# the scales so the entry becomes exactly covered. Deficits only shrink as
-# scales grow, so entries only move to lower buckets: total work is
-# O(#entries + moves), moves per entry bounded by the bucket count. Bucket
-# edges are anchored at 0 in log-deficit (a scale-invariant quantity), so
-# processing order — hence the result — is covariant under diagonal rescaling
-# of A, up to within-bucket ties. Working in log-deficit keeps every quantity
-# finite for finite nonzero entries and positive scales, however extreme the
-# dynamic range.
+# Approximate greedy max-deficit boost. Deficits only decrease, so entries move
+# to lower buckets. Log-deficit buckets preserve covariance except for ties.
 const BOOST_BUCKET_WIDTH = log(2) / 4   # quality indistinguishable from exact greedy; only bucket count grows as w shrinks
 
-# Buckets are a flat singly-linked bucket queue (as in bucket-queue Dijkstra),
-# not one growable Vector{Int} per bucket: `head[b]` is the top-of-stack index
-# into `entries`, `nxt[k]` the next index below it in whatever bucket k
-# currently occupies. Push/pop are O(1) pointer updates with no reallocation,
-# and `deficit(entries[k])` is cheap enough (a couple of array reads and a
-# subtraction) that recomputing it on each of the two passes below costs less
-# than caching it in a separate array would.
+# Flat linked bucket queue: `head[b]` is the first entry and `nxt[k]` links the
+# rest. Deficits are recomputed instead of cached.
 function bucket_boost!(deficit::F, apply!::G, entries, ::Type{T}) where {F,G,T}
     n = length(entries)
     zmax = zero(T)
@@ -546,21 +496,9 @@ function boost_feasible!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix
     return a, b
 end
 
-# Feasibility by sequential nearest-neighbor propagation with deferral,
-# processing off-diagonal pairs in order of increasing offset
-# j = 1, …, n-1 (each nonzero A[k, k+j] requires a[k]*a[k+j] ≥ |A[k, k+j]|).
-# `a[k] == 0` means "not yet resolved" rather than "unsupported": entries with
-# both endpoints still zero are deferred until a later offset (or another
-# deferred entry) supplies a scale for one of them, and any left unresolved
-# after every offset is processed are equal-split as a[k]=a[l]=√|A[k,l]|.
-#
-# When both a[k] and a[l] are already nonzero but a[k]*a[l] < |A[k,l]|, both
-# are scaled by the square root of the ratio √(|A[k,l]|/(a[k]*a[l])). Equal
-# scaling is of course ad-hoc; while it might be better to do something tuned
-# to a particular penalty function, that would risk making the algorithm
-# O(n^3) (we'd likely need to revisit earlier offsets), and earlier decisions
-# might be reversed by later ones anyway. For something intended as an
-# initialization, a heuristic guaranteed to be O(n^2) seems reasonable.
+# Sequential nearest-neighbor feasibility propagation in increasing diagonal
+# offset. Zero scales are unresolved; deferred pairs are revisited, then split
+# equally if neither endpoint acquires a scale. The method costs O(n²).
 function boost_feasible_seq!(a::AbstractVector{T}, A::AbstractMatrix) where T
     ax = eachindex(a)
     axes(A) == (ax, ax) || throw(DimensionMismatch("`boost_feasible_seq!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(string(axes(A))), axes(a)=$(string(axes(a))))"))
@@ -638,18 +576,8 @@ function boost_feasible_seq!(a::AbstractVector{T}, A::AbstractMatrix) where T
     return a
 end
 
-# Feasibility by the smallest uniform inflation: multiply every scale by the same
-# factor until `a[i]*a[j] >= |A[i,j]|` for every entry visited by
-# `foreach_support_sym`. Requires a start with strictly positive scale on every
-# supported row (the geometric-mean init from `unconstrained_min!` guarantees this).
-#
-# Unlike `boost_feasible!`, this preserves the shape of the starting point. The
-# two methods can reach different basins of the nonconvex AbsLinear objective.
-# The shift depends
-# on `A` only through the log-deficits at the starting point, which are invariant
-# under a diagonal rescaling `D*A*D`, so the result is scale-covariant. Growing the
-# log-scales directly (rather than multiplying by `exp(t)`) stays finite even when
-# `exp(t)` alone would overflow.
+# Apply the smallest uniform inflation that covers `A`. This preserves the
+# starting point's shape and works in log space to avoid overflow.
 function inflate_feasible!(a::AbstractVector{T}, A::AbstractMatrix) where T
     la = map(log, a)
     tref = Ref(zero(T))

@@ -89,10 +89,7 @@
     end
 
     @testset "no penalty argument" begin
-        # Every start on the menu is a property of `A` alone, so none of them needs a ϕ and
-        # none is offered one. A regression check on that, not a promise it will never
-        # change: a ϕ-tuned start would arrive as a new method, with the fallback dropping ϕ
-        # and calling these — additive, so callers of the current forms are unaffected.
+        # Initializers depend on `A`, not on a penalty.
         @test_throws MethodError initialize_symcover(AbsLog{2}(), Asyms[1])
         @test_throws MethodError initialize_cover(AbsLog{2}(), Aasyms[1])
     end
