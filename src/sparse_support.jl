@@ -77,8 +77,7 @@ end
 # Native minimal-cover (MMC) solvers
 # ============================================================
 
-# Sparse `AbsLog{2}` solvers default to matrix-free LSQR. Use `linsolve=:dense`
-# or `:auto` to request factorization-based paths.
+# Sparse `AbsLog{2}` solvers default to LSQR; `:auto` uses support density.
 function symcover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
     a, _ = _symcover_min_abslog2(A; linsolve, kwargs...)
     return a
