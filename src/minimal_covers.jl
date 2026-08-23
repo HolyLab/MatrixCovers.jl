@@ -47,6 +47,10 @@ The `AbsLog` penalties are convex in the log-scales. `AbsLog{2}` has a unique
 minimizer. When the `AbsLog{1}` optimum is a face, the method returns the member
 that minimizes the `AbsLog{2}` objective.
 
+The native `AbsLog{2}` solver runs its penalty continuation in `Float64` when `A`
+works in a narrower type, whose resolution the continuation's tolerances outrun, and
+returns the cover in the element type `A` calls for.
+
 !!! note
     Even the native solver is more expensive than the [`symcover`](@ref) heuristic.
 
@@ -99,6 +103,10 @@ Supported ϕ values:
 The `AbsLog` penalties are convex in the log-scales. `AbsLog{2}` has a unique
 minimizer. When the `AbsLog{1}` optimum is a face, the method returns the member
 that minimizes the `AbsLog{2}` objective.
+
+The native `AbsLog{2}` solver runs its penalty continuation in `Float64` when `A`
+works in a narrower type, whose resolution the continuation's tolerances outrun, and
+returns the cover in the element type `A` calls for.
 
 !!! note
     Even the native solver is more expensive than the [`cover`](@ref) heuristic.
@@ -523,6 +531,8 @@ end
 # paths that run neither), how many Woodbury solves fell to the sparse factorization,
 # and which path ran.
 # `linsolve` reports the path that ran: `:dense`, `:woodbury`, or `:lsqr`.
+# A working type narrower than `Float64` is solved in `Float64` and the cover converted
+# back, since the continuation's tolerances assume double precision.
 # `start`, when given, is a positive cover of `A`
 # indexed like `axes(A, 1)` and supplies the first iterate in place of the cold
 # unweighted solve; the objective is convex, so it changes the path but not the result.
@@ -540,6 +550,20 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     # stays real even for complex A (e.g. a complex Hermitian) — Complex has no total
     # order, and the reweighted Newton solve below compares residuals with `<`/`min`.
     T = float(real(eltype(A)))
+    # The continuation's tolerances are multiples of `eps(T)` — the decrease test at
+    # `5000*eps(T)`, the line-search floor at `500_000*eps(T)` — and the objective
+    # `f_κ` itself must resolve differences of that order at κ up to 1e8. Both assume
+    # double precision: at `eps(Float32)` the stages past the first carry no
+    # resolvable descent, and the continuation halts far from the constrained optimum.
+    # A narrower working type therefore runs the whole solve in `Float64` and the
+    # cover is returned in the caller's type. `convert` keeps the wrapper — the
+    # `Symmetric`, `Hermitian`, sparse and structured storage all have their own
+    # support traversals — and widens a complex eltype to `ComplexF64`.
+    if eps(T) > eps(Float64)
+        a64, stats = _symcover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
+                                           κs, maxiter, linsolve, start, boost, fname)
+        return T.(a64), stats
+    end
     n = length(ax)
     use_lsqr = linsolve === :lsqr
     # CHOLMOD, which factors the LSQR preconditioner, is reliable only in Float64;
@@ -982,7 +1006,7 @@ end
 
 # Worker for `cover_min(::AbsLog{2})`. Returns `(a, b, stats)` with `stats` a
 # NamedTuple `(; nsolves, lsqriters, cgiters, cholsolves, linsolve)` (see
-# `_symcover_min_abslog2`).
+# `_symcover_min_abslog2`, whose promotion of narrow working types this shares).
 # `start`, when given, is a positive cover `(a, b)` indexed like the rows and columns
 # of `A`, supplying the first iterate in place of the cold unweighted solve.
 function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
@@ -996,6 +1020,20 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     # stays real even for complex A (e.g. a complex Hermitian) — Complex has no total
     # order, and the reweighted Newton solve below compares residuals with `<`/`min`.
     T = float(real(eltype(A)))
+    # The continuation's tolerances are multiples of `eps(T)` — the decrease test at
+    # `5000*eps(T)`, the line-search floor at `500_000*eps(T)` — and the objective
+    # `f_κ` itself must resolve differences of that order at κ up to 1e8. Both assume
+    # double precision: at `eps(Float32)` the stages past the first carry no
+    # resolvable descent, and the continuation halts far from the constrained optimum.
+    # A narrower working type therefore runs the whole solve in `Float64` and the
+    # cover is returned in the caller's type. `convert` keeps the wrapper — the
+    # `Symmetric`, `Hermitian`, sparse and structured storage all have their own
+    # support traversals — and widens a complex eltype to `ComplexF64`.
+    if eps(T) > eps(Float64)
+        a64, b64, stats = _cover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
+                                             κs, maxiter, linsolve, start, boost)
+        return T.(a64), T.(b64), stats
+    end
     m = length(axr)
     n = length(axc)
     N = m + n

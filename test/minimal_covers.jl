@@ -281,12 +281,20 @@ end
     @test_throws "at most 4·max(m, n) = 160 zeros in total" cover_min(AbsLog{2}(), gwide; linsolve=:woodbury)
     @test MatrixCovers._cover_min_abslog2(gwide)[3].linsolve === :dense
 
+    # A working type narrower than Float64 is promoted, so it reaches the Woodbury
+    # path; a wider one keeps its precision and is refused by the CHOLMOD-backed solve.
     A32 = Float32.(symlognormal(8))
-    @test_throws "requires Float64 arithmetic" symcover_min(AbsLog{2}(), A32; linsolve=:woodbury)
-    @test MatrixCovers._symcover_min_abslog2(A32)[2].linsolve === :dense
+    a32, s32 = MatrixCovers._symcover_min_abslog2(A32)
+    @test s32.linsolve === :woodbury && eltype(a32) === Float32
+    @test symcover_min(AbsLog{2}(), A32; linsolve=:woodbury) ≈ symcover_min(AbsLog{2}(), A32; linsolve=:dense) rtol=1e-6
+    Abig = BigFloat.(symlognormal(8))
+    @test_throws "requires Float64 arithmetic" symcover_min(AbsLog{2}(), Abig; linsolve=:woodbury)
+    @test MatrixCovers._symcover_min_abslog2(Abig)[2].linsolve === :dense
     G32 = Float32.(lognormal(8, 6))
-    @test_throws "requires Float64 arithmetic" cover_min(AbsLog{2}(), G32; linsolve=:woodbury)
-    @test MatrixCovers._cover_min_abslog2(G32)[3].linsolve === :dense
+    @test MatrixCovers._cover_min_abslog2(G32)[3].linsolve === :woodbury
+    Gbig = BigFloat.(lognormal(8, 6))
+    @test_throws "requires Float64 arithmetic" cover_min(AbsLog{2}(), Gbig; linsolve=:woodbury)
+    @test MatrixCovers._cover_min_abslog2(Gbig)[3].linsolve === :dense
 end
 
 # A Newton step is exact on the dense and Woodbury paths, so a whole step that leaves
