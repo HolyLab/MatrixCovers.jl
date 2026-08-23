@@ -1,15 +1,10 @@
-module MatrixCoversSparseArraysExt
-
-using LinearAlgebra: LinearAlgebra, Hermitian, Symmetric
-using SparseArrays: SparseArrays, SparseMatrixCSC, nonzeros, nzrange, rowvals
-using MatrixCovers
-using MatrixCovers: AbsLog, _symcover_min_abslog2, _cover_min_abslog2
+# Sparse-storage support traversal and the sparse defaults of the native solvers.
 
 # ============================================================
 # Support traversal
 # ============================================================
 
-function MatrixCovers.foreach_support(f, A::SparseMatrixCSC)
+function foreach_support(f, A::SparseMatrixCSC)
     rv, nzs = rowvals(A), nonzeros(A)
     for j in axes(A, 2)
         for k in nzrange(A, j)
@@ -20,7 +15,7 @@ function MatrixCovers.foreach_support(f, A::SparseMatrixCSC)
     return nothing
 end
 
-function MatrixCovers.foreach_support_sym(f, A::SparseMatrixCSC)
+function foreach_support_sym(f, A::SparseMatrixCSC)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(DimensionMismatch("foreach_support_sym requires a square matrix, got axes $(axes(A))"))
     rv, nzs = rowvals(A), nonzeros(A)
@@ -39,7 +34,7 @@ end
 # the stored (i, j) with i >= j is reported as (j, i). Complex `Hermitian` is
 # admitted alongside the real case because only `abs` of a stored value is ever
 # read, and `abs(A[i,j]) == abs(conj(A[j,i]))`.
-function MatrixCovers.foreach_support_sym(f,
+function foreach_support_sym(f,
         S::Union{Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}})
     P = parent(S)
     ax = axes(P, 1)
@@ -69,9 +64,9 @@ end
 # orientations and the diagonal once; the magnitudes agree in both, including for a
 # complex `Hermitian`. Without this the wrappers fall back to the generic
 # `AbstractMatrix` method and its full-grid `getindex` scan.
-function MatrixCovers.foreach_support(f,
+function foreach_support(f,
         S::Union{Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}})
-    MatrixCovers.foreach_support_sym(S) do i, j, v
+    foreach_support_sym(S) do i, j, v
         f(i, j, v)
         i == j || f(j, i, v)
     end
@@ -85,46 +80,45 @@ end
 # Native AbsLog{2} MMC solvers on sparse supports default to the matrix-free LSQR
 # inner solve, whose per-iteration cost is O(nnz) and whose accuracy tracks the
 # conditioning of √W·R (≈ √κ) rather than that of the normal equations (≈ κ). This
-# is the intended path when nnz ≪ n²; pass `linsolve=:auto`/`:dense` to force the
-# dense factorization. Only AbsLog{2} is native; other penalties dispatch to the
-# JuMP extension.
-function MatrixCovers.symcover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
+# is the intended path when nnz ≪ n². Pass `linsolve=:dense` to force the dense
+# factorization, or `linsolve=:auto` to let the solver choose between the Woodbury
+# split and the dense factorization. Only AbsLog{2} is native; other penalties
+# dispatch to the JuMP extension.
+function symcover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
     a, _ = _symcover_min_abslog2(A; linsolve, kwargs...)
     return a
 end
 
-function MatrixCovers.cover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
+function cover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
     a, b, _ = _cover_min_abslog2(A; linsolve, kwargs...)
     return a, b
 end
 
-function MatrixCovers.symcover_min(ϕ::AbsLog{2}, S::Symmetric{<:Any, <:SparseMatrixCSC}; linsolve::Symbol=:lsqr, kwargs...)
+function symcover_min(ϕ::AbsLog{2}, S::Symmetric{<:Any, <:SparseMatrixCSC}; linsolve::Symbol=:lsqr, kwargs...)
     a, _ = _symcover_min_abslog2(S; linsolve, kwargs...)
     return a
 end
 
-function MatrixCovers.symcover_min(ϕ::AbsLog{2}, H::Hermitian{<:Any, <:SparseMatrixCSC}; linsolve::Symbol=:lsqr, kwargs...)
+function symcover_min(ϕ::AbsLog{2}, H::Hermitian{<:Any, <:SparseMatrixCSC}; linsolve::Symbol=:lsqr, kwargs...)
     a, _ = _symcover_min_abslog2(H; linsolve, kwargs...)
     return a
 end
 
 # The refiners take the same sparse `linsolve` default as the solvers above.
-function MatrixCovers.symcover_min!(ϕ::AbsLog{2}, a::AbstractVector,
+function symcover_min!(ϕ::AbsLog{2}, a::AbstractVector,
         S::Union{SparseMatrixCSC,Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}};
         linsolve::Symbol=:lsqr, kwargs...)
-    MatrixCovers._prepare_symcover_start!(a, S)
+    _prepare_symcover_start!(a, S)
     anew, _ = _symcover_min_abslog2(S; start=a, linsolve, kwargs...)
     a .= anew
     return a
 end
 
-function MatrixCovers.cover_min!(ϕ::AbsLog{2}, a::AbstractVector, b::AbstractVector,
-                                           A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
-    MatrixCovers._prepare_cover_start!(a, b, A)
+function cover_min!(ϕ::AbsLog{2}, a::AbstractVector, b::AbstractVector,
+                    A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
+    _prepare_cover_start!(a, b, A)
     anew, bnew, _ = _cover_min_abslog2(A; start=(a, b), linsolve, kwargs...)
     a .= anew
     b .= bnew
     return a, b
 end
-
-end  # module MatrixCoversSparseArraysExt

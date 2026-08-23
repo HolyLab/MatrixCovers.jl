@@ -1,9 +1,11 @@
 module MatrixCovers
 
 using LinearAlgebra: LinearAlgebra, Adjoint, Bidiagonal, Diagonal, Hermitian,
-                     SymTridiagonal, Symmetric, Transpose, Tridiagonal, dot, norm
+                     SymTridiagonal, Symmetric, Transpose, Tridiagonal, cholesky,
+                     dot, mul!, norm
 using PrecompileTools: PrecompileTools, @compile_workload
 using Random: Random, AbstractRNG, MersenneTwister
+using SparseArrays: SparseArrays, SparseMatrixCSC, nonzeros, nzrange, rowvals, sparse
 
 export AbsLog, AbsLinear
 export cover_objective, iscover
@@ -27,6 +29,7 @@ include("gram_covers.jl")    # symmetric covers of A'*W*A from an asymmetric cov
 include("initializers.jl")   # the start menu; consumed by both solver families below
 include("soft_covers.jl")
 include("minimal_covers.jl")
+include("sparse_support.jl")  # sparse traversal and the sparse solver defaults
 
 
 # True only when a MethodError's argument types are consistent with the calling

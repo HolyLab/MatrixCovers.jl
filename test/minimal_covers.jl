@@ -104,8 +104,8 @@ end
 
 @testset "MMC native AbsLog{2} matrix-free LSQR path" begin
     # Invalid solver selection is rejected.
-    @test_throws "linsolve must be :auto, :dense, or :lsqr" symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; linsolve=:qr)
-    @test_throws "linsolve must be :auto, :dense, or :lsqr" cover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; linsolve=:qr)
+    @test_throws "linsolve must be :auto, :dense, :lsqr, or :woodbury" symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; linsolve=:qr)
+    @test_throws "linsolve must be :auto, :dense, :lsqr, or :woodbury" cover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; linsolve=:qr)
 
     # The matrix-free LSQR path reproduces the dense path and the HiGHS reference
     # across the committed symmetric library, and returns a feasible cover.
@@ -141,6 +141,214 @@ end
     a, b = cover_min(AbsLog{2}(), [0.0 1.0; 1.0 0.0]; linsolve=:lsqr)
     @test a[1] * b[2] ≈ 1.0
     @test a[2] * b[1] ≈ 1.0
+end
+
+# The Woodbury path solves the same regularized normal equations as the dense path,
+# through a sparse Cholesky of `C` and a low-rank update, so the two must agree to
+# roundoff. The tolerance is loose relative to `eps`: a converged cover pins the
+# objective far more tightly than its own entries, so the two solves separate at
+# roughly the square root of the working precision.
+@testset "MMC native AbsLog{2} Woodbury path" begin
+    rng = StableRNG(9)
+    lognormal(m, n) = exp.(randn(rng, m, n))
+    symlognormal(n) = (X = lognormal(n, n); (X .+ X') ./ 2)
+
+    @testset "symmetric, n = $n" for n in (6, 30, 120)
+        A = symlognormal(n)
+        # A symmetric zero set placed to sit inside both guards at every size tested:
+        # pairing consecutive indices gives exactly one zero per row, against a
+        # per-row allowance of `n ÷ 4` (which is 1 already at n = 6) and a total
+        # allowance of `4n`.
+        Z = symlognormal(n)
+        for k in 1:(n ÷ 2)
+            Z[2k-1, 2k] = 0.0
+            Z[2k, 2k-1] = 0.0
+        end
+        variants = ["all nonzero" => A,
+                    "zero diagonal" => A - Diagonal(A),
+                    "paired zeros" => Z]
+        for (name, M) in variants
+            @testset "$name" begin
+                ad, sd = MatrixCovers._symcover_min_abslog2(M; linsolve=:dense)
+                aw, sw = MatrixCovers._symcover_min_abslog2(M; linsolve=:woodbury)
+                aa, sa = MatrixCovers._symcover_min_abslog2(M)
+                @test sd.linsolve === :dense
+                @test sw.linsolve === :woodbury
+                @test sa.linsolve === :woodbury
+                @test aw ≈ ad rtol=1e-7
+                @test aa == aw
+                @test iscover(aw, M; atol=1e-8)
+                # Both Woodbury sub-paths run within a continuation: the early stages
+                # are well enough conditioned for conjugate gradients, the late ones
+                # are not, and both are exact.
+                @test sw.cgiters > 0
+                @test sw.cholsolves > 0
+                @test sd.cgiters == 0
+                @test sd.cholsolves == 0
+            end
+        end
+    end
+
+    @testset "asymmetric, ($m, $n)" for (m, n) in ((8, 6), (30, 22), (120, 90))
+        A = lognormal(m, n)
+        # The gauge direction (e; −e) leaves every product a[i]*b[j] fixed, so only the
+        # products are required to agree between the two solves.
+        k = min(m, n) ÷ 4   # the largest zero band the guard admits
+        for (name, M) in ("all nonzero" => A, "one zero band" => (B = copy(A); B[1:k, 1] .= 0.0; B))
+            @testset "$name" begin
+                ad, bd, sd = MatrixCovers._cover_min_abslog2(M; linsolve=:dense)
+                aw, bw, sw = MatrixCovers._cover_min_abslog2(M; linsolve=:woodbury)
+                _, _, sa = MatrixCovers._cover_min_abslog2(M)
+                @test sd.linsolve === :dense
+                @test sw.linsolve === :woodbury
+                @test sa.linsolve === :woodbury
+                @test aw .* bw' ≈ ad .* bd' rtol=1e-7
+                @test iscover(aw, bw, M; atol=1e-7)
+                @test sw.cgiters > 0
+                @test sw.cholsolves > 0
+                @test sd.cgiters == 0
+                @test sd.cholsolves == 0
+            end
+        end
+    end
+
+    # Only abs.(A) is read, so a complex Hermitian takes the same path and lands on
+    # the same cover as its magnitude matrix.
+    n = 8
+    M = randn(rng, ComplexF64, n, n)
+    H = Hermitian(M + M')
+    aw, sw = MatrixCovers._symcover_min_abslog2(H; linsolve=:woodbury)
+    @test sw.linsolve === :woodbury
+    @test aw ≈ MatrixCovers._symcover_min_abslog2(abs.(Matrix(H)); linsolve=:dense)[1] rtol=1e-7
+
+    # Offset axes and views index the support through `axes(A)`, not `1:n`, on this
+    # path as on the others.
+    A = symlognormal(12)
+    aref = symcover_min(AbsLog{2}(), A; linsolve=:woodbury)
+    Ao = OffsetArray(A, -3, -3)
+    ao = symcover_min(AbsLog{2}(), Ao; linsolve=:woodbury)
+    @test axes(ao, 1) == axes(Ao, 1)
+    @test collect(ao) ≈ aref rtol=1e-10
+    Av = view(symlognormal(16), 3:14, 3:14)
+    @test symcover_min(AbsLog{2}(), Matrix(Av); linsolve=:woodbury) ≈
+          symcover_min(AbsLog{2}(), Av; linsolve=:woodbury) rtol=1e-10
+    Ag = lognormal(14, 10)
+    Agv = view(Ag, 2:13, 2:9)
+    av, bv = cover_min(AbsLog{2}(), Agv; linsolve=:woodbury)
+    am, bm = cover_min(AbsLog{2}(), Matrix(Agv); linsolve=:woodbury)
+    @test av .* bv' ≈ am .* bm' rtol=1e-10
+
+    # A single stage at κ = 1e2 stays inside the conjugate-gradient regime throughout,
+    # so the factorization is never reached.
+    A1 = symlognormal(24)
+    c1, s1 = MatrixCovers._symcover_min_abslog2(A1; κs=(1e2,), linsolve=:woodbury)
+    @test s1.cgiters > 0
+    @test s1.cholsolves == 0
+    @test c1 ≈ MatrixCovers._symcover_min_abslog2(A1; κs=(1e2,), linsolve=:dense)[1] rtol=1e-8
+    G1 = lognormal(24, 18)
+    p1, q1, t1 = MatrixCovers._cover_min_abslog2(G1; κs=(1e2,), linsolve=:woodbury)
+    pd1, qd1, _ = MatrixCovers._cover_min_abslog2(G1; κs=(1e2,), linsolve=:dense)
+    @test t1.cgiters > 0
+    @test t1.cholsolves == 0
+    @test p1 .* q1' ≈ pd1 .* qd1' rtol=1e-8
+
+    # No row may carry more than a quarter zeros — that is what keeps `C` positive
+    # definite — and the arithmetic must be Float64.
+    holey = symlognormal(12)
+    holey[1, 1:5] .= 0.0
+    holey[1:5, 1] .= 0.0
+    @test_throws "at most n ÷ 4 = 3 zeros; got 5" symcover_min(AbsLog{2}(), holey; linsolve=:woodbury)
+    @test MatrixCovers._symcover_min_abslog2(holey)[2].linsolve === :dense
+    gholey = lognormal(12, 12)
+    gholey[1, 1:5] .= 0.0
+    @test_throws "at most min(m, n) ÷ 4 = 3 zeros; got 5" cover_min(AbsLog{2}(), gholey; linsolve=:woodbury)
+    @test MatrixCovers._cover_min_abslog2(gholey)[3].linsolve === :dense
+
+    # A support thin enough per row can still carry a quadratic number of zeros, which
+    # would make the "sparse" correction dense work; the total budget rejects it.
+    wide = symlognormal(40)
+    for i in 1:40, j in 1:40
+        (i != j && (i + j) % 4 == 0) && (wide[i, j] = 0.0)
+    end
+    @test maximum(count(iszero, wide; dims=2)) <= 40 ÷ 4
+    @test count(iszero, wide) > 4 * 40
+    @test_throws "at most 4n = 160 zeros in total" symcover_min(AbsLog{2}(), wide; linsolve=:woodbury)
+    @test MatrixCovers._symcover_min_abslog2(wide)[2].linsolve === :dense
+    gwide = lognormal(40, 40)
+    for i in 1:40, j in 1:40
+        (i + j) % 4 == 0 && (gwide[i, j] = 0.0)
+    end
+    @test_throws "at most 4·max(m, n) = 160 zeros in total" cover_min(AbsLog{2}(), gwide; linsolve=:woodbury)
+    @test MatrixCovers._cover_min_abslog2(gwide)[3].linsolve === :dense
+
+    A32 = Float32.(symlognormal(8))
+    @test_throws "requires Float64 arithmetic" symcover_min(AbsLog{2}(), A32; linsolve=:woodbury)
+    @test MatrixCovers._symcover_min_abslog2(A32)[2].linsolve === :dense
+    G32 = Float32.(lognormal(8, 6))
+    @test_throws "requires Float64 arithmetic" cover_min(AbsLog{2}(), G32; linsolve=:woodbury)
+    @test MatrixCovers._cover_min_abslog2(G32)[3].linsolve === :dense
+end
+
+# A Newton step is exact on the dense and Woodbury paths, so a whole step that leaves
+# the violated set unchanged has already reached the minimizer of the current
+# penalty stage, and the stage ends without a confirmation solve. The `:lsqr` steps
+# are inexact and keep the decrease test as their sole criterion, which is what makes
+# their solve counts the reference here.
+@testset "MMC exact paths stop on a sign-stable Newton step" begin
+    rng = StableRNG(31)
+    A = (X = exp.(randn(rng, 60, 60)); (X .+ X') ./ 2)
+    ad, sd = MatrixCovers._symcover_min_abslog2(A; linsolve=:dense)
+    aw, sw = MatrixCovers._symcover_min_abslog2(A; linsolve=:woodbury)
+    al, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
+    @test ad ≈ al rtol=1e-6
+    @test aw ≈ al rtol=1e-6
+    # One solve per κ stage is saved; `κs` has four stages by default. The absolute
+    # bound guards against a regression in the count itself: this matrix takes 24
+    # solves on the exact paths against 28 on `:lsqr`, so 26 leaves two solves of
+    # headroom while still failing if the early stop stops firing.
+    @test sd.nsolves == sw.nsolves
+    @test sd.nsolves <= sl.nsolves - length((1e2, 1e4, 1e6, 1e8))
+    @test sd.nsolves <= 26
+
+    G = exp.(randn(rng, 60, 45))
+    gd, hd, td = MatrixCovers._cover_min_abslog2(G; linsolve=:dense)
+    gw, hw, tw = MatrixCovers._cover_min_abslog2(G; linsolve=:woodbury)
+    gl, hl, tl = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr)
+    @test gd .* hd' ≈ gl .* hl' rtol=1e-6
+    @test gw .* hw' ≈ gl .* hl' rtol=1e-6
+    @test td.nsolves == tw.nsolves
+    @test td.nsolves <= tl.nsolves - length((1e2, 1e4, 1e6, 1e8))
+    # 22 solves measured here against 26 on `:lsqr`; 24 leaves two of headroom.
+    @test td.nsolves <= 24
+end
+
+# The LSQR preconditioner absorbs the rows the continuation weights by κ, so the
+# generalized spectrum it iterates on is the unweighted one and the iteration count
+# stops growing as κ rises. CHOLMOD factors it, so it applies only in Float64;
+# narrower and wider types run the plain matrix-free iteration.
+@testset "MMC :lsqr iteration count is bounded across the continuation" begin
+    rng = StableRNG(5)
+    A = (X = exp.(randn(rng, 120, 120)); (X .+ X') ./ 2)
+    ad, _ = MatrixCovers._symcover_min_abslog2(A; linsolve=:dense)
+    al, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
+    @test al ≈ ad rtol=1e-6
+    # 29.4 iterations per solve measured here; the bound doubles that, and an
+    # unpreconditioned run would sit in the hundreds by the last κ stage.
+    @test sl.lsqriters <= 60 * sl.nsolves
+
+    G = exp.(randn(rng, 120, 90))
+    gd, hd, _ = MatrixCovers._cover_min_abslog2(G; linsolve=:dense)
+    gl, hl, tl = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr)
+    @test gl .* hl' ≈ gd .* hd' rtol=1e-6
+    # 41.4 iterations per solve measured here, against the same bound.
+    @test tl.lsqriters <= 60 * tl.nsolves
+
+    # A working type CHOLMOD cannot factor keeps the plain matrix-free iteration.
+    A32 = Float32.([4.0 1.0 0.5; 1.0 3.0 1.0; 0.5 1.0 2.5])
+    a32 = symcover_min(AbsLog{2}(), A32; linsolve=:lsqr)
+    @test a32 isa Vector{Float32}
+    @test a32 ≈ symcover_min(AbsLog{2}(), A32; linsolve=:dense) rtol=1e-5
+    @test iscover(a32, A32; rtol=1e-5)
 end
 
 @testset "MMC disconnected-support gauge" begin
