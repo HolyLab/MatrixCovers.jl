@@ -390,9 +390,9 @@ function bucket_boost!(deficit::F, apply!::G, entries::AbstractVector, ::Type{T}
     zmax > zero(T) || return
     w = T(BOOST_BUCKET_WIDTH)
     B = max(1, ceil(Int, zmax / w))
-    # Deficits only fall, so every `z` reaching `bucketof` lies in `(0, zmax]`
-    # and `ceil(z / w)` lies in `1:B`, a range the truncation cannot leave.
-    bucketof(z) = clamp(unsafe_trunc(Int, ceil(z / w)), 1, B)
+    # `z` is a positive log difference no greater than `zmax`; its spacing keeps
+    # `z / w` from underflowing, so the ceiling remains in `1:B`.
+    bucketof(z) = unsafe_trunc(Int, ceil(z / w))
     ptr = zeros(Int, B + 1)
     for entry in entries
         z = deficit(entry)
