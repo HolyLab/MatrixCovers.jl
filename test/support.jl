@@ -137,7 +137,7 @@ end
     @test symcover(Symmetric(M, :L)) isa AbstractVector
     @test symcover(Diagonal([1.0, 2.0])) isa AbstractVector
 
-    # Banded storage earns no exemption. A `Bidiagonal` reads one of its
+    # Banded storage is still checked. A `Bidiagonal` reads one of its
     # off-diagonals as a structural zero, so any nonzero band makes it asymmetric;
     # a `Tridiagonal` stores both bands and qualifies only when they agree.
     for A in (Bidiagonal([3.0, 2.0, 1.0], [6.0, 0.5], :U),
@@ -152,6 +152,68 @@ end
     @test iscover(symcover(Tridiagonal([2.0, 0.5], [3.0, 2.0, 1.0], [2.0, 0.5])),
                   Matrix(Tridiagonal([2.0, 0.5], [3.0, 2.0, 1.0], [2.0, 0.5])); rtol=8eps())
     @test symcover(Bidiagonal([3.0, 2.0, 1.0], [0.0, 0.0], :U)) isa AbstractVector
+end
+
+# Wrapper that uses the generic `AbstractMatrix` symmetry check.
+struct Unstructured{M} <: AbstractMatrix{Float64}
+    A::M
+end
+Base.size(W::Unstructured) = size(W.A)
+Base.getindex(W::Unstructured, i::Int, j::Int) = W.A[i, j]
+
+# The sparse and generic symmetry checks must agree.
+@testset "the symmetry precondition on compressed columns" begin
+    outcome(A) = try
+        MatrixCovers.require_abs_symmetric(A, :f)
+        "accepted"
+    catch e
+        sprint(showerror, e)
+    end
+
+    rng = StableRNG(31)
+    accepted = rejected = 0
+    for _ in 1:300
+        n = rand(rng, 4:12)
+        S = sprandn(rng, n, n, 0.25)
+        A = S + S'
+        defect = rand(rng, 1:4)
+        if !iszero(nnz(A))
+            k = rand(rng, 1:nnz(A))
+            if defect == 2
+                nonzeros(A)[k] *= 1 + 1e-3          # value asymmetry
+            elseif defect == 3
+                i = rowvals(A)[k]
+                j = findfirst(c -> k in nzrange(A, c), 1:n)
+                A[i, j] = 0                          # structural asymmetry
+                dropzeros!(A)
+            elseif defect == 4
+                nonzeros(A)[k] = 0.0                 # explicit zero on one side
+            end
+        end
+        both = outcome(A)
+        both == "accepted" ? (accepted += 1) : (rejected += 1)
+        @test both == outcome(Unstructured(A))
+    end
+    @test accepted > 20 && rejected > 20
+
+    # An absent partner reads as zero.
+    lone = sparse([2], [1], [3.0], 2, 2)
+    @test_throws "abs(A[2,1]) = 3.0 and abs(A[1,2]) = 0.0" MatrixCovers.require_abs_symmetric(lone, :f)
+    @test_throws "abs(A[1,2]) = 3.0 and abs(A[2,1]) = 0.0" MatrixCovers.require_abs_symmetric(sparse([1], [2], [3.0], 2, 2), :f)
+
+    # Stored and implicit zeros behave alike.
+    ez = SparseMatrixCSC(2, 2, [1, 2, 2], [1], [0.0])
+    @test outcome(ez) == "accepted" == outcome(Unstructured(ez))
+    @test MatrixCovers.require_abs_symmetric(sparse([1, 2, 2], [1, 1, 2], [1.0, 0.0, 1.0], 2, 2), :f) === nothing
+    mixed = sparse([1, 2, 1, 2], [1, 1, 2, 2], [1.0, 0.0, 4.0, 1.0], 2, 2)
+    @test outcome(mixed) == outcome(Unstructured(mixed)) != "accepted"
+
+    # Sparse storage uses the same roundoff allowance and wrapper exemptions.
+    B = sprandn(rng, 20, 20, 0.3); S = B + B'
+    d = exp.(randn(rng, 20))
+    @test MatrixCovers.require_abs_symmetric((d .* S) .* d', :f) === nothing
+    @test symcover(S) isa AbstractVector
+    @test_throws DimensionMismatch MatrixCovers.require_abs_symmetric(sprandn(rng, 3, 4, 0.5), :f)
 end
 
 # Grouped support must preserve entries and symmetric full-grid multiplicity.

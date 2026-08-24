@@ -97,6 +97,16 @@ function require_abs_symmetric(A::AbstractMatrix, fname)
     return nothing
 end
 
+# Shared predicate and error for storage-specific symmetry checks.
+_abs_symmetric(v, w) = (m = max(v, w); abs(v - w) <= ASYMMETRY_ULPS * eps(float(real(typeof(m)))) * m)
+
+@noinline function _abs_asymmetry_error(fname, i, j, v, w)
+    throw(ArgumentError("""
+    $fname requires `abs.(A)` to be symmetric, but abs(A[$(string(i)),$(string(j))]) = $(string(v)) and \
+    abs(A[$(string(j)),$(string(i))]) = $(string(w)). Wrap `A` in `Symmetric` (or `Hermitian`) to name the \
+    triangle to read; that also skips this check."""))
+end
+
 # Cache-blocked check for dense storage: the transposed reads of a column-major
 # sweep miss on every entry once `A` outgrows the cache, while a block of rows and
 # its transpose both fit. Only `i < j` needs testing, the diagonal being its own
