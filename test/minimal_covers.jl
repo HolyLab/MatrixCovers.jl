@@ -380,8 +380,7 @@ end
     @test soft_symcover_min(AbsLog{2}(), A; linsolve=:lsqr) != symcover(A)
 end
 
-# The Float64 LSQR preconditioner includes κ-weighted rows; other types use the
-# plain matrix-free iteration.
+# Bound iterations for Cholesky-preconditioned `Float64` LSQR.
 @testset "MMC :lsqr iteration count is bounded across the continuation" begin
     rng = StableRNG(5)
     A = (X = exp.(randn(rng, 120, 120)); (X .+ X') ./ 2)
@@ -389,14 +388,23 @@ end
     al, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
     @test al ≈ ad rtol=1e-6
     # Bound the preconditioned iteration count with margin.
-    @test sl.lsqriters <= 60 * sl.nsolves
+    @test sl.lsqriters <= 12 * sl.nsolves
 
     G = exp.(randn(rng, 120, 90))
     gd, hd, _ = MatrixCovers._cover_min_abslog2(G; linsolve=:dense)
     gl, hl, tl = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr)
     @test gl .* hl' ≈ gd .* hd' rtol=1e-6
     # Apply the same iteration bound to asymmetric problems.
-    @test tl.lsqriters <= 60 * tl.nsolves
+    @test tl.lsqriters <= 12 * tl.nsolves
+
+    # The ridge handles bipartite support.
+    rngb = StableRNG(11)
+    Tsp = sparse(Matrix(SymTridiagonal(exp.(randn(rngb, 40)), exp.(randn(rngb, 39)))))
+    at, st = MatrixCovers._symcover_min_abslog2(Tsp; linsolve=:lsqr)
+    atd, _ = MatrixCovers._symcover_min_abslog2(Matrix(Tsp); linsolve=:dense)
+    @test at ≈ atd rtol=1e-6
+    @test iscover(at, at, Tsp)
+    @test st.lsqriters <= 12 * st.nsolves
 
     # A working type CHOLMOD cannot factor keeps the plain matrix-free iteration.
     A32 = Float32.([4.0 1.0 0.5; 1.0 3.0 1.0; 0.5 1.0 2.5])

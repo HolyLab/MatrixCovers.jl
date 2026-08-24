@@ -257,8 +257,8 @@ end
 # - `:woodbury` represents them as sparse `C + U*U'`, using conjugate gradients
 #   while the condition estimate is small and sparse Cholesky otherwise. It is
 #   restricted to nearly dense `Float64` problems.
-# - `:lsqr` applies the weighted residual operator `M` matrix-free. In `Float64`, its
-#   right preconditioner includes violated rows once diagonal scaling is inadequate.
+# - `:lsqr` applies the weighted residual operator `M` matrix-free, with sparse
+#   Cholesky right-preconditioning for `Float64`.
 #   It is not interchangeable with CG on the normal equations: LSQR's accuracy
 #   tracks the condition number of `M` (≈ √κ), CG's that of `MᵀM` (≈ κ), and at
 #   κ = 1e8 the latter exhausts double precision.
@@ -271,9 +271,6 @@ const AUTO_LSQR_MAX_DENSITY = 1 // 4
 
 # Condition estimate above which Woodbury uses sparse Cholesky instead of CG.
 const WOODBURY_CG_KAPPA = 1000
-
-# Condition estimate above which LSQR includes the weighted rows in its preconditioner.
-const LSQR_PRECOND_KAPPA = 1000
 
 # Solve `(C + U*U')x = f` from a sparse factorization of `C` using the
 # Woodbury identity. `rhs` stores the combined `[f U]` solve.
@@ -761,6 +758,50 @@ function _warn_truncated(fname::Symbol, κs, stats, maxiter::Int)
     return nothing
 end
 
+# Position of `S[i,j]` in `nonzeros(S)`; the entry must be stored.
+function _nzindex(S::SparseMatrixCSC, i::Int, j::Int)
+    r = nzrange(S, j)
+    rv = rowvals(S)
+    k = searchsortedfirst(view(rv, r), i)
+    k <= length(r) && rv[r[k]] == i ||
+        throw(ArgumentError("the preconditioner pattern is missing entry ($i, $j)"))
+    return r[k]
+end
+
+# Unweighted normal-matrix pattern for the LSQR preconditioner. The ridge makes
+# bipartite support components positive definite. `N == 0` disables it.
+function _precond_pattern(::Type{T}, supp::EdgeList, v0, N::Int, mult) where {T}
+    N == 0 && return spzeros(T, 0, 0)
+    Mi, Mj, Mv = collect(1:N), collect(1:N), zeros(T, N)
+    for (p, q) in supp.edges
+        if p == q
+            Mv[p] += 4 * oneunit(T)
+        else
+            w = mult(p, q) * oneunit(T)
+            Mv[p] += w
+            Mv[q] += w
+            push!(Mi, p, q)
+            push!(Mj, q, p)
+            push!(Mv, w, w)
+        end
+    end
+    dmax = zero(T)
+    for p in 1:N
+        Mv[p] += v0[p]^2
+        dmax = max(dmax, Mv[p])
+    end
+    ρ = _precond_ridge(dmax)
+    for p in 1:N
+        Mv[p] += ρ
+    end
+    return sparse(Mi, Mj, Mv, N, N)
+end
+
+_precond_pattern(::Type{T}, ::Grid, v0, N::Int, mult) where {T} = spzeros(T, 0, 0)
+
+# Scale-relative ridge for a positive-definite preconditioner.
+_precond_ridge(dmax::T) where {T} = (dmax > 0 ? dmax : oneunit(T)) * sqrt(eps(T))
+
 # `AbsLog{2}` penalty continuation. Each stage freezes residual weights, solves
 # the weighted least-squares problem, and backtracks. `boost=true` applies a final
 # feasibility shift. The support layout selects the inner solver.
@@ -792,7 +833,6 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
     cv = zeros(T, ne + 1)   # √weight · log|A_ij|, with a trailing 0 gauge target
     # Violated entries under the current frozen weights.
     vpat = _violation_pattern(supp)
-    vedges = Tuple{Int,Int}[]                # the violated entries of the current solve (LSQR path only)
     vrow = Int[]                             # violated rows, grouped by column (Woodbury path only)
     vcnt = zeros(Int, use_woodbury ? N : 0)  # violated off-diagonal entries per column
     vptr = zeros(Int, use_woodbury ? N + 1 : 0)
@@ -820,33 +860,27 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
     Ccolptr = zeros(Int, use_woodbury ? N + 1 : 0)
     Crowval = Int[]
     Cnzval = T[]
-    # Diagonal of the unweighted, gauge-augmented normal matrix.
-    dpart = zeros(T, use_lsqr ? N : 0)
-    if supp isa EdgeList && use_lsqr
-        for (p, q) in supp.edges
-            if p == q
-                dpart[p] += 4 * oneunit(T)
-            else
-                w = mult(p, q) * oneunit(T)
-                dpart[p] += w
-                dpart[q] += w
-            end
-        end
-        for p in 1:N
-            dpart[p] += v0[p]^2
-        end
-        for p in 1:N
-            dpart[p] > 0 || (dpart[p] = oneunit(T))
+    px = zeros(T, use_precond ? N : 0)   # scale vector recovered from the LSQR variable
+    pg = zeros(T, use_precond ? N : 0)   # `Rᵀ√W y` before the preconditioner is applied
+    mdiag = zeros(T, use_precond ? N : 0)   # weighted degrees, the preconditioner's diagonal
+    # Right-preconditioner: a Cholesky factor of the weighted, gauge-augmented
+    # normal matrix. Its sparsity pattern is the support's and does not depend on
+    # the weights, so one symbolic analysis serves the whole continuation and each
+    # solve refactors in place. The gauge is a dense rank-1 term that would fill
+    # the factor, so it enters as its diagonal alone and LSQR absorbs the rest.
+    Msp = _precond_pattern(T, supp, v0, use_precond ? N : 0, mult)
+    # Positions of the entries each solve overwrites: the diagonal, and both
+    # copies of each off-diagonal support entry.
+    dpos = use_precond ? [_nzindex(Msp, p, p) for p in 1:N] : Int[]
+    epos = zeros(Int, use_precond ? 2 * ne : 0)
+    if use_precond
+        for (e, (p, q)) in enumerate(supp.edges)
+            p == q && continue
+            epos[2 * e - 1] = _nzindex(Msp, p, q)
+            epos[2 * e] = _nzindex(Msp, q, p)
         end
     end
-    mdiag = zeros(T, use_lsqr ? N : 0)   # the violated rows' diagonal, per unit of κ−1
-    Mi = Int[]                           # COO triplets of the preconditioner
-    Mj = Int[]
-    Mv = T[]
-    px = zeros(T, use_lsqr ? N : 0)      # scale vector recovered from the LSQR variable
-    pg = zeros(T, use_lsqr ? N : 0)      # `Rᵀ√W y` before the preconditioner is applied
-    # `K` of the diagonal preconditioner, which is κ-independent and so built once.
-    psqrt = use_lsqr ? sqrt.(dpart) : T[]
+    MF = use_precond ? cholesky(Symmetric(Msp)) : nothing
     rhs = zeros(T, use_woodbury ? N : 0, size(U, 2) + 1)
     dmin = use_woodbury ? minimum(sys.dfull) : oneunit(T)
     cgx = zeros(T, use_woodbury ? N : 0)
@@ -915,9 +949,6 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
         elseif use_lsqr
             edges = supp.edges
             cvals = supp.cvals
-            dκ = κ === nothing ? zero(T) : T(κ) - oneunit(T)
-            empty!(vedges)
-            fill!(mdiag, zero(T))
             for (e, (p, q)) in enumerate(edges)
                 c = cvals[e]
                 viol = κ !== nothing && (x[p] + x[q] - c) < 0
@@ -925,80 +956,35 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
                 sw = sqrt(mult(p, q) * (viol ? T(κ) : oneunit(T)))
                 ws[e] = sw
                 cv[e] = sw * c
-                if viol && use_precond
-                    push!(vedges, (p, q))
-                    if p == q
-                        mdiag[p] += 4 * oneunit(T)
-                    else
-                        w = mult(p, q) * oneunit(T)
-                        mdiag[p] += w
-                        mdiag[q] += w
-                    end
-                end
             end
             g = ne + 1   # index of the appended gauge row
             if use_precond
-                # Include violated rows once diagonal scaling is inadequate.
-                κest = oneunit(T)
-                for p in 1:N
-                    κest = max(κest, oneunit(T) + dκ * 2 * mdiag[p] / dpart[p])
-                end
-                if κest <= LSQR_PRECOND_KAPPA
-                    # Diagonal `K` needs only elementwise scaling.
-                    Dmul! = function (y, yv)
-                        @. px = yv / psqrt
-                        for (e, (p, q)) in enumerate(edges)
-                            y[e] = ws[e] * (px[p] + px[q])
-                        end
-                        y[g] = dot(v0, px)
-                        return y
-                    end
-                    Dtmul! = function (z, y)
-                        fill!(pg, zero(T))
-                        for (e, (p, q)) in enumerate(edges)
-                            t = ws[e] * y[e]
-                            pg[p] += t
-                            pg[q] += t
-                        end
-                        @. pg += v0 * y[g]
-                        @. z = pg / psqrt
-                        return z
-                    end
-                    soly, it = _lsqr(Dmul!, Dtmul!, cv, psqrt .* x)
-                    nlsqr[] += it
-                    return soly ./ psqrt
-                end
-                empty!(Mi)
-                empty!(Mj)
-                empty!(Mv)
-                for p in 1:N
-                    push!(Mi, p)
-                    push!(Mj, p)
-                    push!(Mv, dpart[p])
-                end
-                for (p, q) in vedges
+                # Refill the preconditioner with the weights this solve freezes and
+                # refactor it in place: the pattern, and so the symbolic analysis,
+                # is the same on every solve.
+                nzv = nonzeros(Msp)
+                fill!(mdiag, zero(T))
+                for (e, (p, q)) in enumerate(edges)
+                    w = ws[e]^2
                     if p == q
-                        push!(Mi, p)
-                        push!(Mj, p)
-                        push!(Mv, 4 * dκ)
+                        mdiag[p] += 4 * w
                     else
-                        w = mult(p, q) * dκ
-                        push!(Mi, p)
-                        push!(Mj, p)
-                        push!(Mv, w)
-                        push!(Mi, q)
-                        push!(Mj, q)
-                        push!(Mv, w)
-                        push!(Mi, p)
-                        push!(Mj, q)
-                        push!(Mv, w)
-                        push!(Mi, q)
-                        push!(Mj, p)
-                        push!(Mv, w)
+                        mdiag[p] += w
+                        mdiag[q] += w
+                        nzv[epos[2 * e - 1]] = w
+                        nzv[epos[2 * e]] = w
                     end
                 end
-                Msp = sparse(Mi, Mj, Mv, N, N)
-                MF = cholesky(Symmetric(Msp))
+                dmax = zero(T)
+                for p in 1:N
+                    mdiag[p] += v0[p]^2
+                    dmax = max(dmax, mdiag[p])
+                end
+                ρ = _precond_ridge(dmax)
+                for p in 1:N
+                    nzv[dpos[p]] = mdiag[p] + ρ
+                end
+                cholesky!(MF, Symmetric(Msp))
                 Kc = MF.PtL
                 Uc = MF.UP
                 # CHOLMOD factor-component solves allocate their result.
