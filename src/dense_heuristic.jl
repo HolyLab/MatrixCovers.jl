@@ -103,6 +103,48 @@ function _grid_logabs!(L::Matrix{T}, sa::Vector{T}, sb::Vector{T},
     return L
 end
 
+# Use compact boost-list indices when the dimensions fit.
+_grid_label(m::Int, n::Int) = max(m, n) <= typemax(Int32) ? Int32 : Int
+
+# The violated entries of a packed upper triangle, in the traversal order of
+# `foreach_support_sym`. Half the entries of a fresh unconstrained start
+# violate, so a branch on the test would mispredict on half the grid; the sweep
+# selects branchlessly instead, writing every entry to the slot after the last
+# one kept and advancing only on a violation. That needs one slot of slack.
+function _tri_violated(Lp::Vector{T}, lα::Vector{T}, n::Int, nviol::Int,
+                       ::Type{IT}) where {T,IT}
+    entries = Vector{Tuple{IT,IT,T}}(undef, nviol + 1)
+    k = 1
+    for jp in 1:n
+        o = _trioff(jp)
+        lj = lα[jp]
+        for ip in 1:jp
+            lv = Lp[o+ip]
+            entries[k] = (ip % IT, jp % IT, lv)
+            k += ifelse(lv - lα[ip] - lj > zero(T), 1, 0)
+        end
+    end
+    resize!(entries, nviol)
+    return entries
+end
+
+# The violated entries of a full grid, selected as in `_tri_violated`.
+function _grid_violated(L::Matrix{T}, lα::Vector{T}, lβ::Vector{T}, m::Int, n::Int,
+                        nviol::Int, ::Type{IT}) where {T,IT}
+    entries = Vector{Tuple{IT,IT,T}}(undef, nviol + 1)
+    k = 1
+    for jp in 1:n
+        lj = lβ[jp]
+        for ip in 1:m
+            lv = L[ip, jp]
+            entries[k] = (ip % IT, jp % IT, lv)
+            k += ifelse(lv - lα[ip] - lj > zero(T), 1, 0)
+        end
+    end
+    resize!(entries, nviol)
+    return entries
+end
+
 # Keep supported scales positive when `exp` underflows.
 _uncon_scale(si::T, ni::Int, halfmu::T) where {T} =
     iszero(ni) ? zero(T) : max(exp(si / ni - halfmu), floatmin(T))
@@ -151,19 +193,7 @@ function _symcover_dense!(a::AbstractVector, A::AbstractMatrix, ::Type{T}, maxit
     # A supported zero scale produces an infinite deficit.
     isfinite(zmax) ||
         throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row"))
-    entries = Vector{Tuple{Int,Int,T}}(undef, nviol + 1)
-    k = 1
-    for jp in 1:n
-        o = _trioff(jp)
-        lj = lα[jp]
-        for ip in 1:jp
-            lv = Lp[o+ip]
-            entries[k] = (ip, jp, lv)
-            k += ifelse(lv - lα[ip] - lj > zero(T), 1, 0)
-        end
-    end
-    resize!(entries, nviol)
-    _dense_boost!(α, lα, entries, zmax)
+    _dense_boost!(α, lα, _tri_violated(Lp, lα, n, nviol, _grid_label(n, n)), zmax)
 
     lratio = Vector{T}(undef, n)
     for _ in 1:maxiter
@@ -221,7 +251,6 @@ function _cover_dense!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
         lβ[jp] = log(β[jp])
     end
 
-    # Branchless selection, as in the symmetric kernel.
     nviol = 0
     zmax = zero(T)
     for jp in 1:n
@@ -234,17 +263,7 @@ function _cover_dense!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
     end
     isfinite(zmax) ||
         throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row/column"))
-    entries = Vector{Tuple{Int,Int,T}}(undef, nviol + 1)
-    k = 1
-    for jp in 1:n
-        lj = lβ[jp]
-        for ip in 1:m
-            lv = L[ip, jp]
-            entries[k] = (ip, jp, lv)
-            k += ifelse(lv - lα[ip] - lj > zero(T), 1, 0)
-        end
-    end
-    resize!(entries, nviol)
+    entries = _grid_violated(L, lα, lβ, m, n, nviol, _grid_label(m, n))
     # Row and column scales require separate updates.
     deficit((i, j, lv)) = lv - lα[i] - lβ[j]
     function apply!((i, j, lv), z)
