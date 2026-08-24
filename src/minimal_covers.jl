@@ -25,7 +25,7 @@ method selects the one with the smallest `AbsLog{2}` objective.
 # Extended help
 
 The native solver accepts `κs` (penalty-continuation schedule), `maxiter`
-(Newton steps per stage), and `linsolve`:
+(Newton steps per stage), `fillbudget` (see below), and `linsolve`:
 
 - `:dense` factorizes dense normal equations at O(n³) per Newton step.
 - `:woodbury` handles nearly dense `Float64` support as a sparse correction. It
@@ -37,6 +37,10 @@ The native solver accepts `κs` (penalty-continuation schedule), `maxiter`
 
 `κs` defaults to a geometric schedule ending at `1e8`: eight stages for exact
 solves and four for `:lsqr`. An explicit `κs` overrides this default.
+
+For `Float64`, `:lsqr` uses a Cholesky preconditioner when its predicted storage
+does not exceed `fillbudget` bytes (default `2^30`). Otherwise it uses a diagonal
+preconditioner. The returned statistics identify the choice as `precond`.
 
 If a stage reaches `maxiter`, the solver warns that the cover may not minimize
 the objective. Increase `maxiter` or supply more continuation stages.
@@ -71,11 +75,11 @@ method selects the one with the smallest `AbsLog{2}` objective.
 
 # Extended help
 
-The native solver accepts the same `κs`, `maxiter`, and `linsolve` keywords as
-[`symcover_min`](@ref), with the same solver-dependent default schedule and the
-same warning when a stage runs out of Newton steps. For `:woodbury`, an `m × n`
-matrix may omit at most `min(m,n) ÷ 4` entries per row or column and
-`4 * max(m,n)` entries in total.
+The native solver accepts the same `κs`, `maxiter`, `fillbudget`, and `linsolve`
+keywords as [`symcover_min`](@ref), with the same solver-dependent default
+schedule, the same preconditioner budget, and the same warning when a stage runs
+out of Newton steps. For `:woodbury`, an `m × n` matrix may omit at most
+`min(m,n) ÷ 4` entries per row or column and `4 * max(m,n)` entries in total.
 `:dense` costs O((m+n)³) per Newton step; sparse matrices default to `:lsqr`.
 
 See also: [`symcover_min`](@ref), [`cover`](@ref), [`cover_min!`](@ref).
@@ -802,11 +806,30 @@ _precond_pattern(::Type{T}, ::Grid, v0, N::Int, mult) where {T} = spzeros(T, 0, 
 # Scale-relative ridge for a positive-definite preconditioner.
 _precond_ridge(dmax::T) where {T} = (dmax > 0 ? dmax : oneunit(T)) * sqrt(eps(T))
 
+# Default storage limit, in bytes, for the LSQR Cholesky preconditioner.
+# Tripping this switches to diagonal preconditioning, reducing memory
+# consumption but increasing the number of iterations for convergence.
+const LSQR_FILL_BUDGET = 1 << 30
+
+# Return CHOLMOD's symbolic factorization and its predicted number of values.
+function _precond_analysis(M::SparseMatrixCSC)
+    F = SparseArrays.CHOLMOD.symbolic(SparseArrays.CHOLMOD.Sparse(Symmetric(M)))
+    s = unsafe_load(pointer(F))
+    Int(s.n) == size(M, 1) ||
+        error("CHOLMOD analyzed a matrix of order $(Int(s.n)), but `M` has order $(size(M, 1))")
+    s.is_super == 0 || return F, Int(s.xsize)
+    counts = unsafe_wrap(Array, convert(Ptr{_factor_index(F)}, s.ColCount), Int(s.n))
+    return F, sum(Int, counts)
+end
+
+_factor_index(::SparseArrays.CHOLMOD.Factor{<:Any,Ti}) where {Ti} = Ti
+
 # `AbsLog{2}` penalty continuation. Each stage freezes residual weights, solves
 # the weighted least-squares problem, and backtracks. `boost=true` applies a final
 # feasibility shift. The support layout selects the inner solver.
 function _abslog2_continuation(sys::SupportSystem{T}, x0;
-                               κs, maxiter::Int, linsolve::Symbol, boost::Bool) where {T}
+                               κs, maxiter::Int, linsolve::Symbol, boost::Bool,
+                               fillbudget::Real=LSQR_FILL_BUDGET) where {T}
     N = sys.N
     supp = sys.supp
     v0 = sys.v0
@@ -863,24 +886,23 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
     px = zeros(T, use_precond ? N : 0)   # scale vector recovered from the LSQR variable
     pg = zeros(T, use_precond ? N : 0)   # `Rᵀ√W y` before the preconditioner is applied
     mdiag = zeros(T, use_precond ? N : 0)   # weighted degrees, the preconditioner's diagonal
-    # Right-preconditioner: a Cholesky factor of the weighted, gauge-augmented
-    # normal matrix. Its sparsity pattern is the support's and does not depend on
-    # the weights, so one symbolic analysis serves the whole continuation and each
-    # solve refactors in place. The gauge is a dense rank-1 term that would fill
-    # the factor, so it enters as its diagonal alone and LSQR absorbs the rest.
+    # The normal-matrix pattern is constant, so one symbolic analysis serves all
+    # stages. Use its diagonal if the predicted Cholesky factor exceeds the budget.
     Msp = _precond_pattern(T, supp, v0, use_precond ? N : 0, mult)
-    # Positions of the entries each solve overwrites: the diagonal, and both
-    # copies of each off-diagonal support entry.
-    dpos = use_precond ? [_nzindex(Msp, p, p) for p in 1:N] : Int[]
-    epos = zeros(Int, use_precond ? 2 * ne : 0)
-    if use_precond
+    MF, fill_entries = use_precond ? _precond_analysis(Msp) : (nothing, 0)
+    use_factor = use_precond && sizeof(T) * fill_entries <= fillbudget
+    # Positions of the entries each factored solve overwrites: the diagonal, and
+    # both copies of each off-diagonal support entry.
+    dpos = use_factor ? [_nzindex(Msp, p, p) for p in 1:N] : Int[]
+    epos = zeros(Int, use_factor ? 2 * ne : 0)
+    if use_factor
         for (e, (p, q)) in enumerate(supp.edges)
             p == q && continue
             epos[2 * e - 1] = _nzindex(Msp, p, q)
             epos[2 * e] = _nzindex(Msp, q, p)
         end
     end
-    MF = use_precond ? cholesky(Symmetric(Msp)) : nothing
+    psqrt = zeros(T, use_factor ? 0 : (use_precond ? N : 0))  # `K` of the diagonal preconditioner
     rhs = zeros(T, use_woodbury ? N : 0, size(U, 2) + 1)
     dmin = use_woodbury ? minimum(sys.dfull) : oneunit(T)
     cgx = zeros(T, use_woodbury ? N : 0)
@@ -959,11 +981,9 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
             end
             g = ne + 1   # index of the appended gauge row
             if use_precond
-                # Refill the preconditioner with the weights this solve freezes and
-                # refactor it in place: the pattern, and so the symbolic analysis,
-                # is the same on every solve.
-                nzv = nonzeros(Msp)
+                # Weighted degrees, the diagonal of `RᵀWR`.
                 fill!(mdiag, zero(T))
+                nzv = nonzeros(Msp)
                 for (e, (p, q)) in enumerate(edges)
                     w = ws[e]^2
                     if p == q
@@ -971,10 +991,17 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
                     else
                         mdiag[p] += w
                         mdiag[q] += w
-                        nzv[epos[2 * e - 1]] = w
-                        nzv[epos[2 * e]] = w
+                        if use_factor
+                            nzv[epos[2 * e - 1]] = w
+                            nzv[epos[2 * e]] = w
+                        end
                     end
                 end
+            end
+            if use_factor
+                # Refill the preconditioner with the weights this solve freezes
+                # and refactor it in place: the pattern, and so the symbolic
+                # analysis, is the same on every solve.
                 dmax = zero(T)
                 for p in 1:N
                     mdiag[p] += v0[p]^2
@@ -1011,6 +1038,35 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
                 soly, it = _lsqr(Pmul!, Ptmul!, cv, Kc \ px)
                 nlsqr[] += it
                 return (Uc \ soly)::Vector{T}
+            elseif use_precond
+                # An unknown outside the support gets an identity row.
+                for p in 1:N
+                    d = mdiag[p] + v0[p]^2
+                    psqrt[p] = sqrt(d > 0 ? d : oneunit(T))
+                end
+                # Diagonal `K` needs only elementwise scaling.
+                Dmul! = function (y, yv)
+                    @. px = yv / psqrt
+                    for (e, (p, q)) in enumerate(edges)
+                        y[e] = ws[e] * (px[p] + px[q])
+                    end
+                    y[g] = dot(v0, px)
+                    return y
+                end
+                Dtmul! = function (z, y)
+                    fill!(pg, zero(T))
+                    for (e, (p, q)) in enumerate(edges)
+                        t = ws[e] * y[e]
+                        pg[p] += t
+                        pg[q] += t
+                    end
+                    @. pg += v0 * y[g]
+                    @. z = pg / psqrt
+                    return z
+                end
+                soly, it = _lsqr(Dmul!, Dtmul!, cv, psqrt .* x)
+                nlsqr[] += it
+                return soly ./ psqrt
             end
             Amul! = function (y, xx)
                 for (e, (p, q)) in enumerate(edges)
@@ -1108,14 +1164,16 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
     end
     return x, (; nsolves=nsolves[], lsqriters=nlsqr[], cgiters=ncg[],
                cholsolves=nchol[], exits=Tuple(exits), stagedrops=Tuple(drops),
-               linsolve=(use_lsqr ? :lsqr : use_woodbury ? :woodbury : :dense))
+               linsolve=(use_lsqr ? :lsqr : use_woodbury ? :woodbury : :dense),
+               precond=(!use_precond ? :none : use_factor ? :factor : :diagonal))
 end
 
 # Worker for `symcover_min(::AbsLog{2})`, returning `(a, stats)`. A supplied
 # `start` replaces the cold initial solve. Narrow types compute in `Float64`.
 function _symcover_min_abslog2(A::AbstractMatrix; κs=nothing,
                                maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
-                               boost::Bool=true, fname=:symcover_min)
+                               boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET,
+                               fname=:symcover_min)
     linsolve in (:auto, :dense, :lsqr, :woodbury) ||
         throw(ArgumentError("linsolve must be :auto, :dense, :lsqr, or :woodbury; got :$linsolve"))
     # Shared symmetry check for native symmetric minimal covers.
@@ -1127,7 +1185,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=nothing,
     # Continuation tolerances require at least Float64 resolution.
     if eps(T) > eps(Float64)
         a64, stats = _symcover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
-                                           κs, maxiter, linsolve, start, boost, fname)
+                                           κs, maxiter, linsolve, start, boost, fillbudget, fname)
         # Narrowing rounds to nearest and so can round a product below its entry.
         a = T.(a64)
         boost && _certify_cover!(a, A, fname)
@@ -1216,7 +1274,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=nothing,
                            zeros(T, n))
     x0 = start === nothing ? nothing :
          T[hassupp[ip] ? log(T(start[i])) : zero(T) for (ip, i) in enumerate(ax)]
-    α, stats = _abslog2_continuation(sys, x0; κs=κsched, maxiter, linsolve, boost)
+    α, stats = _abslog2_continuation(sys, x0; κs=κsched, maxiter, linsolve, boost, fillbudget)
     _warn_truncated(fname, κsched, stats, maxiter)
     # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     a = similar(Array{T}, ax)
@@ -1230,7 +1288,7 @@ end
 # Worker for `cover_min(::AbsLog{2})`, returning `(a, b, stats)`.
 function _cover_min_abslog2(A::AbstractMatrix; κs=nothing,
                             maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
-                            boost::Bool=true)
+                            boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET)
     linsolve in (:auto, :dense, :lsqr, :woodbury) ||
         throw(ArgumentError("linsolve must be :auto, :dense, :lsqr, or :woodbury; got :$linsolve"))
     axr = axes(A, 1)
@@ -1240,7 +1298,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=nothing,
     # Continuation tolerances require at least Float64 resolution.
     if eps(T) > eps(Float64)
         a64, b64, stats = _cover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
-                                             κs, maxiter, linsolve, start, boost)
+                                             κs, maxiter, linsolve, start, boost, fillbudget)
         # Narrowing rounds to nearest and so can round a product below its entry.
         a, b = T.(a64), T.(b64)
         boost && _certify_cover!(a, b, A, :cover_min)
@@ -1358,7 +1416,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=nothing,
         end
         s0
     end
-    x, stats = _abslog2_continuation(sys, x0; κs=κsched, maxiter, linsolve, boost)
+    x, stats = _abslog2_continuation(sys, x0; κs=κsched, maxiter, linsolve, boost, fillbudget)
     _warn_truncated(:cover_min, κsched, stats, maxiter)
     # Apply the balance convention independently to each support component.
     rowcomp, colcomp, ncomp, _, _ = _support_components(A)

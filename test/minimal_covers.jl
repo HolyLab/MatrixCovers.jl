@@ -357,6 +357,43 @@ end
     @test td8.nsolves <= tl8.nsolves - length(κs8)
 end
 
+# The LSQR preconditioner runs in two regimes: a Cholesky factor of the weighted
+# normal matrix while the fill budget allows it, and that matrix's diagonal
+# beyond it. Both must reach the same cover.
+@testset "MMC :lsqr preconditioner regimes" begin
+    rng = StableRNG(23)
+    n = 200
+    Ssp = sprandn(rng, n, n, 8 / (2n))
+    Ssp = Ssp + Ssp'
+    A = SparseMatrixCSC(size(Ssp)..., Ssp.colptr, Ssp.rowval, exp.(Ssp.nzval))
+    Gsp = sprandn(rng, n, n, 8 / n)
+    G = SparseMatrixCSC(size(Gsp)..., Gsp.colptr, Gsp.rowval, exp.(Gsp.nzval))
+
+    af, sf = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
+    ad, sd = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, fillbudget=0)
+    @test sf.precond === :factor
+    @test sd.precond === :diagonal
+    @test af ≈ ad rtol=1e-6
+    @test iscover(af, af, A) && iscover(ad, ad, A)
+    @test cover_objective(AbsLog{2}(), af, af, A) ≈ cover_objective(AbsLog{2}(), ad, ad, A) rtol=1e-8
+    # The factored regime is the one that converges in a few iterations per solve.
+    @test sf.lsqriters < sd.lsqriters
+
+    gf, hf, tf = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr)
+    gd, hd, td = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr, fillbudget=0)
+    @test (tf.precond, td.precond) === (:factor, :diagonal)
+    @test gf .* hf' ≈ gd .* hd' rtol=1e-6
+    @test iscover(gf, hf, G) && iscover(gd, hd, G)
+    @test cover_objective(AbsLog{2}(), gf, hf, G) ≈ cover_objective(AbsLog{2}(), gd, hd, G) rtol=1e-8
+
+    # The budget is a keyword of the public solvers, and the paths that never
+    # precondition say so.
+    @test symcover_min(AbsLog{2}(), A; linsolve=:lsqr, fillbudget=0) ≈ ad rtol=1e-6
+    @test MatrixCovers._symcover_min_abslog2(A; linsolve=:dense)[2].precond === :none
+    Abig = BigFloat.([4.0 1.0 0.5; 1.0 3.0 1.0; 0.5 1.0 2.5])
+    @test MatrixCovers._symcover_min_abslog2(Abig; linsolve=:lsqr)[2].precond === :none
+end
+
 # LSQR continuation starts from the heuristic cover.
 @testset "MMC :lsqr continuation starts from the heuristic cover" begin
     rng = StableRNG(17)
