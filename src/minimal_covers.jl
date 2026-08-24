@@ -1038,16 +1038,20 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     end
     n = length(ax)
     use_lsqr = linsolve === :lsqr
-    # Build only the support layout needed by the chosen solver.
-    G = _sym_support(A, T)
+    # One counting traversal decides the solver; the layout it needs is built after.
+    o = first(ax) - 1
+    nza = zeros(Int, n)    # support entries per row, counted in both orientations
+    foreach_support_sym(A) do i, j, v
+        nza[i-o] += 1
+        i == j || (nza[j-o] += 1)
+    end
     hassupp = falses(n)
     nsupp = 0              # support entries of `A`, counted in both orientations
     maxzero = 0            # largest number of zeros in any row of `A`
-    for (ip, i) in enumerate(ax)
-        ns = length(_slots(G, i))
-        hassupp[ip] = ns > 0
-        nsupp += ns
-        maxzero = max(maxzero, n - ns)
+    for ip in 1:n
+        hassupp[ip] = nza[ip] > 0
+        nsupp += nza[ip]
+        maxzero = max(maxzero, n - nza[ip])
     end
     # `n*I - L_Z` is positive definite only while no row carries more than
     # `n ÷ 4` zeros; the total budget bounds cost.
@@ -1072,14 +1076,12 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     # Woodbury uses a grid; dense and LSQR use an edge list.
     supp = if use_woodbury
         C = fill(T(-Inf), n, n)
-        for (ip, i) in enumerate(ax)
-            for s in _slots(G, i)
-                jp = G.idx[s] - first(ax) + 1
-                jp >= ip && (C[ip, jp] = log(G.val[s]))
-            end
+        foreach_support_sym(A) do i, j, v
+            C[i-o, j-o] = log(T(v))
         end
         Grid{T}(C)
     else
+        G = _sym_support(A, T)
         edges = Tuple{Int,Int}[]
         cvals = T[]
         for (ip, i) in enumerate(ax)
@@ -1093,18 +1095,14 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         end
         EdgeList{T}(edges, cvals)
     end
-    # Zero set defining the off-diagonal pattern of sparse `C`.
+    # Zero set defining the off-diagonal pattern of sparse `C`, grouped by row.
     zedges = Tuple{Int,Int}[]
     if use_woodbury
-        mark = falses(n)
-        for (ip, i) in enumerate(ax)
-            for s in _slots(G, i)
-                mark[G.idx[s] - first(ax) + 1] = true
-            end
+        Cgrid = supp.C
+        for ip in 1:n
             for jp in ip:n
-                mark[jp] || push!(zedges, (ip, jp))
+                isfinite(Cgrid[ip, jp]) || push!(zedges, (ip, jp))
             end
-            fill!(mark, false)
         end
     end
     # The ridge handles singular symmetric support graphs.
@@ -1144,18 +1142,15 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     N = m + n
     use_lsqr = linsolve === :lsqr
     # Stack row positions before column positions; scatter results back to `A`'s axes.
-    G = _row_support(A, T)
+    or = first(axr) - 1
+    oc = first(axc) - 1
     nzrow = zeros(Int, m)   # support entries per row, for the balance convention
     nzcol = zeros(Int, n)   # ditto per column
-    ne = 0
-    for (ip, i) in enumerate(axr)
-        for s in _slots(G, i)
-            jp = G.idx[s] - first(axc) + 1
-            ne += 1
-            nzrow[ip] += 1
-            nzcol[jp] += 1
-        end
+    foreach_support(A) do i, j, v
+        nzrow[i-or] += 1
+        nzcol[j-oc] += 1
     end
+    ne = sum(nzrow)
     hasrow = nzrow .> 0
     hascol = nzcol .> 0
     # `min(m,n)*I - L_Z` is positive definite only while no row or column
@@ -1190,13 +1185,12 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     # Woodbury uses a grid; dense and LSQR use an edge list.
     supp = if use_woodbury
         C = fill(T(-Inf), m, n)
-        for (ip, i) in enumerate(axr)
-            for s in _slots(G, i)
-                C[ip, G.idx[s]-first(axc)+1] = log(G.val[s])
-            end
+        foreach_support(A) do i, j, v
+            C[i-or, j-oc] = log(T(v))
         end
         Grid{T}(C)
     else
+        G = _row_support(A, T)
         edges = Tuple{Int,Int}[]
         cvals = T[]
         for (ip, i) in enumerate(axr)
@@ -1220,15 +1214,11 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             dfull[m+jp] = T(m)
             Umat[m+jp, 2] = oneunit(T)
         end
-        mark = falses(n)
-        for (ip, i) in enumerate(axr)
-            for s in _slots(G, i)
-                mark[G.idx[s] - first(axc) + 1] = true
-            end
+        Cgrid = supp.C
+        for ip in 1:m
             for jp in 1:n
-                mark[jp] || push!(zedges, (ip, m + jp))
+                isfinite(Cgrid[ip, jp]) || push!(zedges, (ip, m + jp))
             end
-            fill!(mark, false)
         end
     end
     # Pin the global row/column gauge on supported variables.
@@ -1255,7 +1245,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     end
     x, stats = _abslog2_continuation(sys, x0; κs, maxiter, linsolve, boost)
     # Apply the balance convention independently to each support component.
-    rowcomp, colcomp, ncomp = _support_components(A)
+    rowcomp, colcomp, ncomp, _, _ = _support_components(A)
     Lα = zeros(T, ncomp)
     Lβ = zeros(T, ncomp)
     nec = zeros(Int, ncomp)
