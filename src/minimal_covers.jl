@@ -1186,6 +1186,11 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=nothing,
     end
     # Select the default schedule after selecting the solver.
     κsched = κs === nothing ? _kappa_schedule(T, use_lsqr) : κs
+    # Start LSQR continuation from the heuristic cover. An empty schedule returns
+    # the unweighted fit instead.
+    if start === nothing && use_lsqr && !isempty(κsched)
+        start = symcover(A)
+    end
     # Woodbury uses a grid; dense and LSQR use an edge list.
     supp = if use_woodbury
         C = fill(T(-Inf), n, n)
@@ -1302,6 +1307,10 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=nothing,
     end
     # Select the default schedule after selecting the solver.
     κsched = κs === nothing ? _kappa_schedule(T, use_lsqr) : κs
+    # Start LSQR continuation from the heuristic cover.
+    if start === nothing && use_lsqr && !isempty(κsched)
+        start = cover(A)
+    end
     # Woodbury uses a grid; dense and LSQR use an edge list.
     supp = if use_woodbury
         C = fill(T(-Inf), m, n)

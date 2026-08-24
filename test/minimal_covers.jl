@@ -332,11 +332,14 @@ end
     @test aw ≈ al rtol=1e-6
     @test sd.nsolves == sw.nsolves
     @test sd.nsolves <= 26
-    # Exact paths save one solve per continuation stage. The default schedule is
-    # solver-dependent, so the comparison runs both paths on one schedule.
+    # Exact paths save one solve per continuation stage. The comparison runs both
+    # paths on one schedule, because the default is solver-dependent, and from one
+    # start, because the LSQR path otherwise supplies its own: only a shared
+    # starting iterate leaves the stage-exit rule as the difference between them.
     κs8 = MatrixCovers._kappa_schedule(Float64, false)
-    _, sd8 = MatrixCovers._symcover_min_abslog2(A; linsolve=:dense, κs=κs8)
-    _, sl8 = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, κs=κs8)
+    a0 = symcover(A)
+    _, sd8 = MatrixCovers._symcover_min_abslog2(A; linsolve=:dense, κs=κs8, start=a0)
+    _, sl8 = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, κs=κs8, start=a0)
     @test sd8.nsolves <= sl8.nsolves - length(κs8)
 
     G = exp.(randn(rng, 60, 45))
@@ -348,9 +351,33 @@ end
     @test td.nsolves == tw.nsolves
     # Leave a small margin in the solve-count bound.
     @test td.nsolves <= 28
-    _, _, td8 = MatrixCovers._cover_min_abslog2(G; linsolve=:dense, κs=κs8)
-    _, _, tl8 = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr, κs=κs8)
+    g0, h0 = cover(G)
+    _, _, td8 = MatrixCovers._cover_min_abslog2(G; linsolve=:dense, κs=κs8, start=(g0, h0))
+    _, _, tl8 = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr, κs=κs8, start=(g0, h0))
     @test td8.nsolves <= tl8.nsolves - length(κs8)
+end
+
+# LSQR continuation starts from the heuristic cover.
+@testset "MMC :lsqr continuation starts from the heuristic cover" begin
+    rng = StableRNG(17)
+    A = (X = exp.(randn(rng, 50, 50)); (X .+ X') ./ 2)
+    al, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
+    ah, sh = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, start=symcover(A))
+    @test al == ah
+    @test (sl.nsolves, sl.lsqriters) == (sh.nsolves, sh.lsqriters)
+    ad, _ = MatrixCovers._symcover_min_abslog2(A; linsolve=:dense)
+    @test ad ≈ al rtol=1e-6
+
+    G = exp.(randn(rng, 40, 30))
+    gl, hl, tl = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr)
+    g0, h0 = cover(G)
+    gh, hh, th = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr, start=(g0, h0))
+    @test gl == gh
+    @test hl == hh
+    @test (tl.nsolves, tl.lsqriters) == (th.nsolves, th.lsqriters)
+
+    # With no stages the unweighted fit is the answer, not a start.
+    @test soft_symcover_min(AbsLog{2}(), A; linsolve=:lsqr) != symcover(A)
 end
 
 # The Float64 LSQR preconditioner includes κ-weighted rows; other types use the
