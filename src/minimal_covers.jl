@@ -35,6 +35,9 @@ The native solver accepts `κs` (penalty-continuation schedule), `maxiter`
 - `:auto` chooses `:woodbury` when supported, `:lsqr` when the stored support
   fills at most a quarter of the grid, and `:dense` otherwise.
 
+If a stage reaches `maxiter`, the solver warns that the cover may not minimize
+the objective. Increase `maxiter` or supply more continuation stages.
+
 The native solver computes in `Float64` for narrower input types, then converts
 the result to the required element type.
 
@@ -66,8 +69,9 @@ method selects the one with the smallest `AbsLog{2}` objective.
 # Extended help
 
 The native solver accepts the same `κs`, `maxiter`, and `linsolve` keywords as
-[`symcover_min`](@ref). For `:woodbury`, an `m × n` matrix may omit at most
-`min(m,n) ÷ 4` entries per row or column and `4 * max(m,n)` entries in total.
+[`symcover_min`](@ref), and the same warning when a stage runs out of Newton
+steps. For `:woodbury`, an `m × n` matrix may omit at most `min(m,n) ÷ 4` entries
+per row or column and `4 * max(m,n)` entries in total.
 `:dense` costs O((m+n)³) per Newton step; sparse matrices default to `:lsqr`.
 
 See also: [`symcover_min`](@ref), [`cover`](@ref), [`cover_min!`](@ref).
@@ -736,6 +740,16 @@ function _symmul!(y::AbstractVector{T}, Cu::SparseMatrixCSC{T}, x::AbstractVecto
     return y
 end
 
+# Warn when a continuation stage reaches `maxiter` while still descending.
+function _warn_truncated(fname::Symbol, κs, stats, maxiter::Int)
+    exits = stats.exits
+    any(==(:maxiter), exits) || return nothing
+    stalled = [(k, κs[k], stats.stagedrops[k]) for k in eachindex(exits) if exits[k] === :maxiter]
+    detail = join(("stage $k (κ = $κ) was still decreasing by $d per step" for (k, κ, d) in stalled), "; ")
+    @warn "$fname: $(length(stalled)) of $(length(exits)) continuation stages reached maxiter=$maxiter; the result covers `A` but may not minimize the objective ($detail). Increase `maxiter` or supply more `κs` stages."
+    return nothing
+end
+
 # `AbsLog{2}` penalty continuation. Each stage freezes residual weights, solves
 # the weighted least-squares problem, and backtracks. `boost=true` applies a final
 # feasibility shift. The support layout selects the inner solver.
@@ -1054,8 +1068,13 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
         end
     end
     x = x0 === nothing ? solve_weighted(zeros(T, N), nothing) : x0
-    for κ in κs
+    # Record each stage's exit reason and final relative decrease.
+    exits = Vector{Symbol}(undef, length(κs))
+    drops = Vector{T}(undef, length(κs))
+    for (k, κ) in enumerate(κs)
         fcur = _fκ(x, κ, supp, symmetric)
+        exit = :maxiter
+        drop = zero(T)
         for _ in 1:maxiter
             xnew = solve_weighted(x, κ)
             t = one(T)
@@ -1068,11 +1087,20 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
                 stable = false
             end
             x = xt
+            drop = (fcur - fnew) / max(fcur, one(T))
             # For exact inner solves, an unchanged violation pattern ends the stage.
-            !use_lsqr && stable && break
-            fcur - fnew <= 5000 * eps(T) * max(fcur, one(T)) && break
+            if !use_lsqr && stable
+                exit = :stable
+                break
+            end
+            if fcur - fnew <= 5000 * eps(T) * max(fcur, one(T))
+                exit = :decrease
+                break
+            end
             fcur = fnew
         end
+        exits[k] = exit
+        drops[k] = drop
     end
     # Hard covers receive a final uniform feasibility shift.
     if boost
@@ -1082,7 +1110,7 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
         end
     end
     return x, (; nsolves=nsolves[], lsqriters=nlsqr[], cgiters=ncg[],
-               cholsolves=nchol[],
+               cholsolves=nchol[], exits=Tuple(exits), stagedrops=Tuple(drops),
                linsolve=(use_lsqr ? :lsqr : use_woodbury ? :woodbury : :dense))
 end
 
@@ -1185,6 +1213,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     x0 = start === nothing ? nothing :
          T[hassupp[ip] ? log(T(start[i])) : zero(T) for (ip, i) in enumerate(ax)]
     α, stats = _abslog2_continuation(sys, x0; κs, maxiter, linsolve, boost)
+    _warn_truncated(fname, κs, stats, maxiter)
     # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     a = similar(Array{T}, ax)
     for (ip, i) in enumerate(ax)
@@ -1320,6 +1349,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         s0
     end
     x, stats = _abslog2_continuation(sys, x0; κs, maxiter, linsolve, boost)
+    _warn_truncated(:cover_min, κs, stats, maxiter)
     # Apply the balance convention independently to each support component.
     rowcomp, colcomp, ncomp, _, _ = _support_components(A)
     Lα = zeros(T, ncomp)

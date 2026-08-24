@@ -575,3 +575,30 @@ end
     # Allow iteration growth while rejecting an added dense workspace.
     @test large < 10 * small
 end
+
+@testset "MMC continuation reports how each stage ended" begin
+    rng = StableRNG(17)
+    A = (X = exp.(randn(rng, 40, 40)); (X .+ X') ./ 2)
+    _, s = MatrixCovers._symcover_min_abslog2(A)
+    @test length(s.exits) == 4
+    @test length(s.stagedrops) == length(s.exits)
+    @test all(in((:stable, :decrease, :maxiter)), s.exits)
+    # With room to converge, no stage runs out of Newton steps.
+    @test all(!=(:maxiter), s.exits)
+
+    # A one-step limit truncates every `:lsqr` stage and emits a warning.
+    @test_logs (:warn, r"reached maxiter=1") match_mode=:any begin
+        _, sl = MatrixCovers._symcover_min_abslog2(A; maxiter=1, linsolve=:lsqr)
+        @test all(==(:maxiter), sl.exits)
+    end
+
+    G = exp.(randn(rng, 40, 30))
+    _, _, t = MatrixCovers._cover_min_abslog2(G)
+    @test length(t.exits) == 4
+    @test all(!=(:maxiter), t.exits)
+
+    # A supplied schedule sets how many stages are reported.
+    _, s8 = MatrixCovers._symcover_min_abslog2(A; κs=10 .^ range(2, 8, length=8))
+    @test length(s8.exits) == 8
+    @test all(!=(:maxiter), s8.exits)
+end
