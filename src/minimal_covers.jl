@@ -492,21 +492,28 @@ function _fκpat(x, κ, pat, supp::Grid{T}, symmetric::Bool) where {T}
             pj = view(pat, 1:j-1, j)
             xi = view(x, 1:j-1)
             vj = zero(T)
-            dj = 0
-            @simd for i in eachindex(cj, pj, xi)
+            # Keep the Boolean pattern out of the vectorized floating-point loop.
+            @simd for i in eachindex(cj, xi)
                 c = cj[i]
-                fin = isfinite(c)
                 z = xi[i] + xj - c
                 w = ifelse(z < 0, κT, oneunit(T))
-                vj += ifelse(fin, w * z^2, zero(T))
-                dj += ifelse((fin & (z < 0)) == pj[i], 0, 1)
+                vj += ifelse(isfinite(c), w * z^2, zero(T))
+            end
+            # Stop comparing after the first pattern change.
+            if ndiff == 0
+                dj = 0
+                @simd for i in eachindex(cj, pj, xi)
+                    c = cj[i]
+                    dj += ifelse((isfinite(c) & (xi[i] + xj - c < 0)) == pj[i], 0, 1)
+                end
+                ndiff += dj
             end
             c = C[j, j]
             fin = isfinite(c)
             z = 2xj - c
             w = ifelse(z < 0, κT, oneunit(T))
             v += 2vj + ifelse(fin, w * z^2, zero(T))
-            ndiff += dj + ifelse((fin & (z < 0)) == pat[j, j], 0, 1)
+            ndiff += ifelse((fin & (z < 0)) == pat[j, j], 0, 1)
         end
     else
         xr = view(x, 1:m)
@@ -515,17 +522,21 @@ function _fκpat(x, κ, pat, supp::Grid{T}, symmetric::Bool) where {T}
             cj = view(C, :, j)
             pj = view(pat, :, j)
             vj = zero(T)
-            dj = 0
-            @simd for i in eachindex(cj, pj, xr)
+            @simd for i in eachindex(cj, xr)
                 c = cj[i]
-                fin = isfinite(c)
                 z = xr[i] + xj - c
                 w = ifelse(z < 0, κT, oneunit(T))
-                vj += ifelse(fin, w * z^2, zero(T))
-                dj += ifelse((fin & (z < 0)) == pj[i], 0, 1)
+                vj += ifelse(isfinite(c), w * z^2, zero(T))
+            end
+            if ndiff == 0
+                dj = 0
+                @simd for i in eachindex(cj, pj, xr)
+                    c = cj[i]
+                    dj += ifelse((isfinite(c) & (xr[i] + xj - c < 0)) == pj[i], 0, 1)
+                end
+                ndiff += dj
             end
             v += vj
-            ndiff += dj
         end
     end
     return v, ndiff == 0
@@ -579,7 +590,9 @@ end
 # `κ === nothing` denotes the unweighted solve. Off-support entries of `C` are
 # `-Inf`, so products with them go through `ifelse(isfinite(c), ...)`: `0 * -Inf`
 # is NaN.
-function _assemble_woodbury!(f, dg, degV, vedges, vpat, x, κ, supp::Grid{T},
+# `vrow` stores violated off-diagonal rows in compressed-column order; `vcnt`
+# stores their column counts. `dg` and `degV` carry diagonal entries.
+function _assemble_woodbury!(f, dg, degV, vrow, vcnt, vpat, x, κ, supp::Grid{T},
                              symmetric::Bool, dκ) where {T}
     C = supp.C
     m, n = size(C)
@@ -609,18 +622,20 @@ function _assemble_woodbury!(f, dg, degV, vedges, vpat, x, κ, supp::Grid{T},
             w = ifelse(viol, κT, oneunit(T))
             f[j] += fq + ifelse(fin, w * c, zero(T))
             vpat[j, j] = viol
+            nv = 0
             for i in eachindex(vj)
                 vj[i] || continue
-                push!(vedges, (i, j))
+                push!(vrow, i)
+                nv += 1
                 degV[i] += 1
                 degV[j] += 1
                 dg[i] += dκ
                 dg[j] += dκ
             end
+            vcnt[j] = nv
             # A symmetric diagonal entry sits at both ends of its own residual, so it
             # lands on `dg[j]` twice while counting once in `degV`.
             if vpat[j, j]
-                push!(vedges, (j, j))
                 degV[j] += 1
                 dg[j] += 2dκ
             end
@@ -645,17 +660,80 @@ function _assemble_woodbury!(f, dg, degV, vedges, vpat, x, κ, supp::Grid{T},
                 vj[i] = viol
             end
             f[q] += fq
+            nv = 0
             for i in eachindex(vj)
                 vj[i] || continue
-                push!(vedges, (i, q))
+                push!(vrow, i)
+                nv += 1
                 degV[i] += 1
                 degV[q] += 1
                 dg[i] += dκ
                 dg[q] += dκ
             end
+            vcnt[q] = nv
         end
     end
     return f
+end
+
+# Assemble the upper triangle of the sparse Woodbury correction in CSC order,
+# reusing its storage across solves.
+function _assemble_C!(colptr::Vector{Int}, rowval::Vector{Int}, nzval::Vector{T},
+                      zptr, zrow, vptr, vrow, dg, dκ, N::Int) where {T}
+    colptr[1] = 1
+    for q in 1:N
+        colptr[q+1] = colptr[q] + (zptr[q+1] - zptr[q]) + (vptr[q+1] - vptr[q]) + 1
+    end
+    nnz = colptr[N+1] - 1
+    length(rowval) == nnz || resize!(rowval, nnz)
+    length(nzval) == nnz || resize!(nzval, nnz)
+    for q in 1:N
+        s = colptr[q]
+        zs, ze = zptr[q], zptr[q+1] - 1
+        vs, ve = vptr[q], vptr[q+1] - 1
+        while zs <= ze && vs <= ve
+            if zrow[zs] < vrow[vs]
+                rowval[s] = zrow[zs]; nzval[s] = -oneunit(T); zs += 1
+            else
+                rowval[s] = vrow[vs]; nzval[s] = dκ; vs += 1
+            end
+            s += 1
+        end
+        while zs <= ze
+            rowval[s] = zrow[zs]; nzval[s] = -oneunit(T); zs += 1; s += 1
+        end
+        while vs <= ve
+            rowval[s] = vrow[vs]; nzval[s] = dκ; vs += 1; s += 1
+        end
+        # `dg` carries the same diagonal plus the identity the ridge loop added.
+        rowval[s] = q
+        nzval[s] = dg[q] - oneunit(T)
+    end
+    return SparseMatrixCSC(N, N, colptr, rowval, nzval)
+end
+
+# `y = Symmetric(Cu) * x` for an upper-triangular compressed-column `Cu`.
+function _symmul!(y::AbstractVector{T}, Cu::SparseMatrixCSC{T}, x::AbstractVector{T}) where {T}
+    fill!(y, zero(T))
+    rv = rowvals(Cu)
+    nz = nonzeros(Cu)
+    for q in axes(Cu, 2)
+        xq = x[q]
+        s = zero(T)
+        for k in nzrange(Cu, q)
+            p = rv[k]
+            v = nz[k]
+            if p == q
+                s += v * xq
+            else
+                y[p] += v * xq
+                s += v * x[p]
+            end
+        end
+        # Later columns add the remaining terms to `y[q]`.
+        y[q] += s
+    end
+    return y
 end
 
 # `AbsLog{2}` penalty continuation. Each stage freezes residual weights, solves
@@ -689,9 +767,34 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
     cv = zeros(T, ne + 1)   # √weight · log|A_ij|, with a trailing 0 gauge target
     # Violated entries under the current frozen weights.
     vpat = _violation_pattern(supp)
-    vedges = Tuple{Int,Int}[]                # the violated entries of the current solve
+    vedges = Tuple{Int,Int}[]                # the violated entries of the current solve (LSQR path only)
+    vrow = Int[]                             # violated rows, grouped by column (Woodbury path only)
+    vcnt = zeros(Int, use_woodbury ? N : 0)  # violated off-diagonal entries per column
+    vptr = zeros(Int, use_woodbury ? N + 1 : 0)
     degV = zeros(Int, use_woodbury ? N : 0)  # violated entries per unknown
     dg = zeros(T, use_woodbury ? N : 0)      # diagonal of `B`, for the ridge and the CG preconditioner
+    # Zero set grouped by column, excluding the diagonal, which `dg` carries.
+    zptr = zeros(Int, use_woodbury ? N + 1 : 0)
+    zrow = Int[]
+    if use_woodbury
+        for (p, q) in sys.zedges
+            p == q || (zptr[q+1] += 1)
+        end
+        zptr[1] = 1
+        cumsum!(zptr, zptr)
+        resize!(zrow, zptr[end] - 1)
+        zcursor = zptr[1:end-1]
+        # `sys.zedges` ordering keeps each compressed column sorted.
+        for (p, q) in sys.zedges
+            p == q && continue
+            zrow[zcursor[q]] = p
+            zcursor[q] += 1
+        end
+    end
+    # Storage for the sparse correction, reused across solves.
+    Ccolptr = zeros(Int, use_woodbury ? N + 1 : 0)
+    Crowval = Int[]
+    Cnzval = T[]
     # Diagonal of the unweighted, gauge-augmented normal matrix.
     dpart = zeros(T, use_lsqr ? N : 0)
     if supp isa EdgeList && use_lsqr
@@ -719,10 +822,6 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
     pg = zeros(T, use_lsqr ? N : 0)      # `Rᵀ√W y` before the preconditioner is applied
     # `K` of the diagonal preconditioner, which is κ-independent and so built once.
     psqrt = use_lsqr ? sqrt.(dpart) : T[]
-    # COO triplets of `C`, refilled whenever a Woodbury solve is factorized.
-    Ci = Int[]
-    Cj = Int[]
-    Cv = T[]
     rhs = zeros(T, use_woodbury ? N : 0, size(U, 2) + 1)
     dmin = use_woodbury ? minimum(sys.dfull) : oneunit(T)
     cgx = zeros(T, use_woodbury ? N : 0)
@@ -743,8 +842,12 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
             fill!(f, zero(T))
             copyto!(dg, czero)
             fill!(degV, 0)
-            empty!(vedges)
-            _assemble_woodbury!(f, dg, degV, vedges, vpat, x, κ, supp, symmetric, dκ)
+            empty!(vrow)
+            _assemble_woodbury!(f, dg, degV, vrow, vcnt, vpat, x, κ, supp, symmetric, dκ)
+            vptr[1] = 1
+            for q in 1:N
+                vptr[q+1] = vptr[q] + vcnt[q]
+            end
             # Match the ridge used by the dense path.
             dmax = zero(T)
             maxdegV = 0
@@ -756,47 +859,13 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
             for p in 1:N
                 dg[p] += oneunit(T) + ridge
             end
-            # Store full `C` for both matrix-vector products and factorization.
-            empty!(Ci)
-            empty!(Cj)
-            empty!(Cv)
-            for p in 1:N
-                push!(Ci, p)
-                push!(Cj, p)
-                push!(Cv, czero[p] + ridge)
-            end
-            for (p, q) in sys.zedges
-                p == q && continue
-                push!(Ci, p)
-                push!(Cj, q)
-                push!(Cv, -oneunit(T))
-                push!(Ci, q)
-                push!(Cj, p)
-                push!(Cv, -oneunit(T))
-            end
-            for (p, q) in vedges
-                push!(Ci, p)
-                push!(Cj, p)
-                push!(Cv, dκ)
-                push!(Ci, p)
-                push!(Cj, q)
-                push!(Cv, dκ)
-                if q != p
-                    push!(Ci, q)
-                    push!(Cj, q)
-                    push!(Cv, dκ)
-                    push!(Ci, q)
-                    push!(Cj, p)
-                    push!(Cv, dκ)
-                end
-            end
-            C = sparse(Ci, Cj, Cv, N, N)
+            C = _assemble_C!(Ccolptr, Crowval, Cnzval, zptr, zrow, vptr, vrow, dg, dκ, N)
             # Use CG while the Gershgorin condition estimate remains small.
             κest = oneunit(T) + dκ * 2 * maxdegV / dmin
             if κest <= WOODBURY_CG_KAPPA
                 copyto!(cgx, x)
                 Bmul! = function (yy, xx)
-                    mul!(yy, C, xx)
+                    _symmul!(yy, C, xx)
                     # Indicator columns make the low-rank term a block sum.
                     for k in axes(U, 2)
                         s = zero(T)
@@ -817,7 +886,7 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
                 ok && return copy(cgx)
             end
             nchol[] += 1
-            return _woodbury_solve!(zeros(T, N), cholesky(Symmetric(C)), U, f, rhs)
+            return _woodbury_solve!(zeros(T, N), cholesky(Symmetric(C, :U)), U, f, rhs)
         elseif use_lsqr
             edges = supp.edges
             cvals = supp.cvals
