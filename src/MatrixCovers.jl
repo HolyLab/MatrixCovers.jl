@@ -25,6 +25,7 @@ include("penalties.jl")
 include("support.jl")
 include("iscover.jl")
 include("heuristic_covers.jl")
+include("dense_heuristic.jl")  # full-grid kernels for the heuristic covers
 include("gram_covers.jl")    # symmetric covers of A'*W*A from an asymmetric cover of A
 include("initializers.jl")   # the start menu; consumed by both solver families below
 include("soft_covers.jl")

@@ -64,9 +64,15 @@ function symcover!(a::AbstractVector, A::AbstractMatrix; kwargs...)
     axes(A, 2) == ax || throw(ArgumentError("symcover! requires a square matrix"))
     require_abs_symmetric(A, :symcover!)
     eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(ax))"))
+    return _symcover!(a, A; kwargs...)
+end
+
+function _symcover!(a::AbstractVector, A::AbstractMatrix; maxiter::Int=3)
+    T = float(real(eltype(a)))
+    _use_dense_grid(A, T) && return _symcover_dense!(a, A, T, maxiter)
     unconstrained_min!(AbsLog{2}(), a, A)
     boost_feasible!(a, A)
-    return tighten_cover!(a, A; kwargs...)
+    return tighten_cover!(a, A; maxiter)
 end
 
 """
@@ -137,9 +143,15 @@ cover!(ϕ::AbstractCoverPenalty, a::AbstractVector, b::AbstractVector, A::Abstra
 function cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
     axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
     axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
+    return _cover!(a, b, A; kwargs...)
+end
+
+function _cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; maxiter::Int=3)
+    T = float(promote_type(eltype(a), eltype(b)))
+    _use_dense_grid(A, T) && return _cover_dense!(a, b, A, T, maxiter)
     unconstrained_min!(AbsLog{2}(), a, b, A)
     boost_feasible!(a, b, A)
-    tighten_cover!(a, b, A; kwargs...)
+    tighten_cover!(a, b, A; maxiter)
     # Apply the package's balance convention, then restore coverage lost to rounding.
     _balance_cover!(a, b, A)
     return inflate_feasible!(a, b, A)
@@ -163,28 +175,32 @@ end
 # exactly, at the cost of balancing only within a factor of `sqrt(2)`.
 function _balance_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
     T = float(promote_type(eltype(a), eltype(b)))
-    rowcomp, colcomp, ncomp = _support_components(A)
+    rowcomp, colcomp, ncomp, nzrow, nzcol = _support_components(A)
     iszero(ncomp) && return a, b
     Lα = zeros(T, ncomp)
     Lβ = zeros(T, ncomp)
     nnz = zeros(Int, ncomp)
-    or = first(axes(A, 1)) - 1
-    oc = first(axes(A, 2)) - 1
-    foreach_support(A) do i, j, v
-        c = rowcomp[i-or]
-        Lα[c] += log2(T(a[i]))
-        Lβ[c] += log2(T(b[j]))
-        nnz[c] += 1
+    # Weight each scale by its support count.
+    for (p, i) in enumerate(eachindex(a))
+        c = rowcomp[p]
+        c == 0 && continue
+        Lα[c] += nzrow[p] * log2(T(a[i]))
+        nnz[c] += nzrow[p]
+    end
+    for (q, j) in enumerate(eachindex(b))
+        c = colcomp[q]
+        c == 0 && continue
+        Lβ[c] += nzcol[q] * log2(T(b[j]))
     end
     # An integer base-2 exponent makes the rescaling exact.
     gamma = [exp2(round((Lβ[c] - Lα[c]) / (2 * nnz[c]))) for c in 1:ncomp]
-    for i in eachindex(a)
-        c = rowcomp[i-or]
+    for (p, i) in enumerate(eachindex(a))
+        c = rowcomp[p]
         c == 0 && continue
         a[i] *= gamma[c]
     end
-    for j in eachindex(b)
-        c = colcomp[j-oc]
+    for (q, j) in enumerate(eachindex(b))
+        c = colcomp[q]
         c == 0 && continue
         b[j] /= gamma[c]
     end
@@ -361,45 +377,52 @@ end
 # to lower buckets. Log-deficit buckets preserve covariance except for ties.
 const BOOST_BUCKET_WIDTH = log(2) / 4   # quality indistinguishable from exact greedy; only bucket count grows as w shrinks
 
-# Flat linked bucket queue: `head[b]` is the first entry and `nxt[k]` links the
-# rest. Deficits are recomputed instead of cached.
-function bucket_boost!(deficit::F, apply!::G, entries, ::Type{T}) where {F,G,T}
-    n = length(entries)
-    zmax = zero(T)
-    for entry in entries
-        z = deficit(entry)
-        z > zero(T) || continue
-        zmax = max(zmax, z)
-    end
+# Visit deficit buckets from highest to lowest. Original entries are stored
+# contiguously; entries demoted from higher buckets use per-bucket stacks.
+function bucket_boost!(deficit::F, apply!::G, entries::AbstractVector, ::Type{T}, zmax::T) where {F,G,T}
     zmax > zero(T) || return
     w = T(BOOST_BUCKET_WIDTH)
     B = max(1, ceil(Int, zmax / w))
     bucketof(z) = clamp(ceil(Int, z / w), 1, B)
-    head = zeros(Int, B)
-    nxt = zeros(Int, n)
-    for k in eachindex(entries)
-        z = deficit(entries[k])
+    ptr = zeros(Int, B + 1)
+    for entry in entries
+        z = deficit(entry)
+        z > zero(T) || continue
+        ptr[bucketof(z)+1] += 1
+    end
+    ptr[1] = 1
+    cumsum!(ptr, ptr)
+    cursor = ptr[1:end-1]              # next free slot of each level
+    sorted = similar(entries, ptr[end] - 1)
+    for k in reverse(eachindex(entries))
+        entry = entries[k]
+        z = deficit(entry)
         z > zero(T) || continue
         b = bucketof(z)
-        nxt[k] = head[b]
-        head[b] = k
+        sorted[cursor[b]] = entry
+        cursor[b] += 1
+    end
+    # Demoted entries, as a stack per level over one shared array.
+    dhead = zeros(Int, B)
+    dentry = similar(entries, 0)
+    dnext = Int[]
+    demote!(entry, b2) = (push!(dentry, entry); push!(dnext, dhead[b2]); dhead[b2] = length(dentry))
+    function visit!(entry, b)
+        z = deficit(entry)
+        z > zero(T) || return
+        b2 = bucketof(z)
+        b2 < b ? demote!(entry, b2) : apply!(entry, z)
+        return
     end
     for b in B:-1:1
-        k = head[b]
-        while k != 0
-            knext = nxt[k]   # save before a possible demotion overwrites nxt[k]
-            e = entries[k]
-            z = deficit(e)
-            if z > zero(T)
-                b2 = bucketof(z)
-                if b2 < b
-                    nxt[k] = head[b2]
-                    head[b2] = k          # deficit shrank: demote, revisit later
-                else
-                    apply!(e, z)
-                end
-            end
-            k = knext
+        e = dhead[b]
+        while e != 0
+            enext = dnext[e]              # save before a further demotion appends
+            visit!(dentry[e], b)
+            e = enext
+        end
+        for s in ptr[b]:ptr[b+1]-1
+            visit!(sorted[s], b)
         end
     end
     return
@@ -427,9 +450,13 @@ function boost_feasible!(a::AbstractVector{T}, A::AbstractMatrix) where T
     # `entries` once at its exact size, instead of the repeated grow-and-copy
     # of building it with `push!`.
     nviol = Ref(0)
+    zmax = Ref(zero(T))
     foreach_support_sym(A) do i, j, v
         z = log(T(v)) - la[i] - la[j]
-        z > zero(T) && (nviol[] += 1)
+        if z > zero(T)
+            nviol[] += 1
+            zmax[] = max(zmax[], z)
+        end
     end
     entries = Vector{Tuple{IdxT,IdxT,T}}(undef, nviol[])
     k = Ref(0)
@@ -449,7 +476,7 @@ function boost_feasible!(a::AbstractVector{T}, A::AbstractMatrix) where T
         la[i] += h; a[i] = exp(la[i])
         i == j || (la[j] += h; a[j] = exp(la[j]))
     end
-    bucket_boost!(deficit, apply!, entries, T)
+    bucket_boost!(deficit, apply!, entries, T, zmax[])
     return a
 end
 
@@ -470,9 +497,13 @@ function boost_feasible!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix
     # fill) allocate `entries` once at its exact size, instead of the
     # repeated grow-and-copy of building it with `push!`.
     nviol = Ref(0)
+    zmax = Ref(zero(T))
     foreach_support(A) do i, j, v
         z = log(T(v)) - la[i] - lb[j]
-        z > zero(T) && (nviol[] += 1)
+        if z > zero(T)
+            nviol[] += 1
+            zmax[] = max(zmax[], z)
+        end
     end
     entries = Vector{Tuple{IdxA,IdxB,T}}(undef, nviol[])
     k = Ref(0)
@@ -492,7 +523,7 @@ function boost_feasible!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix
         la[i] += h; a[i] = exp(la[i])
         lb[j] += h; b[j] = exp(lb[j])
     end
-    bucket_boost!(deficit, apply!, entries, T)
+    bucket_boost!(deficit, apply!, entries, T, zmax[])
     return a, b
 end
 
