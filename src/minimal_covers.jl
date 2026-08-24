@@ -1103,7 +1103,10 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     if eps(T) > eps(Float64)
         a64, stats = _symcover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
                                            κs, maxiter, linsolve, start, boost, fname)
-        return T.(a64), stats
+        # Narrowing rounds to nearest and so can round a product below its entry.
+        a = T.(a64)
+        boost && _certify_cover!(a, A, fname)
+        return a, stats
     end
     n = length(ax)
     use_lsqr = linsolve === :lsqr
@@ -1187,6 +1190,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     for (ip, i) in enumerate(ax)
         a[i] = hassupp[ip] ? exp(α[ip]) : zero(T)
     end
+    boost && _certify_cover!(a, A, fname)
     return a, stats
 end
 
@@ -1204,7 +1208,10 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     if eps(T) > eps(Float64)
         a64, b64, stats = _cover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
                                              κs, maxiter, linsolve, start, boost)
-        return T.(a64), T.(b64), stats
+        # Narrowing rounds to nearest and so can round a product below its entry.
+        a, b = T.(a64), T.(b64)
+        boost && _certify_cover!(a, b, A, :cover_min)
+        return a, b, stats
     end
     m = length(axr)
     n = length(axc)
@@ -1342,6 +1349,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     for (jp, j) in enumerate(axc)
         b[j] = hascol[jp] ? exp(x[m+jp] - s[colcomp[jp]]) : zero(T)
     end
+    boost && _certify_cover!(a, b, A, :cover_min)
     return a, b, stats
 end
 

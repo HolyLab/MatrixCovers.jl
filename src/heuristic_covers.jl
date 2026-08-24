@@ -69,10 +69,15 @@ end
 
 function _symcover!(a::AbstractVector, A::AbstractMatrix; maxiter::Int=3)
     T = float(real(eltype(a)))
-    _use_dense_grid(A, T) && return _symcover_dense!(a, A, T, maxiter)
-    unconstrained_min!(AbsLog{2}(), a, A)
-    boost_feasible!(a, A)
-    return tighten_cover!(a, A; maxiter)
+    if _use_dense_grid(A, T)
+        _symcover_dense!(a, A, T, maxiter)
+    else
+        unconstrained_min!(AbsLog{2}(), a, A)
+        boost_feasible!(a, A)
+        tighten_cover!(a, A; maxiter)
+    end
+    # Certify against `A` after log-domain tightening.
+    return _certify_cover!(a, A, :symcover)
 end
 
 """
@@ -148,13 +153,17 @@ end
 
 function _cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; maxiter::Int=3)
     T = float(promote_type(eltype(a), eltype(b)))
-    _use_dense_grid(A, T) && return _cover_dense!(a, b, A, T, maxiter)
-    unconstrained_min!(AbsLog{2}(), a, b, A)
-    boost_feasible!(a, b, A)
-    tighten_cover!(a, b, A; maxiter)
-    # Apply the package's balance convention, then restore coverage lost to rounding.
-    _balance_cover!(a, b, A)
-    return inflate_feasible!(a, b, A)
+    if _use_dense_grid(A, T)
+        _cover_dense!(a, b, A, T, maxiter)
+    else
+        unconstrained_min!(AbsLog{2}(), a, b, A)
+        boost_feasible!(a, b, A)
+        tighten_cover!(a, b, A; maxiter)
+        # Apply the package's balance convention, then restore coverage lost to rounding.
+        _balance_cover!(a, b, A)
+        inflate_feasible!(a, b, A)
+    end
+    return _certify_cover!(a, b, A, :cover)
 end
 
 # Adjoint/Transpose wrappers for cover!.
