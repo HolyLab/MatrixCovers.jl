@@ -330,10 +330,14 @@ end
     al, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
     @test ad ≈ al rtol=1e-6
     @test aw ≈ al rtol=1e-6
-    # Exact paths save one solve per continuation stage.
     @test sd.nsolves == sw.nsolves
-    @test sd.nsolves <= sl.nsolves - length((1e2, 1e4, 1e6, 1e8))
     @test sd.nsolves <= 26
+    # Exact paths save one solve per continuation stage. The default schedule is
+    # solver-dependent, so the comparison runs both paths on one schedule.
+    κs8 = MatrixCovers._kappa_schedule(Float64, false)
+    _, sd8 = MatrixCovers._symcover_min_abslog2(A; linsolve=:dense, κs=κs8)
+    _, sl8 = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, κs=κs8)
+    @test sd8.nsolves <= sl8.nsolves - length(κs8)
 
     G = exp.(randn(rng, 60, 45))
     gd, hd, td = MatrixCovers._cover_min_abslog2(G; linsolve=:dense)
@@ -342,9 +346,11 @@ end
     @test gd .* hd' ≈ gl .* hl' rtol=1e-6
     @test gw .* hw' ≈ gl .* hl' rtol=1e-6
     @test td.nsolves == tw.nsolves
-    @test td.nsolves <= tl.nsolves - length((1e2, 1e4, 1e6, 1e8))
     # Leave a small margin in the solve-count bound.
-    @test td.nsolves <= 24
+    @test td.nsolves <= 28
+    _, _, td8 = MatrixCovers._cover_min_abslog2(G; linsolve=:dense, κs=κs8)
+    _, _, tl8 = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr, κs=κs8)
+    @test td8.nsolves <= tl8.nsolves - length(κs8)
 end
 
 # The Float64 LSQR preconditioner includes κ-weighted rows; other types use the
@@ -580,7 +586,7 @@ end
     rng = StableRNG(17)
     A = (X = exp.(randn(rng, 40, 40)); (X .+ X') ./ 2)
     _, s = MatrixCovers._symcover_min_abslog2(A)
-    @test length(s.exits) == 4
+    @test length(s.exits) == 8
     @test length(s.stagedrops) == length(s.exits)
     @test all(in((:stable, :decrease, :maxiter)), s.exits)
     # With room to converge, no stage runs out of Newton steps.
@@ -594,11 +600,25 @@ end
 
     G = exp.(randn(rng, 40, 30))
     _, _, t = MatrixCovers._cover_min_abslog2(G)
-    @test length(t.exits) == 4
+    @test length(t.exits) == 8
     @test all(!=(:maxiter), t.exits)
 
-    # A supplied schedule sets how many stages are reported.
-    _, s8 = MatrixCovers._symcover_min_abslog2(A; κs=10 .^ range(2, 8, length=8))
-    @test length(s8.exits) == 8
-    @test all(!=(:maxiter), s8.exits)
+    # Exact solves default to eight stages; `:lsqr` defaults to four.
+    _, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
+    @test length(sl.exits) == 4
+    # Check the default `Float64` LSQR schedule exactly.
+    @test MatrixCovers._kappa_schedule(Float64, true) === (1e2, 1e4, 1e6, 1e8)
+    @test length(MatrixCovers._kappa_schedule(Float64, false)) == 8
+    @test MatrixCovers._kappa_schedule(Float64, false)[1] == 1e2
+    @test MatrixCovers._kappa_schedule(Float64, false)[end] == 1e8
+    @test issorted(MatrixCovers._kappa_schedule(Float64, false))
+    # The schedule uses the working precision.
+    @test eltype(MatrixCovers._kappa_schedule(BigFloat, false)) === BigFloat
+    @test eltype(MatrixCovers._kappa_schedule(BigFloat, true)) === BigFloat
+
+    # Explicit schedules override the defaults.
+    _, s4 = MatrixCovers._symcover_min_abslog2(A; κs=(1e2, 1e4, 1e6, 1e8))
+    @test length(s4.exits) == 4
+    _, s4l = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, κs=10 .^ range(2, 8, length=8))
+    @test length(s4l.exits) == 8
 end

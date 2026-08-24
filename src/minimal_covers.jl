@@ -35,6 +35,9 @@ The native solver accepts `κs` (penalty-continuation schedule), `maxiter`
 - `:auto` chooses `:woodbury` when supported, `:lsqr` when the stored support
   fills at most a quarter of the grid, and `:dense` otherwise.
 
+`κs` defaults to a geometric schedule ending at `1e8`: eight stages for exact
+solves and four for `:lsqr`. An explicit `κs` overrides this default.
+
 If a stage reaches `maxiter`, the solver warns that the cover may not minimize
 the objective. Increase `maxiter` or supply more continuation stages.
 
@@ -69,9 +72,10 @@ method selects the one with the smallest `AbsLog{2}` objective.
 # Extended help
 
 The native solver accepts the same `κs`, `maxiter`, and `linsolve` keywords as
-[`symcover_min`](@ref), and the same warning when a stage runs out of Newton
-steps. For `:woodbury`, an `m × n` matrix may omit at most `min(m,n) ÷ 4` entries
-per row or column and `4 * max(m,n)` entries in total.
+[`symcover_min`](@ref), with the same solver-dependent default schedule and the
+same warning when a stage runs out of Newton steps. For `:woodbury`, an `m × n`
+matrix may omit at most `min(m,n) ÷ 4` entries per row or column and
+`4 * max(m,n)` entries in total.
 `:dense` costs O((m+n)³) per Newton step; sparse matrices default to `:lsqr`.
 
 See also: [`symcover_min`](@ref), [`cover`](@ref), [`cover_min!`](@ref).
@@ -261,9 +265,8 @@ end
 # - `:auto` selects `:woodbury` when supported, `:lsqr` when the stored support
 #   fills at most `AUTO_LSQR_MAX_DENSITY` of the grid, and `:dense` otherwise.
 
-# Maximum support density for the `:auto` LSQR path. At or above it the exact
-# dense solve is the better bargain: it terminates a stage on a sign-stable
-# Newton step and has smaller constants.
+# Maximum support density for the `:auto` LSQR path. At higher densities the
+# exact dense solve has lower overhead and can stop on a sign-stable step.
 const AUTO_LSQR_MAX_DENSITY = 1 // 4
 
 # Condition estimate above which Woodbury uses sparse Cholesky instead of CG.
@@ -740,6 +743,14 @@ function _symmul!(y::AbstractVector{T}, Cu::SparseMatrixCSC{T}, x::AbstractVecto
     return y
 end
 
+# Geometric continuation schedules ending at `1e8`. An exact solve ends a stage
+# on the first sign-stable Newton step, so its finer eight-stage schedule costs
+# about one extra solve per added stage; `:lsqr` has no such exit, pays a full
+# descent per stage, and keeps four.
+_kappa_schedule(::Type{T}, use_lsqr::Bool) where {T} =
+    use_lsqr ? ntuple(k -> T(10)^(2k), 4) :
+               ntuple(k -> T(10)^(T(2) + T(6) * T(k - 1) / T(7)), 8)
+
 # Warn when a continuation stage reaches `maxiter` while still descending.
 function _warn_truncated(fname::Symbol, κs, stats, maxiter::Int)
     exits = stats.exits
@@ -1116,7 +1127,7 @@ end
 
 # Worker for `symcover_min(::AbsLog{2})`, returning `(a, stats)`. A supplied
 # `start` replaces the cold initial solve. Narrow types compute in `Float64`.
-function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
+function _symcover_min_abslog2(A::AbstractMatrix; κs=nothing,
                                maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
                                boost::Bool=true, fname=:symcover_min)
     linsolve in (:auto, :dense, :lsqr, :woodbury) ||
@@ -1173,6 +1184,8 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         use_lsqr = true
         linsolve = :lsqr
     end
+    # Select the default schedule after selecting the solver.
+    κsched = κs === nothing ? _kappa_schedule(T, use_lsqr) : κs
     # Woodbury uses a grid; dense and LSQR use an edge list.
     supp = if use_woodbury
         C = fill(T(-Inf), n, n)
@@ -1212,8 +1225,8 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                            zeros(T, n))
     x0 = start === nothing ? nothing :
          T[hassupp[ip] ? log(T(start[i])) : zero(T) for (ip, i) in enumerate(ax)]
-    α, stats = _abslog2_continuation(sys, x0; κs, maxiter, linsolve, boost)
-    _warn_truncated(fname, κs, stats, maxiter)
+    α, stats = _abslog2_continuation(sys, x0; κs=κsched, maxiter, linsolve, boost)
+    _warn_truncated(fname, κsched, stats, maxiter)
     # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     a = similar(Array{T}, ax)
     for (ip, i) in enumerate(ax)
@@ -1224,7 +1237,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
 end
 
 # Worker for `cover_min(::AbsLog{2})`, returning `(a, b, stats)`.
-function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
+function _cover_min_abslog2(A::AbstractMatrix; κs=nothing,
                             maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
                             boost::Bool=true)
     linsolve in (:auto, :dense, :lsqr, :woodbury) ||
@@ -1287,6 +1300,8 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         use_lsqr = true
         linsolve = :lsqr
     end
+    # Select the default schedule after selecting the solver.
+    κsched = κs === nothing ? _kappa_schedule(T, use_lsqr) : κs
     # Woodbury uses a grid; dense and LSQR use an edge list.
     supp = if use_woodbury
         C = fill(T(-Inf), m, n)
@@ -1348,8 +1363,8 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         end
         s0
     end
-    x, stats = _abslog2_continuation(sys, x0; κs, maxiter, linsolve, boost)
-    _warn_truncated(:cover_min, κs, stats, maxiter)
+    x, stats = _abslog2_continuation(sys, x0; κs=κsched, maxiter, linsolve, boost)
+    _warn_truncated(:cover_min, κsched, stats, maxiter)
     # Apply the balance convention independently to each support component.
     rowcomp, colcomp, ncomp, _, _ = _support_components(A)
     Lα = zeros(T, ncomp)
