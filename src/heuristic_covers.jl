@@ -174,8 +174,15 @@ end
 # component. Rounding the shift to a power of two preserves cover products
 # exactly, at the cost of balancing only within a factor of `sqrt(2)`.
 function _balance_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
-    T = float(promote_type(eltype(a), eltype(b)))
     rowcomp, colcomp, ncomp, nzrow, nzcol = _support_components(A)
+    return _balance_cover!(a, b, rowcomp, colcomp, ncomp, nzrow, nzcol)
+end
+
+# Balance from precomputed component labels and support counts.
+function _balance_cover!(a::AbstractVector, b::AbstractVector, rowcomp::Vector{Int},
+                         colcomp::Vector{Int}, ncomp::Int, nzrow::Vector{Int},
+                         nzcol::Vector{Int})
+    T = float(promote_type(eltype(a), eltype(b)))
     iszero(ncomp) && return a, b
     Lα = zeros(T, ncomp)
     Lβ = zeros(T, ncomp)

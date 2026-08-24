@@ -103,6 +103,14 @@ function _grid_logabs!(L::Matrix{T}, sa::Vector{T}, sb::Vector{T},
     return L
 end
 
+# Derive the balance summary directly for full support; traverse sparse support.
+function _grid_components(A::AbstractMatrix, na::Vector{Int}, nb::Vector{Int}, m::Int, n::Int)
+    for ip in 1:m
+        na[ip] == n || return _support_components(A)
+    end
+    return ones(Int, m), ones(Int, n), 1, na, nb
+end
+
 # Use compact boost-list indices when the dimensions fit.
 _grid_label(m::Int, n::Int) = max(m, n) <= typemax(Int32) ? Int32 : Int
 
@@ -301,7 +309,7 @@ function _cover_dense!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
         b[jp+oc] = β[jp]
     end
     # Balance the factors, then restore coverage lost to rounding.
-    _balance_cover!(a, b, A)
+    _balance_cover!(a, b, _grid_components(A, na, nb, m, n)...)
     for ip in 1:m
         lα[ip] = log(T(a[ip+or]))
     end

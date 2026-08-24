@@ -133,21 +133,10 @@ end
 # invariant already guarantees `abs(A[i,j]) == abs(A[j,i])`.
 require_abs_symmetric(::Union{Symmetric,Hermitian,Diagonal,SymTridiagonal}, fname) = nothing
 
-# Connected components of the bipartite support graph of `A`: one vertex per row
-# and one per column, one edge per stored nonzero. Returns `(rowcomp, colcomp,
-# ncomp)`, where `rowcomp` and `colcomp` are `Vector{Int}` indexed by *position*
-# within `axes(A, 1)` and `axes(A, 2)` (so offset axes need no special case, as
-# with `GroupedSupport.ptr`), holding the component id in `1:ncomp` — or 0 for
-# rows/columns with empty support, which belong to no component. `nzrow` and
-# `nzcol` count the stored entries of each row and column, in the same position
-# space.
-#
-# The gauge orbit of an asymmetric cover has one dimension per component: the
-# rescaling `a -> γ*a`, `b -> b/γ` acts independently on each, because no
-# product `a[i]*b[j]` spans two components. Any convention that pins the split
-# between `a` and `b` must therefore be imposed per component; a single global
-# constraint leaves `ncomp - 1` directions to the whim of whichever pass ran
-# last.
+# Connected components of the bipartite support graph. Labels and support
+# counts use positions within each axis; unsupported rows and columns have label
+# zero. Each component has an independent `a -> γ*a`, `b -> b/γ` gauge, so
+# balancing must also be per component.
 function _support_components(A::AbstractMatrix)
     m = length(axes(A, 1))
     n = length(axes(A, 2))
