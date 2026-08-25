@@ -72,10 +72,10 @@ function _symcover!(a::AbstractVector, A::AbstractMatrix; maxiter::Int=3)
     if _use_dense_grid(A, T)
         _symcover_dense!(a, A, T, maxiter)
     else
-        logs = support_logs_sym(A, eltype(a))
-        unconstrained_min!(AbsLog{2}(), a, A; logs)
-        boost_feasible!(a, A; logs)
-        tighten_cover!(a, A; maxiter, logs)
+        sup = flat_support_sym(A, T)
+        unconstrained_min!(AbsLog{2}(), a, sup)
+        boost_feasible!(a, sup)
+        tighten_cover!(a, sup; maxiter)
     end
     # Certify against `A` after log-domain tightening.
     return _certify_cover!(a, A, :symcover)
@@ -157,13 +157,13 @@ function _cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; maxite
     if _use_dense_grid(A, T)
         _cover_dense!(a, b, A, T, maxiter)
     else
-        logs = support_logs(A, T)
-        unconstrained_min!(AbsLog{2}(), a, b, A; logs)
-        boost_feasible!(a, b, A; logs)
-        tighten_cover!(a, b, A; maxiter, logs)
+        sup = flat_support(A, T)
+        unconstrained_min!(AbsLog{2}(), a, b, sup)
+        boost_feasible!(a, b, sup)
+        tighten_cover!(a, b, sup; maxiter)
         # Apply the package's balance convention, then restore coverage lost to rounding.
         _balance_cover!(a, b, A)
-        inflate_feasible!(a, b, A; logs)
+        inflate_feasible!(a, b, sup)
     end
     return _certify_cover!(a, b, A, :cover)
 end
@@ -181,31 +181,72 @@ end
 # ============================================================
 # Internal helpers
 # ============================================================
-# Logarithms of the stored magnitudes, in the order the named traversal visits
-# them. Every sweep of a heuristic cover reads `log|A_ij|` over the whole
-# support; one shared vector replaces a `log` call per entry per sweep. A
-# consumer handed one must walk the same traversal, in the same order, and take
-# its `k`-th entry on the `k`-th callback.
-function support_logs_sym(A::AbstractMatrix, ::Type{T}) where T
-    logs = T[]
+# Matrix support flattened in traversal order as row, column, and `log|A_ij|`
+# arrays.
+struct FlatSupport{Ti<:Integer,Tj<:Integer,T}
+    is::Vector{Ti}
+    js::Vector{Tj}
+    lv::Vector{T}
+end
+
+# Use `Int32` when it contains the axis; otherwise preserve the axis index type.
+function _flat_index_type(ax)
+    I = eltype(ax)
+    I <: Integer || return I
+    isempty(ax) && return Int32
+    return (typemin(Int32) <= first(ax) && last(ax) <= typemax(Int32)) ? Int32 : I
+end
+
+# Storage-specific upper bounds for `sizehint!`; zero means unknown.
+_support_sizehint(::AbstractMatrix) = 0
+_support_sizehint_sym(::AbstractMatrix) = 0
+
+# The outer methods select concrete index types for the traversal.
+flat_support_sym(A::AbstractMatrix, ::Type{T}) where T =
+    _flat_support_sym(A, T, _flat_index_type(axes(A, 1)))
+
+function _flat_support_sym(A::AbstractMatrix, ::Type{T}, ::Type{Ti}) where {T,Ti}
+    is, js, lv = Ti[], Ti[], T[]
+    hint = _support_sizehint_sym(A)
+    if hint > 0
+        sizehint!(is, hint); sizehint!(js, hint); sizehint!(lv, hint)
+    end
     foreach_support_sym(A) do i, j, v
-        push!(logs, log(T(v)))
+        push!(is, i); push!(js, j); push!(lv, T(v))
     end
-    return logs
+    _fastlog!(lv)   # one vectorized pass over the collected magnitudes
+    return FlatSupport(is, js, lv)
 end
 
-function support_logs(A::AbstractMatrix, ::Type{T}) where T
-    logs = T[]
+flat_support(A::AbstractMatrix, ::Type{T}) where T =
+    _flat_support(A, T, _flat_index_type(axes(A, 1)), _flat_index_type(axes(A, 2)))
+
+function _flat_support(A::AbstractMatrix, ::Type{T}, ::Type{Ti}, ::Type{Tj}) where {T,Ti,Tj}
+    is, js, lv = Ti[], Tj[], T[]
+    hint = _support_sizehint(A)
+    if hint > 0
+        sizehint!(is, hint); sizehint!(js, hint); sizehint!(lv, hint)
+    end
     foreach_support(A) do i, j, v
-        push!(logs, log(T(v)))
+        push!(is, i); push!(js, j); push!(lv, T(v))
     end
-    return logs
+    _fastlog!(lv)   # one vectorized pass over the collected magnitudes
+    return FlatSupport(is, js, lv)
 end
 
-# `log|A_ij|` for the `k`-th entry of a traversal, from the cache when the
-# caller supplied one and from `v` when it did not.
-@inline _entrylog(::Nothing, k::Int, v, ::Type{T}) where T = log(T(v))
-@inline _entrylog(logs::AbstractVector, k::Int, v, ::Type{T}) where T = logs[k]::T
+# Select violated entries in traversal order without branching.
+function _flat_violated(sup::FlatSupport{Ti,Tj,T}, la, lb, nviol::Int) where {Ti,Tj,T}
+    is, js, lv = sup.is, sup.js, sup.lv
+    entries = Vector{Tuple{Ti,Tj,T}}(undef, nviol + 1)
+    k = 1
+    for p in eachindex(is, js, lv)
+        i, j, lvp = is[p], js[p], lv[p]
+        entries[k] = (i, j, lvp)
+        k += ifelse(lvp - la[i] - lb[j] > zero(T), 1, 0)
+    end
+    resize!(entries, nviol)
+    return entries
+end
 
 # Apply the row/column balance convention independently to each support
 # component. Rounding the shift to a power of two preserves cover products
@@ -256,16 +297,13 @@ end
 #   ∑_{i,j: A[i,j]≠0} (log(a[i]*a[j]) - log|A[i,j]|)²
 # Returns row support counts. The Sherman-Morrison approximation is exact on
 # complete support.
-function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, A::AbstractMatrix;
-                            logs=nothing) where T
+function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, A::AbstractMatrix) where T
     ax = eachindex(a)
     axes(A) == (ax, ax) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(string(axes(A))), axes(a)=$(string(axes(a)))"))
     loga = fill!(similar(a), zero(T))
     nza  = zeros(Int, ax)
-    k = Ref(0)
     foreach_support_sym(A) do i, j, v
-        k[] += 1
-        lAij = _entrylog(logs, k[], v, T)
+        lAij = log(T(v))
         loga[i] += lAij
         nza[i]  += 1
         if i != j
@@ -284,8 +322,33 @@ function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, A::AbstractMatrix
     return nza
 end
 
-function unconstrained_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
-                            logs=nothing)
+# The symmetric objective over a flattened support: `sup` must have been built
+# by `flat_support_sym` over a matrix whose axes match `eachindex(a)`.
+function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, sup::FlatSupport) where T
+    is, js, lv = sup.is, sup.js, sup.lv
+    loga = fill!(similar(a), zero(T))
+    nza  = zeros(Int, eachindex(a))
+    for k in eachindex(is, js, lv)
+        i, j, lAij = is[k], js[k], lv[k]
+        loga[i] += lAij
+        nza[i]  += 1
+        if i != j
+            loga[j] += lAij
+            nza[j]  += 1
+        end
+    end
+    nztotal = sum(nza)
+    halfmu = iszero(nztotal) ? zero(T) : sum(loga) / (2 * nztotal)
+    for i in eachindex(a)
+        # exp can underflow for extreme dynamic range; a zero scale on a
+        # supported row would make the boost's log-deficits infinite, so
+        # clamp to the smallest normal positive value.
+        a[i] = iszero(nza[i]) ? zero(T) : max(exp(loga[i] / nza[i] - halfmu), floatmin(T))
+    end
+    return nza
+end
+
+function unconstrained_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
     T = float(promote_type(eltype(a), eltype(b)))
     axes(A, 1) == eachindex(a) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, b, A)` requires row indices of `A` to match `a`, got axes(A, 1)=$(string(axes(A, 1))), axes(a)=$(string(axes(a)))"))
     axes(A, 2) == eachindex(b) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, b, A)` requires column indices of `A` to match `b`, got axes(A, 2)=$(string(axes(A, 2))), axes(b)=$(string(axes(b)))"))
@@ -293,10 +356,8 @@ function unconstrained_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A
     logb = fill!(similar(b, T), zero(T))
     nza  = zeros(Int, axes(A, 1))
     nzb  = zeros(Int, axes(A, 2))
-    k = Ref(0)
     foreach_support(A) do i, j, v
-        k[] += 1
-        lAij = _entrylog(logs, k[], v, T)
+        lAij = log(T(v))
         loga[i] += lAij
         logb[j] += lAij
         nza[i]  += 1
@@ -313,6 +374,39 @@ function unconstrained_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A
         a[i] = iszero(nza[i]) ? zero(T) : max(exp(loga[i] / nza[i] - halfmu), floatmin(T))
     end
     for j in axes(A, 2)
+        b[j] = iszero(nzb[j]) ? zero(T) : max(exp(logb[j] / nzb[j] - halfmu), floatmin(T))
+    end
+    return nza, nzb
+end
+
+# The asymmetric objective over a flattened support: `sup` must have been
+# built by `flat_support` over a matrix whose row and column axes match
+# `eachindex(a)` and `eachindex(b)`.
+function unconstrained_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, sup::FlatSupport)
+    T = float(promote_type(eltype(a), eltype(b)))
+    is, js, lv = sup.is, sup.js, sup.lv
+    loga = fill!(similar(a, T), zero(T))
+    logb = fill!(similar(b, T), zero(T))
+    nza  = zeros(Int, eachindex(a))
+    nzb  = zeros(Int, eachindex(b))
+    for k in eachindex(is, js, lv)
+        i, j, lAij = is[k], js[k], lv[k]
+        loga[i] += lAij
+        logb[j] += lAij
+        nza[i]  += 1
+        nzb[j]  += 1
+    end
+    # Each stored entry contributes lAij to loga exactly once and increments
+    # nza exactly once, so these sums equal the per-entry running totals.
+    nztotal = sum(nza)
+    halfmu = iszero(nztotal) ? zero(T) : sum(loga) / (2 * nztotal)
+    for i in eachindex(a)
+        # exp can underflow for extreme dynamic range; a zero scale on a
+        # supported row would make the boost's log-deficits infinite, so
+        # clamp to the smallest normal positive value.
+        a[i] = iszero(nza[i]) ? zero(T) : max(exp(loga[i] / nza[i] - halfmu), floatmin(T))
+    end
+    for j in eachindex(b)
         b[j] = iszero(nzb[j]) ? zero(T) : max(exp(logb[j] / nzb[j] - halfmu), floatmin(T))
     end
     return nza, nzb
@@ -346,7 +440,7 @@ function _tighten_shrink(x, lr)
     return y
 end
 
-function tighten_cover!(a::AbstractVector{T}, A::AbstractMatrix; maxiter::Int=3, logs=nothing) where T
+function tighten_cover!(a::AbstractVector{T}, A::AbstractMatrix; maxiter::Int=3) where T
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("`tighten_cover!(a, A)` requires a square matrix `A`"))
     eachindex(a) == ax || throw(DimensionMismatch("indices of `a` must match the indexing of `A`"))
@@ -360,10 +454,8 @@ function tighten_cover!(a::AbstractVector{T}, A::AbstractMatrix; maxiter::Int=3,
         # in log-ratio (rather than a[i]*a[j]/v) keeps the comparison finite even when
         # the linear-space product would overflow for extreme dynamic range; a zero
         # scale gives lr = -Inf, marking the row uncoverable by any finite rescale.
-        k = Ref(0)
         foreach_support_sym(A) do i, j, v
-            k[] += 1
-            lr = la[i] + la[j] - _entrylog(logs, k[], v, T)
+            lr = la[i] + la[j] - log(T(v))
             lratio[i] = min(lratio[i], lr)
             i == j || (lratio[j] = min(lratio[j], lr))
         end
@@ -378,7 +470,33 @@ function tighten_cover!(a::AbstractVector{T}, A::AbstractMatrix; maxiter::Int=3,
     return a
 end
 
-function tighten_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; maxiter::Int=3, logs=nothing)
+# Symmetric tightening over a flattened support; the log-ratio convention is
+# that of the matrix method. The `ifelse` minimum rejects NaN (an infinite
+# entry against a zero scale), leaving such rows at the +Inf no-op, and lets
+# the loop run branch-free; a diagonal entry updates its row twice, which the
+# minimum absorbs.
+function tighten_cover!(a::AbstractVector{T}, sup::FlatSupport; maxiter::Int=3) where T
+    is, js, lv = sup.is, sup.js, sup.lv
+    lratio = similar(a)
+    la = similar(a)
+    for _ in 1:maxiter
+        map!(log, la, a)   # log(0) = -Inf marks zero scales; see the matrix method
+        fill!(lratio, T(Inf))
+        for k in eachindex(is, js, lv)
+            i, j = is[k], js[k]
+            lr = la[i] + la[j] - lv[k]
+            lratio[i] = ifelse(lr < lratio[i], lr, lratio[i])
+            lratio[j] = ifelse(lr < lratio[j], lr, lratio[j])
+        end
+        for i in eachindex(a)
+            lr = lratio[i]
+            isinf(lr) || (a[i] = _tighten_shrink(a[i], lr))
+        end
+    end
+    return a
+end
+
+function tighten_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; maxiter::Int=3)
     T = float(promote_type(eltype(a), eltype(b)))
     eachindex(a) == axes(A, 1) || throw(DimensionMismatch("indices of a must match row-indexing of A"))
     eachindex(b) == axes(A, 2) || throw(DimensionMismatch("indices of b must match column-indexing of A"))
@@ -394,10 +512,8 @@ function tighten_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
         # finite even when the linear-space product would overflow for extreme
         # dynamic range; a zero scale gives lr = -Inf, marking the row or column
         # uncoverable by any finite rescale.
-        k = Ref(0)
         foreach_support(A) do i, j, v
-            k[] += 1
-            lr = la[i] + lb[j] - _entrylog(logs, k[], v, T)
+            lr = la[i] + lb[j] - log(T(v))
             lratioa[i] = min(lratioa[i], lr)
             lratiob[j] = min(lratiob[j], lr)
         end
@@ -411,6 +527,37 @@ function tighten_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
             lr = lratiob[j]
             # lr == -Inf marks a column whose cover product vanishes on some
             # entry; no finite rescale covers it, so leave the scale unchanged.
+            isinf(lr) || (b[j] = _tighten_shrink(b[j], lr))
+        end
+    end
+    return a, b
+end
+
+# Asymmetric tightening over a flattened support; see the symmetric flat
+# method for the `ifelse`-minimum convention.
+function tighten_cover!(a::AbstractVector, b::AbstractVector, sup::FlatSupport; maxiter::Int=3)
+    T = float(promote_type(eltype(a), eltype(b)))
+    is, js, lv = sup.is, sup.js, sup.lv
+    lratioa = fill(T(Inf), eachindex(a))
+    lratiob = fill(T(Inf), eachindex(b))
+    la, lb = similar(a, T), similar(b, T)
+    for _ in 1:maxiter
+        map!(log, la, a)   # log(0) = -Inf marks zero scales; see the matrix method
+        map!(log, lb, b)
+        fill!(lratioa, T(Inf))
+        fill!(lratiob, T(Inf))
+        for k in eachindex(is, js, lv)
+            i, j = is[k], js[k]
+            lr = la[i] + lb[j] - lv[k]
+            lratioa[i] = ifelse(lr < lratioa[i], lr, lratioa[i])
+            lratiob[j] = ifelse(lr < lratiob[j], lr, lratiob[j])
+        end
+        for i in eachindex(a)
+            lr = lratioa[i]
+            isinf(lr) || (a[i] = _tighten_shrink(a[i], lr))
+        end
+        for j in eachindex(b)
+            lr = lratiob[j]
             isinf(lr) || (b[j] = _tighten_shrink(b[j], lr))
         end
     end
@@ -490,7 +637,7 @@ end
 # (the diagonal included, so no separate clamp step is needed). Requires a
 # start with strictly positive scale on every supported row (the geometric-mean
 # init from `unconstrained_min!` guarantees this).
-function boost_feasible!(a::AbstractVector{T}, A::AbstractMatrix; logs=nothing) where T
+function boost_feasible!(a::AbstractVector{T}, A::AbstractMatrix) where T
     IdxT = eltype(eachindex(a))
     # `la` caches log.(a) and is updated alongside `a`, so deficits cost no log
     # calls; log(0) = -Inf on unsupported rows is never read (every entry's
@@ -507,21 +654,17 @@ function boost_feasible!(a::AbstractVector{T}, A::AbstractMatrix; logs=nothing) 
     # of building it with `push!`.
     nviol = Ref(0)
     zmax = Ref(zero(T))
-    k = Ref(0)
     foreach_support_sym(A) do i, j, v
-        k[] += 1
-        z = _entrylog(logs, k[], v, T) - la[i] - la[j]
+        z = log(T(v)) - la[i] - la[j]
         if z > zero(T)
             nviol[] += 1
             zmax[] = max(zmax[], z)
         end
     end
     entries = Vector{Tuple{IdxT,IdxT,T}}(undef, nviol[])
-    k[] = 0
     nfill = Ref(0)
     foreach_support_sym(A) do i, j, v
-        k[] += 1
-        lv = _entrylog(logs, k[], v, T)
+        lv = log(T(v))
         z = lv - la[i] - la[j]
         if z > zero(T)
             (iszero(a[i]) || iszero(a[j])) &&
@@ -540,12 +683,42 @@ function boost_feasible!(a::AbstractVector{T}, A::AbstractMatrix; logs=nothing) 
     return a
 end
 
+# Symmetric boost over a flattened support. As in the matrix method, only
+# entries already violated at the start are stored; the count pass runs
+# branchlessly (about half a fresh start's entries violate, so a data-dependent
+# branch would mispredict constantly), and `_flat_violated` selects them the
+# same way. A zero scale on a supported row makes some deficit +Inf, which the
+# `isfinite` check below turns into the matrix method's error.
+function boost_feasible!(a::AbstractVector{T}, sup::FlatSupport) where T
+    is, js, lv = sup.is, sup.js, sup.lv
+    # `la` caches log.(a) and is updated alongside `a`; see the matrix method.
+    la = map(log, a)
+    nviol = 0
+    zmax = zero(T)
+    for k in eachindex(is, js, lv)
+        z = lv[k] - la[is[k]] - la[js[k]]
+        nviol += ifelse(z > zero(T), 1, 0)
+        zmax = ifelse(z > zmax, z, zmax)
+    end
+    isfinite(zmax) ||
+        throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row"))
+    entries = _flat_violated(sup, la, la, nviol)
+    deficit((i, j, lvk)) = lvk - la[i] - la[j]
+    function apply!((i, j, lvk), z)
+        h = z / 2
+        la[i] += h; a[i] = exp(la[i])
+        i == j || (la[j] += h; a[j] = exp(la[j]))
+    end
+    bucket_boost!(deficit, apply!, entries, T, zmax)
+    return a
+end
+
 # Asymmetric feasibility boost: scale `a`, `b` in place so that
 # `a[i]*b[j] >= |A[i,j]|`, up to the round-off of the log-domain updates,
 # for every entry visited by `foreach_support`. The
 # diagonal is treated as an ordinary entry. Requires a start with strictly
 # positive scale on every supported row of `a` and column of `b`.
-function boost_feasible!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; logs=nothing)
+function boost_feasible!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
     T = float(promote_type(eltype(a), eltype(b)))
     IdxA, IdxB = eltype(eachindex(a)), eltype(eachindex(b))
     # `la`/`lb` cache log.(a)/log.(b) and are updated alongside `a`/`b`; see
@@ -558,21 +731,17 @@ function boost_feasible!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix
     # repeated grow-and-copy of building it with `push!`.
     nviol = Ref(0)
     zmax = Ref(zero(T))
-    k = Ref(0)
     foreach_support(A) do i, j, v
-        k[] += 1
-        z = _entrylog(logs, k[], v, T) - la[i] - lb[j]
+        z = log(T(v)) - la[i] - lb[j]
         if z > zero(T)
             nviol[] += 1
             zmax[] = max(zmax[], z)
         end
     end
     entries = Vector{Tuple{IdxA,IdxB,T}}(undef, nviol[])
-    k[] = 0
     nfill = Ref(0)
     foreach_support(A) do i, j, v
-        k[] += 1
-        lv = _entrylog(logs, k[], v, T)
+        lv = log(T(v))
         z = lv - la[i] - lb[j]
         if z > zero(T)
             (iszero(a[i]) || iszero(b[j])) &&
@@ -588,6 +757,33 @@ function boost_feasible!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix
         lb[j] += h; b[j] = exp(lb[j])
     end
     bucket_boost!(deficit, apply!, entries, T, zmax[])
+    return a, b
+end
+
+# Asymmetric boost over a flattened support; see the symmetric flat method.
+function boost_feasible!(a::AbstractVector, b::AbstractVector, sup::FlatSupport)
+    T = float(promote_type(eltype(a), eltype(b)))
+    is, js, lv = sup.is, sup.js, sup.lv
+    # `la`/`lb` cache log.(a)/log.(b) and are updated alongside `a`/`b`; see
+    # the matrix methods.
+    la, lb = map(log, a), map(log, b)
+    nviol = 0
+    zmax = zero(T)
+    for k in eachindex(is, js, lv)
+        z = lv[k] - la[is[k]] - lb[js[k]]
+        nviol += ifelse(z > zero(T), 1, 0)
+        zmax = ifelse(z > zmax, z, zmax)
+    end
+    isfinite(zmax) ||
+        throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row/column"))
+    entries = _flat_violated(sup, la, lb, nviol)
+    deficit((i, j, lvk)) = lvk - la[i] - lb[j]
+    function apply!((i, j, lvk), z)
+        h = z / 2
+        la[i] += h; a[i] = exp(la[i])
+        lb[j] += h; b[j] = exp(lb[j])
+    end
+    bucket_boost!(deficit, apply!, entries, T, zmax)
     return a, b
 end
 
@@ -707,16 +903,38 @@ end
 # Requires a start with strictly positive scale on every supported row and column.
 # The shift is covariant under an independent row/column rescaling `D_r*A*D_c`,
 # and is accumulated in the log domain for the reasons given in the symmetric method.
-function inflate_feasible!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; logs=nothing)
+function inflate_feasible!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
     T = float(promote_type(eltype(a), eltype(b)))
     la, lb = map(log, a), map(log, b)
     tref = Ref(zero(T))
-    k = Ref(0)
     foreach_support(A) do i, j, v
-        k[] += 1
-        tref[] = max(tref[], (_entrylog(logs, k[], v, T) - la[i] - lb[j]) / 2)
+        tref[] = max(tref[], (log(T(v)) - la[i] - lb[j]) / 2)
     end
     t = tref[]
+    # A supported row or column with zero scale gives la (or lb) = -Inf, hence t = +Inf.
+    isfinite(t) ||
+        throw(ArgumentError("inflate_feasible! requires a start with positive scale on every supported row/column"))
+    iszero(t) && return a, b
+    for i in eachindex(a)
+        iszero(a[i]) || (a[i] = exp(la[i] + t))
+    end
+    for j in eachindex(b)
+        iszero(b[j]) || (b[j] = exp(lb[j] + t))
+    end
+    return a, b
+end
+
+# Asymmetric uniform inflation over a flattened support; the shift convention
+# is that of the matrix method.
+function inflate_feasible!(a::AbstractVector, b::AbstractVector, sup::FlatSupport)
+    T = float(promote_type(eltype(a), eltype(b)))
+    is, js, lv = sup.is, sup.js, sup.lv
+    la, lb = map(log, a), map(log, b)
+    t = zero(T)
+    for k in eachindex(is, js, lv)
+        u = (lv[k] - la[is[k]] - lb[js[k]]) / 2
+        t = ifelse(u > t, u, t)
+    end
     # A supported row or column with zero scale gives la (or lb) = -Inf, hence t = +Inf.
     isfinite(t) ||
         throw(ArgumentError("inflate_feasible! requires a start with positive scale on every supported row/column"))

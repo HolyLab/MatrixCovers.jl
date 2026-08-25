@@ -1,13 +1,7 @@
 # Dense-grid kernels for the heuristic covers.
 #
-# `symcover!` and `cover!` sweep the support five or six times over, and every
-# sweep of the callback-driven implementations recomputes `log(abs(A[i,j]))`.
-# When the support is the full grid those logarithms dominate the run time, so
-# these kernels evaluate them once into a log-magnitude grid and run the
-# remaining sweeps over that grid. Every sum accumulates in the traversal order
-# of `foreach_support`/`foreach_support_sym`, and each residual is formed from
-# the same three numbers, so the covers agree with the callback-driven path bit
-# for bit.
+# Full-grid storage needs only a log-magnitude array because its indices are
+# implicit. Its accumulation order matches `FlatSupport`.
 
 # Use the grid only when the support traversal is already dense and its
 # allocation is worthwhile.
@@ -26,30 +20,30 @@ _use_dense_grid(A::AbstractMatrix, ::Type{T}) where {T} =
 # occupies `_trioff(j)+1 : _trioff(j)+j`.
 _trioff(j::Int) = (j * (j - 1)) >> 1
 
-# `Lp[_trioff(j)+i] = log(abs(A[i,j]))` for `i <= j`, `-Inf` where the entry is
-# zero, alongside the per-row log sums and support counts of
-# `unconstrained_min!`. `s[r]` receives the partners of row `r` in increasing
-# partner order — the columns `1:r-1` of row `r`'s own column first, then the
-# diagonal, then the later columns — which is the order `foreach_support_sym`
-# feeds them in.
+# Pack the upper triangle as log magnitudes, with `-Inf` for zeros, and compute
+# the row sums and support counts used by `unconstrained_min!`.
 function _tri_logabs!(Lp::Vector{T}, s::Vector{T}, cnt::Vector{Int}, A::AbstractMatrix) where {T}
     ax = axes(A, 1)
     or = first(ax) - 1
     n = length(ax)
-    fill!(s, zero(T))
-    fill!(cnt, 0)
     for jp in 1:n
         j = jp + or
+        o = _trioff(jp)
+        for ip in 1:jp
+            Lp[o+ip] = abs(A[ip+or, j])
+        end
+    end
+    _fastlog!(Lp)
+    fill!(s, zero(T))
+    fill!(cnt, 0)
+    ninf = T(-Inf)
+    for jp in 1:n
         o = _trioff(jp)
         sj = zero(T)
         cj = 0
         for ip in 1:jp-1
-            v = abs(A[ip+or, j])
-            if iszero(v)
-                Lp[o+ip] = T(-Inf)
-            else
-                l = log(T(v))
-                Lp[o+ip] = l
+            l = Lp[o+ip]
+            if l != ninf
                 s[ip] += l
                 cnt[ip] += 1
                 sj += l
@@ -58,12 +52,8 @@ function _tri_logabs!(Lp::Vector{T}, s::Vector{T}, cnt::Vector{Int}, A::Abstract
         end
         s[jp] += sj
         cnt[jp] += cj
-        v = abs(A[j, j])
-        if iszero(v)
-            Lp[o+jp] = T(-Inf)
-        else
-            l = log(T(v))
-            Lp[o+jp] = l
+        l = Lp[o+jp]
+        if l != ninf
             s[jp] += l
             cnt[jp] += 1
         end
@@ -71,26 +61,28 @@ function _tri_logabs!(Lp::Vector{T}, s::Vector{T}, cnt::Vector{Int}, A::Abstract
     return Lp
 end
 
-# `L[i,j] = log(abs(A[i,j]))`, `-Inf` where the entry is zero, alongside the
-# per-row and per-column log sums and support counts of `unconstrained_min!`.
+# Fill a log-magnitude grid and the row and column summaries.
 function _grid_logabs!(L::Matrix{T}, sa::Vector{T}, sb::Vector{T},
                        na::Vector{Int}, nb::Vector{Int}, A::AbstractMatrix) where {T}
     or = first(axes(A, 1)) - 1
     oc = first(axes(A, 2)) - 1
     m, n = size(A)
-    fill!(sa, zero(T))
-    fill!(na, 0)
     for jp in 1:n
         j = jp + oc
+        for ip in 1:m
+            L[ip, jp] = abs(A[ip+or, j])
+        end
+    end
+    _fastlog!(L)
+    fill!(sa, zero(T))
+    fill!(na, 0)
+    ninf = T(-Inf)
+    for jp in 1:n
         sj = zero(T)
         cj = 0
         for ip in 1:m
-            v = abs(A[ip+or, j])
-            if iszero(v)
-                L[ip, jp] = T(-Inf)
-            else
-                l = log(T(v))
-                L[ip, jp] = l
+            l = L[ip, jp]
+            if l != ninf
                 sa[ip] += l
                 na[ip] += 1
                 sj += l
@@ -114,11 +106,7 @@ end
 # Use compact boost-list indices when the dimensions fit.
 _grid_label(m::Int, n::Int) = max(m, n) <= typemax(Int32) ? Int32 : Int
 
-# The violated entries of a packed upper triangle, in the traversal order of
-# `foreach_support_sym`. Half the entries of a fresh unconstrained start
-# violate, so a branch on the test would mispredict on half the grid; the sweep
-# selects branchlessly instead, writing every entry to the slot after the last
-# one kept and advancing only on a violation. That needs one slot of slack.
+# Select violated upper-triangle entries in traversal order without branching.
 function _tri_violated(Lp::Vector{T}, lα::Vector{T}, n::Int, nviol::Int,
                        ::Type{IT}) where {T,IT}
     entries = Vector{Tuple{IT,IT,T}}(undef, nviol + 1)

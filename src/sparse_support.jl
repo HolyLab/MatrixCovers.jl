@@ -30,6 +30,12 @@ function foreach_support_sym(f, A::SparseMatrixCSC)
     return nothing
 end
 
+# Upper bounds for sparse support traversals, used by `sizehint!`.
+_support_sizehint(A::SparseMatrixCSC) = nnz(A)
+_support_sizehint_sym(A::SparseMatrixCSC) = (nnz(A) + size(A, 1) + 1) >> 1
+_support_sizehint_sym(S::Union{Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}}) =
+    nnz(parent(S))
+
 # Match symmetric partners in O(nnz) with one cursor per column. `tr[c]` points
 # to the first unpaired entry in column `c`; absent entries are zeros.
 function require_abs_symmetric(A::SparseMatrixCSC, fname)

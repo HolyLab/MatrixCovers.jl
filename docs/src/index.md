@@ -332,7 +332,9 @@ julia> round.(a; digits=6)
  1000.0
     2.0
 
-julia> mag = sum(abs(bi / ai) for (bi, ai) in zip(b, a))
+julia> mag = sum(abs(bi / ai) for (bi, ai) in zip(b, a));
+
+julia> round(mag; digits=6)
 4.5
 ```
 
@@ -341,7 +343,7 @@ Here `mag` is within a factor of 1.5 of the scaled solution norm:
 ```jldoctest roundoff
 julia> x = A \ b;
 
-julia> sum(abs.(x .* a))
+julia> round(sum(abs.(x .* a)); digits=6)
 3.0
 ```
 
@@ -354,7 +356,7 @@ julia> Ad, bd = d .* A .* d', d .* b;
 
 julia> ad = symcover(Ad);
 
-julia> sum(abs(bi / ai) for (bi, ai) in zip(bd, ad))
+julia> round(sum(abs(bi / ai) for (bi, ai) in zip(bd, ad)); digits=6)
 4.5
 ```
 
