@@ -172,3 +172,36 @@ const GEN_NOTIONS = (
         end
     end
 end
+
+@testset "exact coverage" begin
+    # Native hard-cover results are certified at zero tolerance.
+    certified_sym = (
+        A -> symcover(A),
+        A -> symcover(A; maxiter=0),
+        A -> symcover_min(AbsLog{2}(), A),
+    )
+    certified_gen = (
+        A -> cover(A),
+        A -> cover(A; maxiter=0),
+        A -> cover_min(AbsLog{2}(), A),
+    )
+    # Exercise both flattened-support and dense-grid kernels.
+    for T in (Float64, Float32), σ in (1, 5), n in (7, 70), seed in 1:3
+        rng = StableRNG(97 * seed + 13 * n + 3 * σ + (T === Float32))
+        G = randn(rng, n, n)
+        Msym = T.(exp.((σ / 2) .* (G .+ G')))
+        Mgen = T.(exp.(σ .* randn(rng, n, n)))
+        Mrec = T.(exp.(σ .* randn(rng, n, n ÷ 2 + 1)))
+        # Zeros exercise the sparse-support traversals and the component split.
+        drop = rand(rng, n, n) .< 0.3
+        Zsym = copy(Msym); Zsym[drop .| drop'] .= 0
+        Zgen = copy(Mgen); Zgen[drop] .= 0
+        for f in certified_sym, A in (Msym, Zsym, sparse(Zsym))
+            @test iscover(f(A), A)
+        end
+        for f in certified_gen, A in (Mgen, Zgen, sparse(Zgen), Mrec)
+            a, b = f(A)
+            @test iscover(a, b, A)
+        end
+    end
+end

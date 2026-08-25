@@ -30,6 +30,48 @@ function foreach_support_sym(f, A::SparseMatrixCSC)
     return nothing
 end
 
+# Upper bounds for sparse support traversals, used by `sizehint!`.
+_support_sizehint(A::SparseMatrixCSC) = nnz(A)
+_support_sizehint_sym(A::SparseMatrixCSC) = (nnz(A) + size(A, 1) + 1) >> 1
+_support_sizehint_sym(S::Union{Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}}) =
+    nnz(parent(S))
+
+# Match symmetric partners in O(nnz) with one cursor per column. `tr[c]` points
+# to the first unpaired entry in column `c`; absent entries are zeros.
+function require_abs_symmetric(A::SparseMatrixCSC, fname)
+    ax = axes(A, 1)
+    axes(A, 2) == ax ||
+        throw(DimensionMismatch("$fname requires a square matrix, got axes $(string(axes(A)))"))
+    rv, nzs = rowvals(A), nonzeros(A)
+    tr = [first(nzrange(A, j)) for j in axes(A, 2)]
+    for col in axes(A, 2)
+        for p in tr[col]:last(nzrange(A, col))
+            v = abs(nzs[p])
+            iszero(v) && continue
+            row = rv[p]
+            row == col && continue
+            row < col && _abs_asymmetry_error(fname, row, col, v, zero(v))
+            off, stop = tr[row], last(nzrange(A, row)) + 1
+            w = zero(v)
+            while off < stop
+                r2 = rv[off]
+                r2 > col && break
+                if r2 == col
+                    w = abs(nzs[off])
+                    tr[row] = off + 1
+                    break
+                end
+                u = abs(nzs[off])
+                iszero(u) || _abs_asymmetry_error(fname, r2, row, u, zero(u))
+                off += 1
+                tr[row] = off
+            end
+            _abs_symmetric(v, w) || _abs_asymmetry_error(fname, row, col, v, w)
+        end
+    end
+    return nothing
+end
+
 # Emitted pairs are canonical (row <= col) regardless of uplo: for uplo='L'
 # the stored (i, j) with i >= j is reported as (j, i). Complex `Hermitian` is
 # admitted alongside the real case because only `abs` of a stored value is ever

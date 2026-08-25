@@ -1,11 +1,11 @@
 module MatrixCovers
 
 using LinearAlgebra: LinearAlgebra, Adjoint, Bidiagonal, Diagonal, Hermitian,
-                     SymTridiagonal, Symmetric, Transpose, Tridiagonal, cholesky,
+                     SymTridiagonal, Symmetric, Transpose, Tridiagonal, cholesky, cholesky!,
                      dot, mul!, norm
 using PrecompileTools: PrecompileTools, @compile_workload
 using Random: Random, AbstractRNG, MersenneTwister
-using SparseArrays: SparseArrays, SparseMatrixCSC, nonzeros, nzrange, rowvals, sparse
+using SparseArrays: SparseArrays, SparseMatrixCSC, nnz, nonzeros, nzrange, rowvals, sparse, spzeros
 
 export AbsLog, AbsLinear
 export cover_objective, iscover
@@ -24,7 +24,9 @@ end
 include("penalties.jl")
 include("support.jl")
 include("iscover.jl")
+include("fastlog.jl")
 include("heuristic_covers.jl")
+include("dense_heuristic.jl")  # full-grid kernels for the heuristic covers
 include("gram_covers.jl")    # symmetric covers of A'*W*A from an asymmetric cover of A
 include("initializers.jl")   # the start menu; consumed by both solver families below
 include("soft_covers.jl")

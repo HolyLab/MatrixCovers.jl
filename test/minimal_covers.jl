@@ -330,10 +330,17 @@ end
     al, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
     @test ad ≈ al rtol=1e-6
     @test aw ≈ al rtol=1e-6
-    # Exact paths save one solve per continuation stage.
     @test sd.nsolves == sw.nsolves
-    @test sd.nsolves <= sl.nsolves - length((1e2, 1e4, 1e6, 1e8))
     @test sd.nsolves <= 26
+    # Exact paths save one solve per continuation stage. The comparison runs both
+    # paths on one schedule, because the default is solver-dependent, and from one
+    # start, because the LSQR path otherwise supplies its own: only a shared
+    # starting iterate leaves the stage-exit rule as the difference between them.
+    κs8 = MatrixCovers._kappa_schedule(Float64, false)
+    a0 = symcover(A)
+    _, sd8 = MatrixCovers._symcover_min_abslog2(A; linsolve=:dense, κs=κs8, start=a0)
+    _, sl8 = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, κs=κs8, start=a0)
+    @test sd8.nsolves <= sl8.nsolves - length(κs8)
 
     G = exp.(randn(rng, 60, 45))
     gd, hd, td = MatrixCovers._cover_min_abslog2(G; linsolve=:dense)
@@ -342,13 +349,75 @@ end
     @test gd .* hd' ≈ gl .* hl' rtol=1e-6
     @test gw .* hw' ≈ gl .* hl' rtol=1e-6
     @test td.nsolves == tw.nsolves
-    @test td.nsolves <= tl.nsolves - length((1e2, 1e4, 1e6, 1e8))
     # Leave a small margin in the solve-count bound.
-    @test td.nsolves <= 24
+    @test td.nsolves <= 28
+    g0, h0 = cover(G)
+    _, _, td8 = MatrixCovers._cover_min_abslog2(G; linsolve=:dense, κs=κs8, start=(g0, h0))
+    _, _, tl8 = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr, κs=κs8, start=(g0, h0))
+    @test td8.nsolves <= tl8.nsolves - length(κs8)
 end
 
-# The Float64 LSQR preconditioner includes κ-weighted rows; other types use the
-# plain matrix-free iteration.
+# The LSQR preconditioner runs in two regimes: a Cholesky factor of the weighted
+# normal matrix while the fill budget allows it, and that matrix's diagonal
+# beyond it. Both must reach the same cover.
+@testset "MMC :lsqr preconditioner regimes" begin
+    rng = StableRNG(23)
+    n = 200
+    Ssp = sprandn(rng, n, n, 8 / (2n))
+    Ssp = Ssp + Ssp'
+    A = SparseMatrixCSC(size(Ssp)..., Ssp.colptr, Ssp.rowval, exp.(Ssp.nzval))
+    Gsp = sprandn(rng, n, n, 8 / n)
+    G = SparseMatrixCSC(size(Gsp)..., Gsp.colptr, Gsp.rowval, exp.(Gsp.nzval))
+
+    af, sf = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
+    ad, sd = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, fillbudget=0)
+    @test sf.precond === :factor
+    @test sd.precond === :diagonal
+    @test af ≈ ad rtol=1e-6
+    @test iscover(af, af, A) && iscover(ad, ad, A)
+    @test cover_objective(AbsLog{2}(), af, af, A) ≈ cover_objective(AbsLog{2}(), ad, ad, A) rtol=1e-8
+    # The factored regime is the one that converges in a few iterations per solve.
+    @test sf.lsqriters < sd.lsqriters
+
+    gf, hf, tf = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr)
+    gd, hd, td = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr, fillbudget=0)
+    @test (tf.precond, td.precond) === (:factor, :diagonal)
+    @test gf .* hf' ≈ gd .* hd' rtol=1e-6
+    @test iscover(gf, hf, G) && iscover(gd, hd, G)
+    @test cover_objective(AbsLog{2}(), gf, hf, G) ≈ cover_objective(AbsLog{2}(), gd, hd, G) rtol=1e-8
+
+    # The budget is a keyword of the public solvers, and the paths that never
+    # precondition say so.
+    @test symcover_min(AbsLog{2}(), A; linsolve=:lsqr, fillbudget=0) ≈ ad rtol=1e-6
+    @test MatrixCovers._symcover_min_abslog2(A; linsolve=:dense)[2].precond === :none
+    Abig = BigFloat.([4.0 1.0 0.5; 1.0 3.0 1.0; 0.5 1.0 2.5])
+    @test MatrixCovers._symcover_min_abslog2(Abig; linsolve=:lsqr)[2].precond === :none
+end
+
+# LSQR continuation starts from the heuristic cover.
+@testset "MMC :lsqr continuation starts from the heuristic cover" begin
+    rng = StableRNG(17)
+    A = (X = exp.(randn(rng, 50, 50)); (X .+ X') ./ 2)
+    al, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
+    ah, sh = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, start=symcover(A))
+    @test al == ah
+    @test (sl.nsolves, sl.lsqriters) == (sh.nsolves, sh.lsqriters)
+    ad, _ = MatrixCovers._symcover_min_abslog2(A; linsolve=:dense)
+    @test ad ≈ al rtol=1e-6
+
+    G = exp.(randn(rng, 40, 30))
+    gl, hl, tl = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr)
+    g0, h0 = cover(G)
+    gh, hh, th = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr, start=(g0, h0))
+    @test gl == gh
+    @test hl == hh
+    @test (tl.nsolves, tl.lsqriters) == (th.nsolves, th.lsqriters)
+
+    # With no stages the unweighted fit is the answer, not a start.
+    @test soft_symcover_min(AbsLog{2}(), A; linsolve=:lsqr) != symcover(A)
+end
+
+# Bound iterations for Cholesky-preconditioned `Float64` LSQR.
 @testset "MMC :lsqr iteration count is bounded across the continuation" begin
     rng = StableRNG(5)
     A = (X = exp.(randn(rng, 120, 120)); (X .+ X') ./ 2)
@@ -356,14 +425,23 @@ end
     al, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
     @test al ≈ ad rtol=1e-6
     # Bound the preconditioned iteration count with margin.
-    @test sl.lsqriters <= 60 * sl.nsolves
+    @test sl.lsqriters <= 12 * sl.nsolves
 
     G = exp.(randn(rng, 120, 90))
     gd, hd, _ = MatrixCovers._cover_min_abslog2(G; linsolve=:dense)
     gl, hl, tl = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr)
     @test gl .* hl' ≈ gd .* hd' rtol=1e-6
     # Apply the same iteration bound to asymmetric problems.
-    @test tl.lsqriters <= 60 * tl.nsolves
+    @test tl.lsqriters <= 12 * tl.nsolves
+
+    # The ridge handles bipartite support.
+    rngb = StableRNG(11)
+    Tsp = sparse(Matrix(SymTridiagonal(exp.(randn(rngb, 40)), exp.(randn(rngb, 39)))))
+    at, st = MatrixCovers._symcover_min_abslog2(Tsp; linsolve=:lsqr)
+    atd, _ = MatrixCovers._symcover_min_abslog2(Matrix(Tsp); linsolve=:dense)
+    @test at ≈ atd rtol=1e-6
+    @test iscover(at, at, Tsp)
+    @test st.lsqriters <= 12 * st.nsolves
 
     # A working type CHOLMOD cannot factor keeps the plain matrix-free iteration.
     A32 = Float32.([4.0 1.0 0.5; 1.0 3.0 1.0; 0.5 1.0 2.5])
@@ -574,4 +652,45 @@ end
     small, large = lsqr_alloc(200), lsqr_alloc(800)
     # Allow iteration growth while rejecting an added dense workspace.
     @test large < 10 * small
+end
+
+@testset "MMC continuation reports how each stage ended" begin
+    rng = StableRNG(17)
+    A = (X = exp.(randn(rng, 40, 40)); (X .+ X') ./ 2)
+    _, s = MatrixCovers._symcover_min_abslog2(A)
+    @test length(s.exits) == 8
+    @test length(s.stagedrops) == length(s.exits)
+    @test all(in((:stable, :decrease, :maxiter)), s.exits)
+    # With room to converge, no stage runs out of Newton steps.
+    @test all(!=(:maxiter), s.exits)
+
+    # A one-step limit truncates every `:lsqr` stage and emits a warning.
+    @test_logs (:warn, r"reached maxiter=1") match_mode=:any begin
+        _, sl = MatrixCovers._symcover_min_abslog2(A; maxiter=1, linsolve=:lsqr)
+        @test all(==(:maxiter), sl.exits)
+    end
+
+    G = exp.(randn(rng, 40, 30))
+    _, _, t = MatrixCovers._cover_min_abslog2(G)
+    @test length(t.exits) == 8
+    @test all(!=(:maxiter), t.exits)
+
+    # Exact solves default to eight stages; `:lsqr` defaults to four.
+    _, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
+    @test length(sl.exits) == 4
+    # Check the default `Float64` LSQR schedule exactly.
+    @test MatrixCovers._kappa_schedule(Float64, true) === (1e2, 1e4, 1e6, 1e8)
+    @test length(MatrixCovers._kappa_schedule(Float64, false)) == 8
+    @test MatrixCovers._kappa_schedule(Float64, false)[1] == 1e2
+    @test MatrixCovers._kappa_schedule(Float64, false)[end] == 1e8
+    @test issorted(MatrixCovers._kappa_schedule(Float64, false))
+    # The schedule uses the working precision.
+    @test eltype(MatrixCovers._kappa_schedule(BigFloat, false)) === BigFloat
+    @test eltype(MatrixCovers._kappa_schedule(BigFloat, true)) === BigFloat
+
+    # Explicit schedules override the defaults.
+    _, s4 = MatrixCovers._symcover_min_abslog2(A; κs=(1e2, 1e4, 1e6, 1e8))
+    @test length(s4.exits) == 4
+    _, s4l = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, κs=10 .^ range(2, 8, length=8))
+    @test length(s4l.exits) == 8
 end

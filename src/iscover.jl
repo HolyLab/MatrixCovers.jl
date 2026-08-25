@@ -14,6 +14,10 @@ requires `A` to be square.
 
 Both tolerances default to zero. A nonzero `atol` breaks scale invariance.
 
+`cover`, `symcover`, and native `AbsLog{2}` minimal covers certify their results
+at zero tolerance. Initializers and extension solvers may require a nonzero
+`rtol`.
+
 `a` and `b` must be nonnegative; a negative scale raises an `ArgumentError`.
 Zero is allowed for unsupported rows and columns.
 
@@ -67,4 +71,106 @@ function _require_nonneg(x::AbstractVector, name::String)
             throw(ArgumentError("iscover requires nonnegative scales, got $name[$(string(i))] = $(string(x[i]))"))
     end
     return nothing
+end
+
+# Log-domain solvers can lose coverage to rounding. Measure the largest
+# linear-arithmetic shortfall and apply a uniform inflation without changing the
+# balance convention.
+const CERTIFY_SWEEPS = 4
+
+function _certify_cover!(a::AbstractVector, A::AbstractMatrix, fname::Symbol)
+    T = scalar_type(eltype(a))
+    for _ in 1:CERTIFY_SWEEPS
+        r = _worst_shortfall(a, A, T, fname)
+        r > one(T) || return a
+        _inflate_nonzero!(a, _certify_factor(r))
+    end
+    throw(ArgumentError("$fname could not certify a cover of `A` within $CERTIFY_SWEEPS inflation sweeps"))
+end
+
+function _certify_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, fname::Symbol)
+    T = scalar_type(promote_type(eltype(a), eltype(b)))
+    for _ in 1:CERTIFY_SWEEPS
+        r = _worst_shortfall(a, b, A, T, fname)
+        r > one(T) || return a, b
+        s = _certify_factor(r)
+        _inflate_nonzero!(a, s)
+        _inflate_nonzero!(b, s)
+    end
+    throw(ArgumentError("$fname could not certify a cover of `A` within $CERTIFY_SWEEPS inflation sweeps"))
+end
+
+# How far short of `v` the cover product `p` falls, as the factor `p` must grow
+# by. A vanishing or non-finite product cannot be lifted onto a positive entry.
+function _shortfall(p, v, i, j, fname::Symbol)
+    r = v / p
+    isfinite(r) ||
+        throw(ArgumentError("$fname requires a positive, finite cover product on every supported entry, got $(string(p)) at ($(string(i)), $(string(j)))"))
+    return r
+end
+
+# Round each factor's share of the required inflation upward.
+_certify_factor(r::T) where {T} = max(nextfloat(sqrt(r)), nextfloat(one(T)))
+
+function _inflate_nonzero!(x::AbstractVector, s)
+    for i in eachindex(x)
+        iszero(x[i]) || (x[i] *= s)
+    end
+    return x
+end
+
+# Worst factor by which a cover product must grow to reach its entry, or `one`
+# when the cover already holds everywhere.
+function _worst_shortfall(a::AbstractVector, A::AbstractMatrix, ::Type{T}, fname::Symbol) where {T}
+    worst = Ref(one(T))
+    foreach_support_sym(A) do i, j, v
+        p = a[i] * a[j]
+        p >= v && return
+        worst[] = max(worst[], convert(T, _shortfall(p, v, i, j, fname)))
+    end
+    return worst[]
+end
+
+function _worst_shortfall(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
+                          ::Type{T}, fname::Symbol) where {T}
+    worst = Ref(one(T))
+    foreach_support(A) do i, j, v
+        p = a[i] * b[j]
+        p >= v && return
+        worst[] = max(worst[], convert(T, _shortfall(p, v, i, j, fname)))
+    end
+    return worst[]
+end
+
+# Direct dense-storage implementations avoid callback state.
+function _worst_shortfall(a::AbstractVector, A::StridedMatrix, ::Type{T}, fname::Symbol) where {T}
+    worst = one(T)
+    ax = axes(A, 1)
+    for j in ax
+        aj = a[j]
+        for i in first(ax):j
+            v = abs(A[i, j])
+            iszero(v) && continue
+            p = a[i] * aj
+            p >= v && continue
+            worst = max(worst, convert(T, _shortfall(p, v, i, j, fname)))
+        end
+    end
+    return worst
+end
+
+function _worst_shortfall(a::AbstractVector, b::AbstractVector, A::StridedMatrix,
+                          ::Type{T}, fname::Symbol) where {T}
+    worst = one(T)
+    for j in axes(A, 2)
+        bj = b[j]
+        for i in axes(A, 1)
+            v = abs(A[i, j])
+            iszero(v) && continue
+            p = a[i] * bj
+            p >= v && continue
+            worst = max(worst, convert(T, _shortfall(p, v, i, j, fname)))
+        end
+    end
+    return worst
 end

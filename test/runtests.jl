@@ -44,7 +44,8 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
                      :_edge_list, :_sym_edge_list, :_degrees,
                      :_balance_cover!, :inflate_feasible!)
         # External non-public names with no usable public equivalent.
-        foreign = (:FreeUnits, :Unit, :Units, :Optimizer, :Experimental, :register_error_hint)
+        foreign = (:FreeUnits, :Unit, :Units, :Optimizer, :Experimental, :register_error_hint,
+                   :CHOLMOD, :symbolic)
         test_explicit_imports(
             MatrixCovers;
             all_explicit_imports_are_public = VERSION >= v"1.11" ?

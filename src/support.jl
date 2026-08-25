@@ -97,28 +97,60 @@ function require_abs_symmetric(A::AbstractMatrix, fname)
     return nothing
 end
 
+# Shared predicate and error for storage-specific symmetry checks.
+_abs_symmetric(v, w) = (m = max(v, w); abs(v - w) <= ASYMMETRY_ULPS * eps(float(real(typeof(m)))) * m)
+
+@noinline function _abs_asymmetry_error(fname, i, j, v, w)
+    throw(ArgumentError("""
+    $fname requires `abs.(A)` to be symmetric, but abs(A[$(string(i)),$(string(j))]) = $(string(v)) and \
+    abs(A[$(string(j)),$(string(i))]) = $(string(w)). Wrap `A` in `Symmetric` (or `Hermitian`) to name the \
+    triangle to read; that also skips this check."""))
+end
+
+# Cache-blocked check for dense storage: the transposed reads of a column-major
+# sweep miss on every entry once `A` outgrows the cache, while a block of rows and
+# its transpose both fit. Only `i < j` needs testing, the diagonal being its own
+# partner.
+const SYMMETRY_BLOCK = 64
+
+function require_abs_symmetric(A::StridedMatrix, fname)
+    ax = axes(A, 1)
+    axes(A, 2) == ax ||
+        throw(DimensionMismatch("$fname requires a square matrix, got axes $(string(axes(A)))"))
+    n = length(ax)
+    o = first(ax) - 1
+    for jb in 1:SYMMETRY_BLOCK:n
+        jlast = min(jb + SYMMETRY_BLOCK - 1, n)
+        for ib in 1:SYMMETRY_BLOCK:jlast
+            for jp in jb:jlast
+                for ip in ib:min(ib + SYMMETRY_BLOCK - 1, jp - 1)
+                    i, j = ip + o, jp + o
+                    v = abs(A[i, j])
+                    w = abs(A[j, i])
+                    m = max(v, w)
+                    abs(v - w) <= ASYMMETRY_ULPS * eps(float(real(typeof(m)))) * m || throw(ArgumentError("""
+                    $fname requires `abs.(A)` to be symmetric, but abs(A[$(string(i)),$(string(j))]) = $(string(v)) and \
+                    abs(A[$(string(j)),$(string(i))]) = $(string(w)). Wrap `A` in `Symmetric` (or `Hermitian`) to name the \
+                    triangle to read; that also skips this check."""))
+                end
+            end
+        end
+    end
+    return nothing
+end
+
 # Storage that makes the precondition structural: the wrapper or the type's own
 # invariant already guarantees `abs(A[i,j]) == abs(A[j,i])`.
 require_abs_symmetric(::Union{Symmetric,Hermitian,Diagonal,SymTridiagonal}, fname) = nothing
 
-# Connected components of the bipartite support graph of `A`: one vertex per row
-# and one per column, one edge per stored nonzero. Returns `(rowcomp, colcomp,
-# ncomp)`, where `rowcomp` and `colcomp` are `Vector{Int}` indexed by *position*
-# within `axes(A, 1)` and `axes(A, 2)` (so offset axes need no special case, as
-# with `GroupedSupport.ptr`), holding the component id in `1:ncomp` — or 0 for
-# rows/columns with empty support, which belong to no component.
-#
-# The gauge orbit of an asymmetric cover has one dimension per component: the
-# rescaling `a -> γ*a`, `b -> b/γ` acts independently on each, because no
-# product `a[i]*b[j]` spans two components. Any convention that pins the split
-# between `a` and `b` must therefore be imposed per component; a single global
-# constraint leaves `ncomp - 1` directions to the whim of whichever pass ran
-# last.
+# Connected components of the bipartite support graph. Labels and support
+# counts use positions within each axis; unsupported rows and columns have label
+# zero. Each component has an independent `a -> γ*a`, `b -> b/γ` gauge, so
+# balancing must also be per component.
 function _support_components(A::AbstractMatrix)
     m = length(axes(A, 1))
     n = length(axes(A, 2))
     parent = collect(1:(m + n))
-    touched = falses(m + n)
     function find(p)
         while parent[p] != p
             parent[p] = parent[parent[p]]   # path halving
@@ -128,10 +160,13 @@ function _support_components(A::AbstractMatrix)
     end
     or = first(axes(A, 1)) - 1
     oc = first(axes(A, 2)) - 1
+    nzrow = zeros(Int, m)
+    nzcol = zeros(Int, n)
     foreach_support(A) do i, j, _
         p = i - or
         q = m + j - oc
-        touched[p] = touched[q] = true
+        nzrow[p] += 1
+        nzcol[q-m] += 1
         rp, rq = find(p), find(q)
         rp == rq || (parent[rp] = rq)
     end
@@ -140,7 +175,7 @@ function _support_components(A::AbstractMatrix)
     rowcomp = zeros(Int, m)
     colcomp = zeros(Int, n)
     for p in 1:(m + n)
-        touched[p] || continue
+        (p <= m ? nzrow[p] : nzcol[p-m]) > 0 || continue
         r = find(p)
         if label[r] == 0
             ncomp += 1
@@ -152,7 +187,7 @@ function _support_components(A::AbstractMatrix)
             colcomp[p-m] = label[r]
         end
     end
-    return rowcomp, colcomp, ncomp
+    return rowcomp, colcomp, ncomp, nzrow, nzcol
 end
 
 """
@@ -183,7 +218,7 @@ read through [`foreach_support`](@ref).
 See also: [`SupportComponents`](@ref).
 """
 function support_components(A::AbstractMatrix)
-    rowcomp, colcomp, ncomp = _support_components(A)
+    rowcomp, colcomp, ncomp, _, _ = _support_components(A)
     return SupportComponents(rowcomp, colcomp, ncomp, axes(A, 1), axes(A, 2))
 end
 

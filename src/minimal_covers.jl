@@ -25,7 +25,7 @@ method selects the one with the smallest `AbsLog{2}` objective.
 # Extended help
 
 The native solver accepts `κs` (penalty-continuation schedule), `maxiter`
-(Newton steps per stage), and `linsolve`:
+(Newton steps per stage), `fillbudget` (see below), and `linsolve`:
 
 - `:dense` factorizes dense normal equations at O(n³) per Newton step.
 - `:woodbury` handles nearly dense `Float64` support as a sparse correction. It
@@ -34,6 +34,16 @@ The native solver accepts `κs` (penalty-continuation schedule), `maxiter`
   default.
 - `:auto` chooses `:woodbury` when supported, `:lsqr` when the stored support
   fills at most a quarter of the grid, and `:dense` otherwise.
+
+`κs` defaults to a geometric schedule ending at `1e8`: eight stages for exact
+solves and four for `:lsqr`. An explicit `κs` overrides this default.
+
+For `Float64`, `:lsqr` uses a Cholesky preconditioner when its predicted storage
+does not exceed `fillbudget` bytes (default `2^30`). Otherwise it uses a diagonal
+preconditioner. The returned statistics identify the choice as `precond`.
+
+If a stage reaches `maxiter`, the solver warns that the cover may not minimize
+the objective. Increase `maxiter` or supply more continuation stages.
 
 The native solver computes in `Float64` for narrower input types, then converts
 the result to the required element type.
@@ -65,8 +75,10 @@ method selects the one with the smallest `AbsLog{2}` objective.
 
 # Extended help
 
-The native solver accepts the same `κs`, `maxiter`, and `linsolve` keywords as
-[`symcover_min`](@ref). For `:woodbury`, an `m × n` matrix may omit at most
+The native solver accepts the same `κs`, `maxiter`, `fillbudget`, and `linsolve`
+keywords as [`symcover_min`](@ref), with the same solver-dependent default
+schedule, the same preconditioner budget, and the same warning when a stage runs
+out of Newton steps. For `:woodbury`, an `m × n` matrix may omit at most
 `min(m,n) ÷ 4` entries per row or column and `4 * max(m,n)` entries in total.
 `:dense` costs O((m+n)³) per Newton step; sparse matrices default to `:lsqr`.
 
@@ -249,24 +261,20 @@ end
 # - `:woodbury` represents them as sparse `C + U*U'`, using conjugate gradients
 #   while the condition estimate is small and sparse Cholesky otherwise. It is
 #   restricted to nearly dense `Float64` problems.
-# - `:lsqr` applies the weighted residual operator `M` matrix-free. In `Float64`, its
-#   right preconditioner includes violated rows once diagonal scaling is inadequate.
+# - `:lsqr` applies the weighted residual operator `M` matrix-free, with sparse
+#   Cholesky right-preconditioning for `Float64`.
 #   It is not interchangeable with CG on the normal equations: LSQR's accuracy
 #   tracks the condition number of `M` (≈ √κ), CG's that of `MᵀM` (≈ κ), and at
 #   κ = 1e8 the latter exhausts double precision.
 # - `:auto` selects `:woodbury` when supported, `:lsqr` when the stored support
 #   fills at most `AUTO_LSQR_MAX_DENSITY` of the grid, and `:dense` otherwise.
 
-# Maximum support density for the `:auto` LSQR path. At or above it the exact
-# dense solve is the better bargain: it terminates a stage on a sign-stable
-# Newton step and has smaller constants.
+# Maximum support density for the `:auto` LSQR path. At higher densities the
+# exact dense solve has lower overhead and can stop on a sign-stable step.
 const AUTO_LSQR_MAX_DENSITY = 1 // 4
 
 # Condition estimate above which Woodbury uses sparse Cholesky instead of CG.
 const WOODBURY_CG_KAPPA = 1000
-
-# Condition estimate above which LSQR includes the weighted rows in its preconditioner.
-const LSQR_PRECOND_KAPPA = 1000
 
 # Solve `(C + U*U')x = f` from a sparse factorization of `C` using the
 # Woodbury identity. `rhs` stores the combined `[f U]` solve.
@@ -492,21 +500,28 @@ function _fκpat(x, κ, pat, supp::Grid{T}, symmetric::Bool) where {T}
             pj = view(pat, 1:j-1, j)
             xi = view(x, 1:j-1)
             vj = zero(T)
-            dj = 0
-            @simd for i in eachindex(cj, pj, xi)
+            # Keep the Boolean pattern out of the vectorized floating-point loop.
+            @simd for i in eachindex(cj, xi)
                 c = cj[i]
-                fin = isfinite(c)
                 z = xi[i] + xj - c
                 w = ifelse(z < 0, κT, oneunit(T))
-                vj += ifelse(fin, w * z^2, zero(T))
-                dj += ifelse((fin & (z < 0)) == pj[i], 0, 1)
+                vj += ifelse(isfinite(c), w * z^2, zero(T))
+            end
+            # Stop comparing after the first pattern change.
+            if ndiff == 0
+                dj = 0
+                @simd for i in eachindex(cj, pj, xi)
+                    c = cj[i]
+                    dj += ifelse((isfinite(c) & (xi[i] + xj - c < 0)) == pj[i], 0, 1)
+                end
+                ndiff += dj
             end
             c = C[j, j]
             fin = isfinite(c)
             z = 2xj - c
             w = ifelse(z < 0, κT, oneunit(T))
             v += 2vj + ifelse(fin, w * z^2, zero(T))
-            ndiff += dj + ifelse((fin & (z < 0)) == pat[j, j], 0, 1)
+            ndiff += ifelse((fin & (z < 0)) == pat[j, j], 0, 1)
         end
     else
         xr = view(x, 1:m)
@@ -515,17 +530,21 @@ function _fκpat(x, κ, pat, supp::Grid{T}, symmetric::Bool) where {T}
             cj = view(C, :, j)
             pj = view(pat, :, j)
             vj = zero(T)
-            dj = 0
-            @simd for i in eachindex(cj, pj, xr)
+            @simd for i in eachindex(cj, xr)
                 c = cj[i]
-                fin = isfinite(c)
                 z = xr[i] + xj - c
                 w = ifelse(z < 0, κT, oneunit(T))
-                vj += ifelse(fin, w * z^2, zero(T))
-                dj += ifelse((fin & (z < 0)) == pj[i], 0, 1)
+                vj += ifelse(isfinite(c), w * z^2, zero(T))
+            end
+            if ndiff == 0
+                dj = 0
+                @simd for i in eachindex(cj, pj, xr)
+                    c = cj[i]
+                    dj += ifelse((isfinite(c) & (xr[i] + xj - c < 0)) == pj[i], 0, 1)
+                end
+                ndiff += dj
             end
             v += vj
-            ndiff += dj
         end
     end
     return v, ndiff == 0
@@ -579,7 +598,9 @@ end
 # `κ === nothing` denotes the unweighted solve. Off-support entries of `C` are
 # `-Inf`, so products with them go through `ifelse(isfinite(c), ...)`: `0 * -Inf`
 # is NaN.
-function _assemble_woodbury!(f, dg, degV, vedges, vpat, x, κ, supp::Grid{T},
+# `vrow` stores violated off-diagonal rows in compressed-column order; `vcnt`
+# stores their column counts. `dg` and `degV` carry diagonal entries.
+function _assemble_woodbury!(f, dg, degV, vrow, vcnt, vpat, x, κ, supp::Grid{T},
                              symmetric::Bool, dκ) where {T}
     C = supp.C
     m, n = size(C)
@@ -609,18 +630,20 @@ function _assemble_woodbury!(f, dg, degV, vedges, vpat, x, κ, supp::Grid{T},
             w = ifelse(viol, κT, oneunit(T))
             f[j] += fq + ifelse(fin, w * c, zero(T))
             vpat[j, j] = viol
+            nv = 0
             for i in eachindex(vj)
                 vj[i] || continue
-                push!(vedges, (i, j))
+                push!(vrow, i)
+                nv += 1
                 degV[i] += 1
                 degV[j] += 1
                 dg[i] += dκ
                 dg[j] += dκ
             end
+            vcnt[j] = nv
             # A symmetric diagonal entry sits at both ends of its own residual, so it
             # lands on `dg[j]` twice while counting once in `degV`.
             if vpat[j, j]
-                push!(vedges, (j, j))
                 degV[j] += 1
                 dg[j] += 2dκ
             end
@@ -645,24 +668,168 @@ function _assemble_woodbury!(f, dg, degV, vedges, vpat, x, κ, supp::Grid{T},
                 vj[i] = viol
             end
             f[q] += fq
+            nv = 0
             for i in eachindex(vj)
                 vj[i] || continue
-                push!(vedges, (i, q))
+                push!(vrow, i)
+                nv += 1
                 degV[i] += 1
                 degV[q] += 1
                 dg[i] += dκ
                 dg[q] += dκ
             end
+            vcnt[q] = nv
         end
     end
     return f
 end
 
+# Assemble the upper triangle of the sparse Woodbury correction in CSC order,
+# reusing its storage across solves.
+function _assemble_C!(colptr::Vector{Int}, rowval::Vector{Int}, nzval::Vector{T},
+                      zptr, zrow, vptr, vrow, dg, dκ, N::Int) where {T}
+    colptr[1] = 1
+    for q in 1:N
+        colptr[q+1] = colptr[q] + (zptr[q+1] - zptr[q]) + (vptr[q+1] - vptr[q]) + 1
+    end
+    nnz = colptr[N+1] - 1
+    length(rowval) == nnz || resize!(rowval, nnz)
+    length(nzval) == nnz || resize!(nzval, nnz)
+    for q in 1:N
+        s = colptr[q]
+        zs, ze = zptr[q], zptr[q+1] - 1
+        vs, ve = vptr[q], vptr[q+1] - 1
+        while zs <= ze && vs <= ve
+            if zrow[zs] < vrow[vs]
+                rowval[s] = zrow[zs]; nzval[s] = -oneunit(T); zs += 1
+            else
+                rowval[s] = vrow[vs]; nzval[s] = dκ; vs += 1
+            end
+            s += 1
+        end
+        while zs <= ze
+            rowval[s] = zrow[zs]; nzval[s] = -oneunit(T); zs += 1; s += 1
+        end
+        while vs <= ve
+            rowval[s] = vrow[vs]; nzval[s] = dκ; vs += 1; s += 1
+        end
+        # `dg` carries the same diagonal plus the identity the ridge loop added.
+        rowval[s] = q
+        nzval[s] = dg[q] - oneunit(T)
+    end
+    return SparseMatrixCSC(N, N, colptr, rowval, nzval)
+end
+
+# `y = Symmetric(Cu) * x` for an upper-triangular compressed-column `Cu`.
+function _symmul!(y::AbstractVector{T}, Cu::SparseMatrixCSC{T}, x::AbstractVector{T}) where {T}
+    fill!(y, zero(T))
+    rv = rowvals(Cu)
+    nz = nonzeros(Cu)
+    for q in axes(Cu, 2)
+        xq = x[q]
+        s = zero(T)
+        for k in nzrange(Cu, q)
+            p = rv[k]
+            v = nz[k]
+            if p == q
+                s += v * xq
+            else
+                y[p] += v * xq
+                s += v * x[p]
+            end
+        end
+        # Later columns add the remaining terms to `y[q]`.
+        y[q] += s
+    end
+    return y
+end
+
+# Geometric continuation schedules ending at `1e8`. An exact solve ends a stage
+# on the first sign-stable Newton step, so its finer eight-stage schedule costs
+# about one extra solve per added stage; `:lsqr` has no such exit, pays a full
+# descent per stage, and keeps four.
+_kappa_schedule(::Type{T}, use_lsqr::Bool) where {T} =
+    use_lsqr ? ntuple(k -> T(10)^(2k), 4) :
+               ntuple(k -> T(10)^(T(2) + T(6) * T(k - 1) / T(7)), 8)
+
+# Warn when a continuation stage reaches `maxiter` while still descending.
+function _warn_truncated(fname::Symbol, κs, stats, maxiter::Int)
+    exits = stats.exits
+    any(==(:maxiter), exits) || return nothing
+    stalled = [(k, κs[k], stats.stagedrops[k]) for k in eachindex(exits) if exits[k] === :maxiter]
+    detail = join(("stage $k (κ = $κ) was still decreasing by $d per step" for (k, κ, d) in stalled), "; ")
+    @warn "$fname: $(length(stalled)) of $(length(exits)) continuation stages reached maxiter=$maxiter; the result covers `A` but may not minimize the objective ($detail). Increase `maxiter` or supply more `κs` stages."
+    return nothing
+end
+
+# Position of `S[i,j]` in `nonzeros(S)`; the entry must be stored.
+function _nzindex(S::SparseMatrixCSC, i::Int, j::Int)
+    r = nzrange(S, j)
+    rv = rowvals(S)
+    k = searchsortedfirst(view(rv, r), i)
+    k <= length(r) && rv[r[k]] == i ||
+        throw(ArgumentError("the preconditioner pattern is missing entry ($i, $j)"))
+    return r[k]
+end
+
+# Unweighted normal-matrix pattern for the LSQR preconditioner. The ridge makes
+# bipartite support components positive definite. `N == 0` disables it.
+function _precond_pattern(::Type{T}, supp::EdgeList, v0, N::Int, mult) where {T}
+    N == 0 && return spzeros(T, 0, 0)
+    Mi, Mj, Mv = collect(1:N), collect(1:N), zeros(T, N)
+    for (p, q) in supp.edges
+        if p == q
+            Mv[p] += 4 * oneunit(T)
+        else
+            w = mult(p, q) * oneunit(T)
+            Mv[p] += w
+            Mv[q] += w
+            push!(Mi, p, q)
+            push!(Mj, q, p)
+            push!(Mv, w, w)
+        end
+    end
+    dmax = zero(T)
+    for p in 1:N
+        Mv[p] += v0[p]^2
+        dmax = max(dmax, Mv[p])
+    end
+    ρ = _precond_ridge(dmax)
+    for p in 1:N
+        Mv[p] += ρ
+    end
+    return sparse(Mi, Mj, Mv, N, N)
+end
+
+_precond_pattern(::Type{T}, ::Grid, v0, N::Int, mult) where {T} = spzeros(T, 0, 0)
+
+# Scale-relative ridge for a positive-definite preconditioner.
+_precond_ridge(dmax::T) where {T} = (dmax > 0 ? dmax : oneunit(T)) * sqrt(eps(T))
+
+# Default storage limit, in bytes, for the LSQR Cholesky preconditioner.
+# Tripping this switches to diagonal preconditioning, reducing memory
+# consumption but increasing the number of iterations for convergence.
+const LSQR_FILL_BUDGET = 1 << 30
+
+# Return CHOLMOD's symbolic factorization and its predicted number of values.
+function _precond_analysis(M::SparseMatrixCSC)
+    F = SparseArrays.CHOLMOD.symbolic(SparseArrays.CHOLMOD.Sparse(Symmetric(M)))
+    s = unsafe_load(pointer(F))
+    Int(s.n) == size(M, 1) ||
+        error("CHOLMOD analyzed a matrix of order $(Int(s.n)), but `M` has order $(size(M, 1))")
+    s.is_super == 0 || return F, Int(s.xsize)
+    counts = unsafe_wrap(Array, convert(Ptr{_factor_index(F)}, s.ColCount), Int(s.n))
+    return F, sum(Int, counts)
+end
+
+_factor_index(::SparseArrays.CHOLMOD.Factor{<:Any,Ti}) where {Ti} = Ti
+
 # `AbsLog{2}` penalty continuation. Each stage freezes residual weights, solves
 # the weighted least-squares problem, and backtracks. `boost=true` applies a final
 # feasibility shift. The support layout selects the inner solver.
 function _abslog2_continuation(sys::SupportSystem{T}, x0;
-                               κs, maxiter::Int, linsolve::Symbol, boost::Bool) where {T}
+                               κs, maxiter::Int, linsolve::Symbol, boost::Bool,
+                               fillbudget::Real=LSQR_FILL_BUDGET) where {T}
     N = sys.N
     supp = sys.supp
     v0 = sys.v0
@@ -689,40 +856,53 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
     cv = zeros(T, ne + 1)   # √weight · log|A_ij|, with a trailing 0 gauge target
     # Violated entries under the current frozen weights.
     vpat = _violation_pattern(supp)
-    vedges = Tuple{Int,Int}[]                # the violated entries of the current solve
+    vrow = Int[]                             # violated rows, grouped by column (Woodbury path only)
+    vcnt = zeros(Int, use_woodbury ? N : 0)  # violated off-diagonal entries per column
+    vptr = zeros(Int, use_woodbury ? N + 1 : 0)
     degV = zeros(Int, use_woodbury ? N : 0)  # violated entries per unknown
     dg = zeros(T, use_woodbury ? N : 0)      # diagonal of `B`, for the ridge and the CG preconditioner
-    # Diagonal of the unweighted, gauge-augmented normal matrix.
-    dpart = zeros(T, use_lsqr ? N : 0)
-    if supp isa EdgeList && use_lsqr
-        for (p, q) in supp.edges
-            if p == q
-                dpart[p] += 4 * oneunit(T)
-            else
-                w = mult(p, q) * oneunit(T)
-                dpart[p] += w
-                dpart[q] += w
-            end
+    # Zero set grouped by column, excluding the diagonal, which `dg` carries.
+    zptr = zeros(Int, use_woodbury ? N + 1 : 0)
+    zrow = Int[]
+    if use_woodbury
+        for (p, q) in sys.zedges
+            p == q || (zptr[q+1] += 1)
         end
-        for p in 1:N
-            dpart[p] += v0[p]^2
-        end
-        for p in 1:N
-            dpart[p] > 0 || (dpart[p] = oneunit(T))
+        zptr[1] = 1
+        cumsum!(zptr, zptr)
+        resize!(zrow, zptr[end] - 1)
+        zcursor = zptr[1:end-1]
+        # `sys.zedges` ordering keeps each compressed column sorted.
+        for (p, q) in sys.zedges
+            p == q && continue
+            zrow[zcursor[q]] = p
+            zcursor[q] += 1
         end
     end
-    mdiag = zeros(T, use_lsqr ? N : 0)   # the violated rows' diagonal, per unit of κ−1
-    Mi = Int[]                           # COO triplets of the preconditioner
-    Mj = Int[]
-    Mv = T[]
-    px = zeros(T, use_lsqr ? N : 0)      # scale vector recovered from the LSQR variable
-    pg = zeros(T, use_lsqr ? N : 0)      # `Rᵀ√W y` before the preconditioner is applied
-    # `K` of the diagonal preconditioner, which is κ-independent and so built once.
-    psqrt = use_lsqr ? sqrt.(dpart) : T[]
-    # COO triplets of `C`, refilled whenever a Woodbury solve is factorized.
-    Ci = Int[]
-    Cj = Int[]
-    Cv = T[]
+    # Storage for the sparse correction, reused across solves.
+    Ccolptr = zeros(Int, use_woodbury ? N + 1 : 0)
+    Crowval = Int[]
+    Cnzval = T[]
+    px = zeros(T, use_precond ? N : 0)   # scale vector recovered from the LSQR variable
+    pg = zeros(T, use_precond ? N : 0)   # `Rᵀ√W y` before the preconditioner is applied
+    mdiag = zeros(T, use_precond ? N : 0)   # weighted degrees, the preconditioner's diagonal
+    # The normal-matrix pattern is constant, so one symbolic analysis serves all
+    # stages. Use its diagonal if the predicted Cholesky factor exceeds the budget.
+    Msp = _precond_pattern(T, supp, v0, use_precond ? N : 0, mult)
+    MF, fill_entries = use_precond ? _precond_analysis(Msp) : (nothing, 0)
+    use_factor = use_precond && sizeof(T) * fill_entries <= fillbudget
+    # Positions of the entries each factored solve overwrites: the diagonal, and
+    # both copies of each off-diagonal support entry.
+    dpos = use_factor ? [_nzindex(Msp, p, p) for p in 1:N] : Int[]
+    epos = zeros(Int, use_factor ? 2 * ne : 0)
+    if use_factor
+        for (e, (p, q)) in enumerate(supp.edges)
+            p == q && continue
+            epos[2 * e - 1] = _nzindex(Msp, p, q)
+            epos[2 * e] = _nzindex(Msp, q, p)
+        end
+    end
+    psqrt = zeros(T, use_factor ? 0 : (use_precond ? N : 0))  # `K` of the diagonal preconditioner
     rhs = zeros(T, use_woodbury ? N : 0, size(U, 2) + 1)
     dmin = use_woodbury ? minimum(sys.dfull) : oneunit(T)
     cgx = zeros(T, use_woodbury ? N : 0)
@@ -743,8 +923,12 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
             fill!(f, zero(T))
             copyto!(dg, czero)
             fill!(degV, 0)
-            empty!(vedges)
-            _assemble_woodbury!(f, dg, degV, vedges, vpat, x, κ, supp, symmetric, dκ)
+            empty!(vrow)
+            _assemble_woodbury!(f, dg, degV, vrow, vcnt, vpat, x, κ, supp, symmetric, dκ)
+            vptr[1] = 1
+            for q in 1:N
+                vptr[q+1] = vptr[q] + vcnt[q]
+            end
             # Match the ridge used by the dense path.
             dmax = zero(T)
             maxdegV = 0
@@ -756,47 +940,13 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
             for p in 1:N
                 dg[p] += oneunit(T) + ridge
             end
-            # Store full `C` for both matrix-vector products and factorization.
-            empty!(Ci)
-            empty!(Cj)
-            empty!(Cv)
-            for p in 1:N
-                push!(Ci, p)
-                push!(Cj, p)
-                push!(Cv, czero[p] + ridge)
-            end
-            for (p, q) in sys.zedges
-                p == q && continue
-                push!(Ci, p)
-                push!(Cj, q)
-                push!(Cv, -oneunit(T))
-                push!(Ci, q)
-                push!(Cj, p)
-                push!(Cv, -oneunit(T))
-            end
-            for (p, q) in vedges
-                push!(Ci, p)
-                push!(Cj, p)
-                push!(Cv, dκ)
-                push!(Ci, p)
-                push!(Cj, q)
-                push!(Cv, dκ)
-                if q != p
-                    push!(Ci, q)
-                    push!(Cj, q)
-                    push!(Cv, dκ)
-                    push!(Ci, q)
-                    push!(Cj, p)
-                    push!(Cv, dκ)
-                end
-            end
-            C = sparse(Ci, Cj, Cv, N, N)
+            C = _assemble_C!(Ccolptr, Crowval, Cnzval, zptr, zrow, vptr, vrow, dg, dκ, N)
             # Use CG while the Gershgorin condition estimate remains small.
             κest = oneunit(T) + dκ * 2 * maxdegV / dmin
             if κest <= WOODBURY_CG_KAPPA
                 copyto!(cgx, x)
                 Bmul! = function (yy, xx)
-                    mul!(yy, C, xx)
+                    _symmul!(yy, C, xx)
                     # Indicator columns make the low-rank term a block sum.
                     for k in axes(U, 2)
                         s = zero(T)
@@ -817,13 +967,10 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
                 ok && return copy(cgx)
             end
             nchol[] += 1
-            return _woodbury_solve!(zeros(T, N), cholesky(Symmetric(C)), U, f, rhs)
+            return _woodbury_solve!(zeros(T, N), cholesky(Symmetric(C, :U)), U, f, rhs)
         elseif use_lsqr
             edges = supp.edges
             cvals = supp.cvals
-            dκ = κ === nothing ? zero(T) : T(κ) - oneunit(T)
-            empty!(vedges)
-            fill!(mdiag, zero(T))
             for (e, (p, q)) in enumerate(edges)
                 c = cvals[e]
                 viol = κ !== nothing && (x[p] + x[q] - c) < 0
@@ -831,80 +978,40 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
                 sw = sqrt(mult(p, q) * (viol ? T(κ) : oneunit(T)))
                 ws[e] = sw
                 cv[e] = sw * c
-                if viol && use_precond
-                    push!(vedges, (p, q))
-                    if p == q
-                        mdiag[p] += 4 * oneunit(T)
-                    else
-                        w = mult(p, q) * oneunit(T)
-                        mdiag[p] += w
-                        mdiag[q] += w
-                    end
-                end
             end
             g = ne + 1   # index of the appended gauge row
             if use_precond
-                # Include violated rows once diagonal scaling is inadequate.
-                κest = oneunit(T)
-                for p in 1:N
-                    κest = max(κest, oneunit(T) + dκ * 2 * mdiag[p] / dpart[p])
-                end
-                if κest <= LSQR_PRECOND_KAPPA
-                    # Diagonal `K` needs only elementwise scaling.
-                    Dmul! = function (y, yv)
-                        @. px = yv / psqrt
-                        for (e, (p, q)) in enumerate(edges)
-                            y[e] = ws[e] * (px[p] + px[q])
-                        end
-                        y[g] = dot(v0, px)
-                        return y
-                    end
-                    Dtmul! = function (z, y)
-                        fill!(pg, zero(T))
-                        for (e, (p, q)) in enumerate(edges)
-                            t = ws[e] * y[e]
-                            pg[p] += t
-                            pg[q] += t
-                        end
-                        @. pg += v0 * y[g]
-                        @. z = pg / psqrt
-                        return z
-                    end
-                    soly, it = _lsqr(Dmul!, Dtmul!, cv, psqrt .* x)
-                    nlsqr[] += it
-                    return soly ./ psqrt
-                end
-                empty!(Mi)
-                empty!(Mj)
-                empty!(Mv)
-                for p in 1:N
-                    push!(Mi, p)
-                    push!(Mj, p)
-                    push!(Mv, dpart[p])
-                end
-                for (p, q) in vedges
+                # Weighted degrees, the diagonal of `RᵀWR`.
+                fill!(mdiag, zero(T))
+                nzv = nonzeros(Msp)
+                for (e, (p, q)) in enumerate(edges)
+                    w = ws[e]^2
                     if p == q
-                        push!(Mi, p)
-                        push!(Mj, p)
-                        push!(Mv, 4 * dκ)
+                        mdiag[p] += 4 * w
                     else
-                        w = mult(p, q) * dκ
-                        push!(Mi, p)
-                        push!(Mj, p)
-                        push!(Mv, w)
-                        push!(Mi, q)
-                        push!(Mj, q)
-                        push!(Mv, w)
-                        push!(Mi, p)
-                        push!(Mj, q)
-                        push!(Mv, w)
-                        push!(Mi, q)
-                        push!(Mj, p)
-                        push!(Mv, w)
+                        mdiag[p] += w
+                        mdiag[q] += w
+                        if use_factor
+                            nzv[epos[2 * e - 1]] = w
+                            nzv[epos[2 * e]] = w
+                        end
                     end
                 end
-                Msp = sparse(Mi, Mj, Mv, N, N)
-                MF = cholesky(Symmetric(Msp))
+            end
+            if use_factor
+                # Refill the preconditioner with the weights this solve freezes
+                # and refactor it in place: the pattern, and so the symbolic
+                # analysis, is the same on every solve.
+                dmax = zero(T)
+                for p in 1:N
+                    mdiag[p] += v0[p]^2
+                    dmax = max(dmax, mdiag[p])
+                end
+                ρ = _precond_ridge(dmax)
+                for p in 1:N
+                    nzv[dpos[p]] = mdiag[p] + ρ
+                end
+                cholesky!(MF, Symmetric(Msp))
                 Kc = MF.PtL
                 Uc = MF.UP
                 # CHOLMOD factor-component solves allocate their result.
@@ -931,6 +1038,35 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
                 soly, it = _lsqr(Pmul!, Ptmul!, cv, Kc \ px)
                 nlsqr[] += it
                 return (Uc \ soly)::Vector{T}
+            elseif use_precond
+                # An unknown outside the support gets an identity row.
+                for p in 1:N
+                    d = mdiag[p] + v0[p]^2
+                    psqrt[p] = sqrt(d > 0 ? d : oneunit(T))
+                end
+                # Diagonal `K` needs only elementwise scaling.
+                Dmul! = function (y, yv)
+                    @. px = yv / psqrt
+                    for (e, (p, q)) in enumerate(edges)
+                        y[e] = ws[e] * (px[p] + px[q])
+                    end
+                    y[g] = dot(v0, px)
+                    return y
+                end
+                Dtmul! = function (z, y)
+                    fill!(pg, zero(T))
+                    for (e, (p, q)) in enumerate(edges)
+                        t = ws[e] * y[e]
+                        pg[p] += t
+                        pg[q] += t
+                    end
+                    @. pg += v0 * y[g]
+                    @. z = pg / psqrt
+                    return z
+                end
+                soly, it = _lsqr(Dmul!, Dtmul!, cv, psqrt .* x)
+                nlsqr[] += it
+                return soly ./ psqrt
             end
             Amul! = function (y, xx)
                 for (e, (p, q)) in enumerate(edges)
@@ -985,8 +1121,13 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
         end
     end
     x = x0 === nothing ? solve_weighted(zeros(T, N), nothing) : x0
-    for κ in κs
+    # Record each stage's exit reason and final relative decrease.
+    exits = Vector{Symbol}(undef, length(κs))
+    drops = Vector{T}(undef, length(κs))
+    for (k, κ) in enumerate(κs)
         fcur = _fκ(x, κ, supp, symmetric)
+        exit = :maxiter
+        drop = zero(T)
         for _ in 1:maxiter
             xnew = solve_weighted(x, κ)
             t = one(T)
@@ -999,11 +1140,20 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
                 stable = false
             end
             x = xt
+            drop = (fcur - fnew) / max(fcur, one(T))
             # For exact inner solves, an unchanged violation pattern ends the stage.
-            !use_lsqr && stable && break
-            fcur - fnew <= 5000 * eps(T) * max(fcur, one(T)) && break
+            if !use_lsqr && stable
+                exit = :stable
+                break
+            end
+            if fcur - fnew <= 5000 * eps(T) * max(fcur, one(T))
+                exit = :decrease
+                break
+            end
             fcur = fnew
         end
+        exits[k] = exit
+        drops[k] = drop
     end
     # Hard covers receive a final uniform feasibility shift.
     if boost
@@ -1013,15 +1163,17 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
         end
     end
     return x, (; nsolves=nsolves[], lsqriters=nlsqr[], cgiters=ncg[],
-               cholsolves=nchol[],
-               linsolve=(use_lsqr ? :lsqr : use_woodbury ? :woodbury : :dense))
+               cholsolves=nchol[], exits=Tuple(exits), stagedrops=Tuple(drops),
+               linsolve=(use_lsqr ? :lsqr : use_woodbury ? :woodbury : :dense),
+               precond=(!use_precond ? :none : use_factor ? :factor : :diagonal))
 end
 
 # Worker for `symcover_min(::AbsLog{2})`, returning `(a, stats)`. A supplied
 # `start` replaces the cold initial solve. Narrow types compute in `Float64`.
-function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
+function _symcover_min_abslog2(A::AbstractMatrix; κs=nothing,
                                maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
-                               boost::Bool=true, fname=:symcover_min)
+                               boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET,
+                               fname=:symcover_min)
     linsolve in (:auto, :dense, :lsqr, :woodbury) ||
         throw(ArgumentError("linsolve must be :auto, :dense, :lsqr, or :woodbury; got :$linsolve"))
     # Shared symmetry check for native symmetric minimal covers.
@@ -1033,21 +1185,28 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     # Continuation tolerances require at least Float64 resolution.
     if eps(T) > eps(Float64)
         a64, stats = _symcover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
-                                           κs, maxiter, linsolve, start, boost, fname)
-        return T.(a64), stats
+                                           κs, maxiter, linsolve, start, boost, fillbudget, fname)
+        # Narrowing rounds to nearest and so can round a product below its entry.
+        a = T.(a64)
+        boost && _certify_cover!(a, A, fname)
+        return a, stats
     end
     n = length(ax)
     use_lsqr = linsolve === :lsqr
-    # Build only the support layout needed by the chosen solver.
-    G = _sym_support(A, T)
+    # One counting traversal decides the solver; the layout it needs is built after.
+    o = first(ax) - 1
+    nza = zeros(Int, n)    # support entries per row, counted in both orientations
+    foreach_support_sym(A) do i, j, v
+        nza[i-o] += 1
+        i == j || (nza[j-o] += 1)
+    end
     hassupp = falses(n)
     nsupp = 0              # support entries of `A`, counted in both orientations
     maxzero = 0            # largest number of zeros in any row of `A`
-    for (ip, i) in enumerate(ax)
-        ns = length(_slots(G, i))
-        hassupp[ip] = ns > 0
-        nsupp += ns
-        maxzero = max(maxzero, n - ns)
+    for ip in 1:n
+        hassupp[ip] = nza[ip] > 0
+        nsupp += nza[ip]
+        maxzero = max(maxzero, n - nza[ip])
     end
     # `n*I - L_Z` is positive definite only while no row carries more than
     # `n ÷ 4` zeros; the total budget bounds cost.
@@ -1069,17 +1228,22 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         use_lsqr = true
         linsolve = :lsqr
     end
+    # Select the default schedule after selecting the solver.
+    κsched = κs === nothing ? _kappa_schedule(T, use_lsqr) : κs
+    # Start LSQR continuation from the heuristic cover. An empty schedule returns
+    # the unweighted fit instead.
+    if start === nothing && use_lsqr && !isempty(κsched)
+        start = symcover(A)
+    end
     # Woodbury uses a grid; dense and LSQR use an edge list.
     supp = if use_woodbury
         C = fill(T(-Inf), n, n)
-        for (ip, i) in enumerate(ax)
-            for s in _slots(G, i)
-                jp = G.idx[s] - first(ax) + 1
-                jp >= ip && (C[ip, jp] = log(G.val[s]))
-            end
+        foreach_support_sym(A) do i, j, v
+            C[i-o, j-o] = log(T(v))
         end
         Grid{T}(C)
     else
+        G = _sym_support(A, T)
         edges = Tuple{Int,Int}[]
         cvals = T[]
         for (ip, i) in enumerate(ax)
@@ -1093,18 +1257,14 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         end
         EdgeList{T}(edges, cvals)
     end
-    # Zero set defining the off-diagonal pattern of sparse `C`.
+    # Zero set defining the off-diagonal pattern of sparse `C`, grouped by row.
     zedges = Tuple{Int,Int}[]
     if use_woodbury
-        mark = falses(n)
-        for (ip, i) in enumerate(ax)
-            for s in _slots(G, i)
-                mark[G.idx[s] - first(ax) + 1] = true
-            end
+        Cgrid = supp.C
+        for ip in 1:n
             for jp in ip:n
-                mark[jp] || push!(zedges, (ip, jp))
+                isfinite(Cgrid[ip, jp]) || push!(zedges, (ip, jp))
             end
-            fill!(mark, false)
         end
     end
     # The ridge handles singular symmetric support graphs.
@@ -1114,19 +1274,21 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
                            zeros(T, n))
     x0 = start === nothing ? nothing :
          T[hassupp[ip] ? log(T(start[i])) : zero(T) for (ip, i) in enumerate(ax)]
-    α, stats = _abslog2_continuation(sys, x0; κs, maxiter, linsolve, boost)
+    α, stats = _abslog2_continuation(sys, x0; κs=κsched, maxiter, linsolve, boost, fillbudget)
+    _warn_truncated(fname, κsched, stats, maxiter)
     # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     a = similar(Array{T}, ax)
     for (ip, i) in enumerate(ax)
         a[i] = hassupp[ip] ? exp(α[ip]) : zero(T)
     end
+    boost && _certify_cover!(a, A, fname)
     return a, stats
 end
 
 # Worker for `cover_min(::AbsLog{2})`, returning `(a, b, stats)`.
-function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
+function _cover_min_abslog2(A::AbstractMatrix; κs=nothing,
                             maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
-                            boost::Bool=true)
+                            boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET)
     linsolve in (:auto, :dense, :lsqr, :woodbury) ||
         throw(ArgumentError("linsolve must be :auto, :dense, :lsqr, or :woodbury; got :$linsolve"))
     axr = axes(A, 1)
@@ -1136,26 +1298,26 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     # Continuation tolerances require at least Float64 resolution.
     if eps(T) > eps(Float64)
         a64, b64, stats = _cover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
-                                             κs, maxiter, linsolve, start, boost)
-        return T.(a64), T.(b64), stats
+                                             κs, maxiter, linsolve, start, boost, fillbudget)
+        # Narrowing rounds to nearest and so can round a product below its entry.
+        a, b = T.(a64), T.(b64)
+        boost && _certify_cover!(a, b, A, :cover_min)
+        return a, b, stats
     end
     m = length(axr)
     n = length(axc)
     N = m + n
     use_lsqr = linsolve === :lsqr
     # Stack row positions before column positions; scatter results back to `A`'s axes.
-    G = _row_support(A, T)
+    or = first(axr) - 1
+    oc = first(axc) - 1
     nzrow = zeros(Int, m)   # support entries per row, for the balance convention
     nzcol = zeros(Int, n)   # ditto per column
-    ne = 0
-    for (ip, i) in enumerate(axr)
-        for s in _slots(G, i)
-            jp = G.idx[s] - first(axc) + 1
-            ne += 1
-            nzrow[ip] += 1
-            nzcol[jp] += 1
-        end
+    foreach_support(A) do i, j, v
+        nzrow[i-or] += 1
+        nzcol[j-oc] += 1
     end
+    ne = sum(nzrow)
     hasrow = nzrow .> 0
     hascol = nzcol .> 0
     # `min(m,n)*I - L_Z` is positive definite only while no row or column
@@ -1187,16 +1349,21 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         use_lsqr = true
         linsolve = :lsqr
     end
+    # Select the default schedule after selecting the solver.
+    κsched = κs === nothing ? _kappa_schedule(T, use_lsqr) : κs
+    # Start LSQR continuation from the heuristic cover.
+    if start === nothing && use_lsqr && !isempty(κsched)
+        start = cover(A)
+    end
     # Woodbury uses a grid; dense and LSQR use an edge list.
     supp = if use_woodbury
         C = fill(T(-Inf), m, n)
-        for (ip, i) in enumerate(axr)
-            for s in _slots(G, i)
-                C[ip, G.idx[s]-first(axc)+1] = log(G.val[s])
-            end
+        foreach_support(A) do i, j, v
+            C[i-or, j-oc] = log(T(v))
         end
         Grid{T}(C)
     else
+        G = _row_support(A, T)
         edges = Tuple{Int,Int}[]
         cvals = T[]
         for (ip, i) in enumerate(axr)
@@ -1220,15 +1387,11 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
             dfull[m+jp] = T(m)
             Umat[m+jp, 2] = oneunit(T)
         end
-        mark = falses(n)
-        for (ip, i) in enumerate(axr)
-            for s in _slots(G, i)
-                mark[G.idx[s] - first(axc) + 1] = true
-            end
+        Cgrid = supp.C
+        for ip in 1:m
             for jp in 1:n
-                mark[jp] || push!(zedges, (ip, m + jp))
+                isfinite(Cgrid[ip, jp]) || push!(zedges, (ip, m + jp))
             end
-            fill!(mark, false)
         end
     end
     # Pin the global row/column gauge on supported variables.
@@ -1253,9 +1416,10 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
         end
         s0
     end
-    x, stats = _abslog2_continuation(sys, x0; κs, maxiter, linsolve, boost)
+    x, stats = _abslog2_continuation(sys, x0; κs=κsched, maxiter, linsolve, boost, fillbudget)
+    _warn_truncated(:cover_min, κsched, stats, maxiter)
     # Apply the balance convention independently to each support component.
-    rowcomp, colcomp, ncomp = _support_components(A)
+    rowcomp, colcomp, ncomp, _, _ = _support_components(A)
     Lα = zeros(T, ncomp)
     Lβ = zeros(T, ncomp)
     nec = zeros(Int, ncomp)
@@ -1283,6 +1447,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=(1e2, 1e4, 1e6, 1e8),
     for (jp, j) in enumerate(axc)
         b[j] = hascol[jp] ? exp(x[m+jp] - s[colcomp[jp]]) : zero(T)
     end
+    boost && _certify_cover!(a, b, A, :cover_min)
     return a, b, stats
 end
 
