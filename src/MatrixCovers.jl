@@ -1,8 +1,8 @@
 module MatrixCovers
 
 using LinearAlgebra: LinearAlgebra, Adjoint, Bidiagonal, Diagonal, Hermitian,
-                     SymTridiagonal, Symmetric, Transpose, Tridiagonal, cholesky, cholesky!,
-                     dot, mul!, norm
+                     SymTridiagonal, Symmetric, Transpose, Tridiagonal, bunchkaufman!,
+                     cholesky, cholesky!, dot, lu!, mul!, norm
 using PrecompileTools: PrecompileTools, @compile_workload
 using Random: Random, AbstractRNG, MersenneTwister
 using SparseArrays: SparseArrays, SparseMatrixCSC, nnz, nonzeros, nzrange, rowvals, sparse, spzeros

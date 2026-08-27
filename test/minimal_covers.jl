@@ -41,8 +41,8 @@ end
     a = symcover_min(AbsLog{2}(), A)
     @test a ≈ [1, 2, 1]
     @test abs(cover_objective(AbsLog{2}(), a, A)) < 1e-8
-    # κs keyword is accepted.
-    @test symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; κs=(1e2, 1e4, 1e6, 1e8, 1e10)) isa Vector
+    # κ and maxouter keywords are accepted.
+    @test symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; κ=1e3, maxouter=16) isa Vector
 end
 
 @testset "cover_min native AbsLog{2}" begin
@@ -94,8 +94,8 @@ end
     a, b = cover_min(AbsLog{2}(), A)
     @test iscover(a, b, A; atol=1e-8)
     @test cover_objective(AbsLog{2}(), a, b, A) ≈ 2 * log(sqrt(2))^2
-    # κs keyword is accepted.
-    @test cover_min(AbsLog{2}(), [1.0 2.0; 3.0 4.0]; κs=(1e2, 1e4, 1e6, 1e8, 1e10)) isa Tuple
+    # κ and maxouter keywords are accepted.
+    @test cover_min(AbsLog{2}(), [1.0 2.0; 3.0 4.0]; κ=1e3, maxouter=16) isa Tuple
 end
 
 @testset "MMC native AbsLog{2} matrix-free LSQR path" begin
@@ -170,13 +170,17 @@ end
                 @test aw ≈ ad rtol=1e-7
                 @test aa == aw
                 @test iscover(aw, M; atol=1e-8)
-                # Exercise both CG and factorized Woodbury solves.
+                # Adaptive κ keeps the default run in the CG regime.
                 @test sw.cgiters > 0
-                @test sw.cholsolves > 0
                 @test sd.cgiters == 0
                 @test sd.cholsolves == 0
             end
         end
+        # A large penalty weight pushes the condition estimate past the CG
+        # threshold, reaching the factorized Woodbury solve.
+        ac, sc = MatrixCovers._symcover_min_abslog2(A; linsolve=:woodbury, κ=1e7, maxouter=2)
+        @test sc.cholsolves > 0
+        @test iscover(ac, A; atol=1e-8)
     end
 
     @testset "asymmetric, ($m, $n)" for (m, n) in ((8, 6), (30, 22), (120, 90))
@@ -195,11 +199,12 @@ end
                 @test aw .* bw' ≈ ad .* bd' rtol=1e-7
                 @test iscover(aw, bw, M; atol=1e-7)
                 @test sw.cgiters > 0
-                @test sw.cholsolves > 0
                 @test sd.cgiters == 0
                 @test sd.cholsolves == 0
             end
         end
+        _, _, sc = MatrixCovers._cover_min_abslog2(A; linsolve=:woodbury, κ=1e7, maxouter=2)
+        @test sc.cholsolves > 0
     end
 
     # Only abs.(A) is read, so a complex Hermitian takes the same path and lands on
@@ -236,16 +241,16 @@ end
     @test axes(bgo, 1) == axes(Ago, 2)
     @test collect(ago) .* collect(bgo)' ≈ agm .* bgm' rtol=1e-10
 
-    # A single stage at κ = 1e2 stays inside the conjugate-gradient regime throughout,
-    # so the factorization is never reached.
+    # A single pass at κ = 1e2 stays inside the conjugate-gradient regime
+    # throughout, so the factorization is never reached.
     A1 = symlognormal(24)
-    c1, s1 = MatrixCovers._symcover_min_abslog2(A1; κs=(1e2,), linsolve=:woodbury)
+    c1, s1 = MatrixCovers._symcover_min_abslog2(A1; κ=1e2, maxouter=1, linsolve=:woodbury)
     @test s1.cgiters > 0
     @test s1.cholsolves == 0
-    @test c1 ≈ MatrixCovers._symcover_min_abslog2(A1; κs=(1e2,), linsolve=:dense)[1] rtol=1e-8
+    @test c1 ≈ MatrixCovers._symcover_min_abslog2(A1; κ=1e2, maxouter=1, linsolve=:dense)[1] rtol=1e-8
     G1 = lognormal(24, 18)
-    p1, q1, t1 = MatrixCovers._cover_min_abslog2(G1; κs=(1e2,), linsolve=:woodbury)
-    pd1, qd1, _ = MatrixCovers._cover_min_abslog2(G1; κs=(1e2,), linsolve=:dense)
+    p1, q1, t1 = MatrixCovers._cover_min_abslog2(G1; κ=1e2, maxouter=1, linsolve=:woodbury)
+    pd1, qd1, _ = MatrixCovers._cover_min_abslog2(G1; κ=1e2, maxouter=1, linsolve=:dense)
     @test t1.cgiters > 0
     @test t1.cholsolves == 0
     @test p1 .* q1' ≈ pd1 .* qd1' rtol=1e-8
@@ -320,8 +325,8 @@ end
     @test MatrixCovers._symcover_min_abslog2(D4)[2].linsolve === :dense
 end
 
-# Exact inner solves stop a stage when the violated set is unchanged; LSQR uses
-# the decrease test.
+# Exact inner solves stop an outer pass when the active set is unchanged; LSQR
+# uses the decrease test.
 @testset "MMC exact paths stop on a sign-stable Newton step" begin
     rng = StableRNG(31)
     A = (X = exp.(randn(rng, 60, 60)); (X .+ X') ./ 2)
@@ -330,17 +335,13 @@ end
     al, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
     @test ad ≈ al rtol=1e-6
     @test aw ≈ al rtol=1e-6
-    @test sd.nsolves == sw.nsolves
-    @test sd.nsolves <= 26
-    # Exact paths save one solve per continuation stage. The comparison runs both
-    # paths on one schedule, because the default is solver-dependent, and from one
-    # start, because the LSQR path otherwise supplies its own: only a shared
-    # starting iterate leaves the stage-exit rule as the difference between them.
-    κs8 = MatrixCovers._kappa_schedule(Float64, false)
-    a0 = symcover(A)
-    _, sd8 = MatrixCovers._symcover_min_abslog2(A; linsolve=:dense, κs=κs8, start=a0)
-    _, sl8 = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, κs=κs8, start=a0)
-    @test sd8.nsolves <= sl8.nsolves - length(κs8)
+    # The dense and Woodbury trajectories agree to roundoff, which adaptive
+    # escalation can turn into slightly different outer-iteration counts.
+    @test abs(sd.nsolves - sw.nsolves) <= 10
+    @test sd.nsolves <= 34
+    # Once the active set settles, each outer pass of an exact path ends on its
+    # first, sign-stable Newton step.
+    @test count(==(:stable), sd.exits) >= max(1, sd.nouter ÷ 2)
 
     G = exp.(randn(rng, 60, 45))
     gd, hd, td = MatrixCovers._cover_min_abslog2(G; linsolve=:dense)
@@ -348,13 +349,10 @@ end
     gl, hl, tl = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr)
     @test gd .* hd' ≈ gl .* hl' rtol=1e-6
     @test gw .* hw' ≈ gl .* hl' rtol=1e-6
-    @test td.nsolves == tw.nsolves
+    @test abs(td.nsolves - tw.nsolves) <= 10
     # Leave a small margin in the solve-count bound.
-    @test td.nsolves <= 28
-    g0, h0 = cover(G)
-    _, _, td8 = MatrixCovers._cover_min_abslog2(G; linsolve=:dense, κs=κs8, start=(g0, h0))
-    _, _, tl8 = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr, κs=κs8, start=(g0, h0))
-    @test td8.nsolves <= tl8.nsolves - length(κs8)
+    @test td.nsolves <= 48
+    @test count(==(:stable), td.exits) >= max(1, td.nouter ÷ 2)
 end
 
 # The LSQR preconditioner runs in two regimes: a Cholesky factor of the weighted
@@ -413,7 +411,7 @@ end
     @test hl == hh
     @test (tl.nsolves, tl.lsqriters) == (th.nsolves, th.lsqriters)
 
-    # With no stages the unweighted fit is the answer, not a start.
+    # With no outer passes the unweighted fit is the answer, not a start.
     @test soft_symcover_min(AbsLog{2}(), A; linsolve=:lsqr) != symcover(A)
 end
 
@@ -654,43 +652,50 @@ end
     @test large < 10 * small
 end
 
-@testset "MMC continuation reports how each stage ended" begin
+@testset "MMC outer iteration reports its progress" begin
     rng = StableRNG(17)
     A = (X = exp.(randn(rng, 40, 40)); (X .+ X') ./ 2)
     _, s = MatrixCovers._symcover_min_abslog2(A)
-    @test length(s.exits) == 8
-    @test length(s.stagedrops) == length(s.exits)
+    @test s.nouter == length(s.exits) == length(s.drops) == length(s.kkt) == length(s.κs)
+    @test s.nouter <= 32
     @test all(in((:stable, :decrease, :maxiter)), s.exits)
-    # With room to converge, no stage runs out of Newton steps.
+    # With room to converge, no outer pass runs out of Newton steps.
     @test all(!=(:maxiter), s.exits)
-
-    # A one-step limit truncates every `:lsqr` stage and emits a warning.
-    @test_logs (:warn, r"reached maxiter=1") match_mode=:any begin
-        _, sl = MatrixCovers._symcover_min_abslog2(A; maxiter=1, linsolve=:lsqr)
-        @test all(==(:maxiter), sl.exits)
-    end
+    # κ starts at the default, escalates monotonically, and respects the cap.
+    @test s.κs[1] == 1e2
+    @test issorted(s.κs)
+    @test s.κs[end] <= 1e8
+    @test s.kkt[end] < 1e-8
 
     G = exp.(randn(rng, 40, 30))
     _, _, t = MatrixCovers._cover_min_abslog2(G)
-    @test length(t.exits) == 8
     @test all(!=(:maxiter), t.exits)
+    @test t.kkt[end] < 1e-8
 
-    # Exact solves default to eight stages; `:lsqr` defaults to four.
+    # The LSQR path caps escalation where its accuracy floor makes larger
+    # weights useless.
     _, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
-    @test length(sl.exits) == 4
-    # Check the default `Float64` LSQR schedule exactly.
-    @test MatrixCovers._kappa_schedule(Float64, true) === (1e2, 1e4, 1e6, 1e8)
-    @test length(MatrixCovers._kappa_schedule(Float64, false)) == 8
-    @test MatrixCovers._kappa_schedule(Float64, false)[1] == 1e2
-    @test MatrixCovers._kappa_schedule(Float64, false)[end] == 1e8
-    @test issorted(MatrixCovers._kappa_schedule(Float64, false))
-    # The schedule uses the working precision.
-    @test eltype(MatrixCovers._kappa_schedule(BigFloat, false)) === BigFloat
-    @test eltype(MatrixCovers._kappa_schedule(BigFloat, true)) === BigFloat
+    @test sl.κs[end] <= 1e5
+    @test sl.kkt[end] < 1e-8
 
-    # Explicit schedules override the defaults.
-    _, s4 = MatrixCovers._symcover_min_abslog2(A; κs=(1e2, 1e4, 1e6, 1e8))
-    @test length(s4.exits) == 4
-    _, s4l = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, κs=10 .^ range(2, 8, length=8))
-    @test length(s4l.exits) == 8
+    # Stopping far short of convergence emits a warning.
+    @test_logs (:warn, r"may not minimize the objective") match_mode=:any begin
+        MatrixCovers._symcover_min_abslog2(A; maxouter=1, maxiter=1)
+    end
+
+    # The initial κ must define a penalty.
+    @test_throws "κ must exceed 1" MatrixCovers._symcover_min_abslog2(A; κ=1.0)
+end
+
+@testset "MMC multiplier update is exact on an analytic problem" begin
+    # A = [1 e; e 1]: the (1,2) constraint is active with multiplier λ* = 2, and
+    # the violation contracts by exactly 2/(κ+1) per multiplier update.
+    A2 = [1.0 exp(1.0); exp(1.0) 1.0]
+    a2, s2 = MatrixCovers._symcover_min_abslog2(A2; linsolve=:dense, κ=1e2)
+    @test s2.converged
+    @test a2[1] * a2[2] ≈ exp(1.0)
+    v = s2.kkt
+    @test all(k -> isapprox(v[k+1] / v[k], 2 / 101; rtol=1e-3), 1:3)
+    # Contraction beats the tenfold target, so κ never escalates.
+    @test all(==(1e2), s2.κs)
 end

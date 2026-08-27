@@ -24,8 +24,10 @@ method selects the one with the smallest `AbsLog{2}` objective.
 
 # Extended help
 
-The native solver accepts `κs` (penalty-continuation schedule), `maxiter`
-(Newton steps per stage), `fillbudget` (see below), and `linsolve`:
+The native solver accepts `κ` (initial augmented-Lagrangian penalty, default
+`1e2`), `maxouter` (multiplier updates, default `32`; `0` returns the
+unconstrained fit), `maxiter` (Newton steps per update), `fillbudget` (see
+below), and `linsolve`:
 
 - `:dense` factorizes dense normal equations at O(n³) per Newton step.
 - `:woodbury` handles nearly dense `Float64` support as a sparse correction. It
@@ -35,15 +37,15 @@ The native solver accepts `κs` (penalty-continuation schedule), `maxiter`
 - `:auto` chooses `:woodbury` when supported, `:lsqr` when the stored support
   fills at most a quarter of the grid, and `:dense` otherwise.
 
-`κs` defaults to a geometric schedule ending at `1e8`: eight stages for exact
-solves and four for `:lsqr`. An explicit `κs` overrides this default.
+The solver increases `κ` when the KKT residual contracts slowly. Statistics
+include the penalty weights (`κs`) and KKT residuals (`kkt`).
 
 For `Float64`, `:lsqr` uses a Cholesky preconditioner when its predicted storage
 does not exceed `fillbudget` bytes (default `2^30`). Otherwise it uses a diagonal
 preconditioner. The returned statistics identify the choice as `precond`.
 
-If a stage reaches `maxiter`, the solver warns that the cover may not minimize
-the objective. Increase `maxiter` or supply more continuation stages.
+If the solver warns that the result may not minimize the objective, increase
+`maxouter` or, rarely, `κ`.
 
 The native solver computes in `Float64` for narrower input types, then converts
 the result to the required element type.
@@ -75,10 +77,9 @@ method selects the one with the smallest `AbsLog{2}` objective.
 
 # Extended help
 
-The native solver accepts the same `κs`, `maxiter`, `fillbudget`, and `linsolve`
-keywords as [`symcover_min`](@ref), with the same solver-dependent default
-schedule, the same preconditioner budget, and the same warning when a stage runs
-out of Newton steps. For `:woodbury`, an `m × n` matrix may omit at most
+The native solver accepts the same `κ`, `maxouter`, `maxiter`, `fillbudget`, and
+`linsolve` keywords as [`symcover_min`](@ref). For `:woodbury`, an `m × n`
+matrix may omit at most
 `min(m,n) ÷ 4` entries per row or column and `4 * max(m,n)` entries in total.
 `:dense` costs O((m+n)³) per Newton step; sparse matrices default to `:lsqr`.
 
@@ -421,19 +422,32 @@ end
 SupportSystem{T}(N, supp::S, args...) where {T,S} = SupportSystem{T,S}(N, supp, args...)
 
 # Support sweeps, specialized by layout.
+#
+# Per-entry augmented-Lagrangian term with multiplier λ ≥ 0 and penalty weight κ:
+#
+#     ψ(z) = z²               for z ≥ b,
+#     ψ(z) = κ(z − s)² + s·b  for z < b,
+#
+# where `s = λ/(2κ)` and `b = λ/(2(κ-1))`. The omitted constant is independent
+# of `z`. Precomputed scales keep the branch test identical across sweeps.
 
-# Objective `f_κ(x) = Σ_e mult_e·w_e·z_e²`, `w_e = κ` where `z_e < 0` and 1 elsewhere.
-function _fκ(x, κ, supp::EdgeList{T}, symmetric::Bool) where {T}
+# Objective `f(x) = Σ_e mult_e·ψ_e(z_e)`.
+function _fal(x, κ, λ, sscale, bscale, supp::EdgeList{T}, symmetric::Bool) where {T}
     edges, cvals = supp.edges, supp.cvals
+    κT = T(κ)
     v = zero(T)
     for (e, (p, q)) in enumerate(edges)
         z = x[p] + x[q] - cvals[e]
-        v += ((symmetric && p != q) ? 2 : 1) * (z < 0 ? T(κ) : oneunit(T)) * z^2
+        l = λ[e]
+        viol = z < l * bscale
+        s = ifelse(viol, l * sscale, zero(T))
+        w = ifelse(viol, κT, oneunit(T))
+        v += ((symmetric && p != q) ? 2 : 1) * (w * (z - s)^2 + s * (l * bscale))
     end
     return v
 end
 
-function _fκ(x, κ, supp::Grid{T}, symmetric::Bool) where {T}
+function _fal(x, κ, λ, sscale, bscale, supp::Grid{T}, symmetric::Bool) where {T}
     C = supp.C
     m, n = size(C)
     κT = T(κ)
@@ -442,30 +456,41 @@ function _fκ(x, κ, supp::Grid{T}, symmetric::Bool) where {T}
         for j in 1:n
             xj = x[j]
             cj = view(C, 1:j-1, j)
+            lj = view(λ, 1:j-1, j)
             xi = view(x, 1:j-1)
             vj = zero(T)
-            @simd for i in eachindex(cj, xi)
+            @simd for i in eachindex(cj, xi, lj)
                 c = cj[i]
                 z = xi[i] + xj - c
-                w = ifelse(z < 0, κT, oneunit(T))
-                vj += ifelse(isfinite(c), w * z^2, zero(T))
+                l = lj[i]
+                viol = z < l * bscale
+                s = ifelse(viol, l * sscale, zero(T))
+                w = ifelse(viol, κT, oneunit(T))
+                vj += ifelse(isfinite(c), w * (z - s)^2 + s * (l * bscale), zero(T))
             end
             c = C[j, j]
             z = 2xj - c
-            w = ifelse(z < 0, κT, oneunit(T))
-            v += 2vj + ifelse(isfinite(c), w * z^2, zero(T))
+            l = λ[j, j]
+            viol = z < l * bscale
+            s = ifelse(viol, l * sscale, zero(T))
+            w = ifelse(viol, κT, oneunit(T))
+            v += 2vj + ifelse(isfinite(c), w * (z - s)^2 + s * (l * bscale), zero(T))
         end
     else
         xr = view(x, 1:m)
         for j in 1:n
             xj = x[m+j]
             cj = view(C, :, j)
+            lj = view(λ, :, j)
             vj = zero(T)
-            @simd for i in eachindex(cj, xr)
+            @simd for i in eachindex(cj, xr, lj)
                 c = cj[i]
                 z = xr[i] + xj - c
-                w = ifelse(z < 0, κT, oneunit(T))
-                vj += ifelse(isfinite(c), w * z^2, zero(T))
+                l = lj[i]
+                viol = z < l * bscale
+                s = ifelse(viol, l * sscale, zero(T))
+                w = ifelse(viol, κT, oneunit(T))
+                vj += ifelse(isfinite(c), w * (z - s)^2 + s * (l * bscale), zero(T))
             end
             v += vj
         end
@@ -473,21 +498,25 @@ function _fκ(x, κ, supp::Grid{T}, symmetric::Bool) where {T}
     return v
 end
 
-# Compute the objective and violated set in one sweep.
-function _fκpat(x, κ, pat, supp::EdgeList{T}, symmetric::Bool) where {T}
+# Compute the objective and the active set in one sweep.
+function _falpat(x, κ, λ, sscale, bscale, pat, supp::EdgeList{T}, symmetric::Bool) where {T}
     edges, cvals = supp.edges, supp.cvals
+    κT = T(κ)
     v = zero(T)
     same = true
     for (e, (p, q)) in enumerate(edges)
         z = x[p] + x[q] - cvals[e]
-        viol = z < 0
-        v += ((symmetric && p != q) ? 2 : 1) * (viol ? T(κ) : oneunit(T)) * z^2
+        l = λ[e]
+        viol = z < l * bscale
+        s = ifelse(viol, l * sscale, zero(T))
+        w = ifelse(viol, κT, oneunit(T))
+        v += ((symmetric && p != q) ? 2 : 1) * (w * (z - s)^2 + s * (l * bscale))
         same &= viol == pat[e]
     end
     return v, same
 end
 
-function _fκpat(x, κ, pat, supp::Grid{T}, symmetric::Bool) where {T}
+function _falpat(x, κ, λ, sscale, bscale, pat, supp::Grid{T}, symmetric::Bool) where {T}
     C = supp.C
     m, n = size(C)
     κT = T(κ)
@@ -498,30 +527,37 @@ function _fκpat(x, κ, pat, supp::Grid{T}, symmetric::Bool) where {T}
             xj = x[j]
             cj = view(C, 1:j-1, j)
             pj = view(pat, 1:j-1, j)
+            lj = view(λ, 1:j-1, j)
             xi = view(x, 1:j-1)
             vj = zero(T)
             # Keep the Boolean pattern out of the vectorized floating-point loop.
-            @simd for i in eachindex(cj, xi)
+            @simd for i in eachindex(cj, xi, lj)
                 c = cj[i]
                 z = xi[i] + xj - c
-                w = ifelse(z < 0, κT, oneunit(T))
-                vj += ifelse(isfinite(c), w * z^2, zero(T))
+                l = lj[i]
+                viol = z < l * bscale
+                s = ifelse(viol, l * sscale, zero(T))
+                w = ifelse(viol, κT, oneunit(T))
+                vj += ifelse(isfinite(c), w * (z - s)^2 + s * (l * bscale), zero(T))
             end
             # Stop comparing after the first pattern change.
             if ndiff == 0
                 dj = 0
-                @simd for i in eachindex(cj, pj, xi)
+                @simd for i in eachindex(cj, pj, xi, lj)
                     c = cj[i]
-                    dj += ifelse((isfinite(c) & (xi[i] + xj - c < 0)) == pj[i], 0, 1)
+                    dj += ifelse((isfinite(c) & (xi[i] + xj - c < lj[i] * bscale)) == pj[i], 0, 1)
                 end
                 ndiff += dj
             end
             c = C[j, j]
             fin = isfinite(c)
             z = 2xj - c
-            w = ifelse(z < 0, κT, oneunit(T))
-            v += 2vj + ifelse(fin, w * z^2, zero(T))
-            ndiff += ifelse((fin & (z < 0)) == pat[j, j], 0, 1)
+            l = λ[j, j]
+            viol = z < l * bscale
+            s = ifelse(viol, l * sscale, zero(T))
+            w = ifelse(viol, κT, oneunit(T))
+            v += 2vj + ifelse(fin, w * (z - s)^2 + s * (l * bscale), zero(T))
+            ndiff += ifelse((fin & viol) == pat[j, j], 0, 1)
         end
     else
         xr = view(x, 1:m)
@@ -529,18 +565,22 @@ function _fκpat(x, κ, pat, supp::Grid{T}, symmetric::Bool) where {T}
             xj = x[m+j]
             cj = view(C, :, j)
             pj = view(pat, :, j)
+            lj = view(λ, :, j)
             vj = zero(T)
-            @simd for i in eachindex(cj, xr)
+            @simd for i in eachindex(cj, xr, lj)
                 c = cj[i]
                 z = xr[i] + xj - c
-                w = ifelse(z < 0, κT, oneunit(T))
-                vj += ifelse(isfinite(c), w * z^2, zero(T))
+                l = lj[i]
+                viol = z < l * bscale
+                s = ifelse(viol, l * sscale, zero(T))
+                w = ifelse(viol, κT, oneunit(T))
+                vj += ifelse(isfinite(c), w * (z - s)^2 + s * (l * bscale), zero(T))
             end
             if ndiff == 0
                 dj = 0
-                @simd for i in eachindex(cj, pj, xr)
+                @simd for i in eachindex(cj, pj, xr, lj)
                     c = cj[i]
-                    dj += ifelse((isfinite(c) & (xr[i] + xj - c < 0)) == pj[i], 0, 1)
+                    dj += ifelse((isfinite(c) & (xr[i] + xj - c < lj[i] * bscale)) == pj[i], 0, 1)
                 end
                 ndiff += dj
             end
@@ -548,6 +588,72 @@ function _fκpat(x, κ, pat, supp::Grid{T}, symmetric::Bool) where {T}
         end
     end
     return v, ndiff == 0
+end
+
+# Multiplier storage matching the violation-pattern layout.
+_multiplier_storage(::Type{T}, supp::EdgeList) where {T} = zeros(T, length(supp.edges))
+_multiplier_storage(::Type{T}, supp::Grid) where {T} = zeros(T, size(supp.C))
+
+# Update multipliers and return `max(-z, min(z, λ))` over the support.
+function _update_multipliers!(λ, x, κ, supp::EdgeList{T}, symmetric::Bool) where {T}
+    edges, cvals = supp.edges, supp.cvals
+    dλ = 2 * (T(κ) - oneunit(T))
+    v = zero(T)
+    for (e, (p, q)) in enumerate(edges)
+        z = x[p] + x[q] - cvals[e]
+        l = max(zero(T), λ[e] - dλ * z)
+        λ[e] = l
+        v = max(v, -z, min(z, l))
+    end
+    return v
+end
+
+function _update_multipliers!(λ, x, κ, supp::Grid{T}, symmetric::Bool) where {T}
+    C = supp.C
+    m, n = size(C)
+    dλ = 2 * (T(κ) - oneunit(T))
+    v = zero(T)
+    if symmetric
+        for j in 1:n
+            xj = x[j]
+            cj = view(C, 1:j-1, j)
+            lj = view(λ, 1:j-1, j)
+            xi = view(x, 1:j-1)
+            vj = typemin(T)
+            @simd for i in eachindex(cj, xi, lj)
+                c = cj[i]
+                fin = isfinite(c)
+                z = xi[i] + xj - c
+                l = ifelse(fin, max(zero(T), lj[i] - dλ * z), zero(T))
+                lj[i] = l
+                vj = max(vj, ifelse(fin, max(-z, min(z, l)), typemin(T)))
+            end
+            c = C[j, j]
+            fin = isfinite(c)
+            z = 2xj - c
+            l = ifelse(fin, max(zero(T), λ[j, j] - dλ * z), zero(T))
+            λ[j, j] = l
+            v = max(v, vj, ifelse(fin, max(-z, min(z, l)), typemin(T)), zero(T))
+        end
+    else
+        xr = view(x, 1:m)
+        for j in 1:n
+            xj = x[m+j]
+            cj = view(C, :, j)
+            lj = view(λ, :, j)
+            vj = typemin(T)
+            @simd for i in eachindex(cj, xr, lj)
+                c = cj[i]
+                fin = isfinite(c)
+                z = xr[i] + xj - c
+                l = ifelse(fin, max(zero(T), lj[i] - dλ * z), zero(T))
+                lj[i] = l
+                vj = max(vj, ifelse(fin, max(-z, min(z, l)), typemin(T)))
+            end
+            v = max(v, vj, zero(T))
+        end
+    end
+    return v
 end
 
 # Violated-set storage. `Matrix{Bool}` permits vectorized column views.
@@ -594,41 +700,45 @@ function _boost_shift(x, supp::Grid{T}, symmetric::Bool) where {T}
     return γ
 end
 
-# Assemble the Woodbury right-hand side, violated set, degrees, and diagonal.
+# Assemble the Woodbury right-hand side, active set, degrees, and diagonal.
 # `κ === nothing` denotes the unweighted solve. Off-support entries of `C` are
 # `-Inf`, so products with them go through `ifelse(isfinite(c), ...)`: `0 * -Inf`
 # is NaN.
-# `vrow` stores violated off-diagonal rows in compressed-column order; `vcnt`
+# Active entries have weight `κ` and target `c + λ/(2κ)`, adding `λ/2` to the
+# right-hand side wherever `w*c` lands.
+# `vrow` stores active off-diagonal rows in compressed-column order; `vcnt`
 # stores their column counts. `dg` and `degV` carry diagonal entries.
-function _assemble_woodbury!(f, dg, degV, vrow, vcnt, vpat, x, κ, supp::Grid{T},
-                             symmetric::Bool, dκ) where {T}
+function _assemble_woodbury!(f, dg, degV, vrow, vcnt, vpat, x, κ, λ, bscale,
+                             supp::Grid{T}, symmetric::Bool, dκ) where {T}
     C = supp.C
     m, n = size(C)
     weighted = κ !== nothing
     κT = weighted ? T(κ) : oneunit(T)
+    half = oneunit(T) / 2
     if symmetric
         for j in 1:n
             xj = x[j]
             cj = view(C, 1:j-1, j)
+            lj = view(λ, 1:j-1, j)
             xi = view(x, 1:j-1)
             fi = view(f, 1:j-1)
             vj = view(vpat, 1:j-1, j)
             fq = zero(T)
-            @simd for i in eachindex(cj, xi, fi, vj)
+            @simd for i in eachindex(cj, xi, fi, vj, lj)
                 c = cj[i]
                 fin = isfinite(c)
-                viol = weighted & fin & (xi[i] + xj - c < 0)
+                viol = weighted & fin & (xi[i] + xj - c < lj[i] * bscale)
                 w = ifelse(viol, κT, oneunit(T))
-                wc = ifelse(fin, w * c, zero(T))
+                wc = ifelse(fin, w * c + ifelse(viol, half * lj[i], zero(T)), zero(T))
                 fi[i] += wc
                 fq += wc
                 vj[i] = viol
             end
             c = C[j, j]
             fin = isfinite(c)
-            viol = weighted & fin & (2xj - c < 0)
+            viol = weighted & fin & (2xj - c < λ[j, j] * bscale)
             w = ifelse(viol, κT, oneunit(T))
-            f[j] += fq + ifelse(fin, w * c, zero(T))
+            f[j] += fq + ifelse(fin, w * c + ifelse(viol, half * λ[j, j], zero(T)), zero(T))
             vpat[j, j] = viol
             nv = 0
             for i in eachindex(vj)
@@ -655,14 +765,15 @@ function _assemble_woodbury!(f, dg, degV, vrow, vcnt, vpat, x, κ, supp::Grid{T}
             q = m + j
             xj = x[q]
             cj = view(C, :, j)
+            lj = view(λ, :, j)
             vj = view(vpat, :, j)
             fq = zero(T)
-            @simd for i in eachindex(cj, xr, fr, vj)
+            @simd for i in eachindex(cj, xr, fr, vj, lj)
                 c = cj[i]
                 fin = isfinite(c)
-                viol = weighted & fin & (xr[i] + xj - c < 0)
+                viol = weighted & fin & (xr[i] + xj - c < lj[i] * bscale)
                 w = ifelse(viol, κT, oneunit(T))
-                wc = ifelse(fin, w * c, zero(T))
+                wc = ifelse(fin, w * c + ifelse(viol, half * lj[i], zero(T)), zero(T))
                 fr[i] += wc
                 fq += wc
                 vj[i] = viol
@@ -744,21 +855,17 @@ function _symmul!(y::AbstractVector{T}, Cu::SparseMatrixCSC{T}, x::AbstractVecto
     return y
 end
 
-# Geometric continuation schedules ending at `1e8`. An exact solve ends a stage
-# on the first sign-stable Newton step, so its finer eight-stage schedule costs
-# about one extra solve per added stage; `:lsqr` has no such exit, pays a full
-# descent per stage, and keeps four.
-_kappa_schedule(::Type{T}, use_lsqr::Bool) where {T} =
-    use_lsqr ? ntuple(k -> T(10)^(2k), 4) :
-               ntuple(k -> T(10)^(T(2) + T(6) * T(k - 1) / T(7)), 8)
+# Augmented-Lagrangian defaults.
+const AL_PENALTY = 1e2
+const AL_MAXOUTER = 32
 
-# Warn when a continuation stage reaches `maxiter` while still descending.
-function _warn_truncated(fname::Symbol, κs, stats, maxiter::Int)
-    exits = stats.exits
-    any(==(:maxiter), exits) || return nothing
-    stalled = [(k, κs[k], stats.stagedrops[k]) for k in eachindex(exits) if exits[k] === :maxiter]
-    detail = join(("stage $k (κ = $κ) was still decreasing by $d per step" for (k, κ, d) in stalled), "; ")
-    @warn "$fname: $(length(stalled)) of $(length(exits)) continuation stages reached maxiter=$maxiter; the result covers `A` but may not minimize the objective ($detail). Increase `maxiter` or supply more `κs` stages."
+# Warn when the outer iteration ends with a KKT residual well above the
+# inner solver's accuracy floor.
+function _warn_unconverged(fname::Symbol, stats, maxouter::Int)
+    stats.converged && return nothing
+    v = isempty(stats.kkt) ? oftype(stats.vwarn, NaN) : stats.kkt[end]
+    v > stats.vwarn || return nothing
+    @warn "$fname: the multiplier iteration ended after $(stats.nouter) of maxouter=$maxouter updates with KKT residual $v (tolerance $(stats.vtol)); the result covers `A` but may not minimize the objective. Increase `maxouter` or `κ`."
     return nothing
 end
 
@@ -824,12 +931,13 @@ end
 
 _factor_index(::SparseArrays.CHOLMOD.Factor{<:Any,Ti}) where {Ti} = Ti
 
-# `AbsLog{2}` penalty continuation. Each stage freezes residual weights, solves
-# the weighted least-squares problem, and backtracks. `boost=true` applies a final
-# feasibility shift. The support layout selects the inner solver.
-function _abslog2_continuation(sys::SupportSystem{T}, x0;
-                               κs, maxiter::Int, linsolve::Symbol, boost::Bool,
+# `AbsLog{2}` augmented-Lagrangian iteration. `boost=true` applies a final
+# feasibility shift; the support layout selects the inner solver.
+function _abslog2_auglag(sys::SupportSystem{T}, x0;
+                               κ::Real, maxouter::Int, maxiter::Int, linsolve::Symbol, boost::Bool,
                                fillbudget::Real=LSQR_FILL_BUDGET) where {T}
+    κ > 1 || throw(ArgumentError("κ must exceed 1; got $κ"))
+    maxouter >= 0 || throw(ArgumentError("maxouter must be nonnegative; got $maxouter"))
     N = sys.N
     supp = sys.supp
     v0 = sys.v0
@@ -842,6 +950,8 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
     # Residual multiplicity of each stored entry.
     symmetric = sys.symmetric
     mult = (p, q) -> (symmetric && p != q) ? 2 : 1
+    # Multiplier estimates for the support constraints.
+    λ = _multiplier_storage(T, supp)
     # Base diagonal of `C`, corrected for the zero set.
     czero = copy(sys.dfull)
     for (p, q) in sys.zedges
@@ -856,6 +966,11 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
     cv = zeros(T, ne + 1)   # √weight · log|A_ij|, with a trailing 0 gauge target
     # Violated entries under the current frozen weights.
     vpat = _violation_pattern(supp)
+    # The dense and factor-preconditioned solves refactor only when the weights
+    # change, and the weights depend only on (κ, active set): cache that key.
+    prevκ = Ref(zero(T))
+    prevpat = _violation_pattern(supp)
+    Bfact = Ref{Any}(nothing)
     vrow = Int[]                             # violated rows, grouped by column (Woodbury path only)
     vcnt = zeros(Int, use_woodbury ? N : 0)  # violated off-diagonal entries per column
     vptr = zeros(Int, use_woodbury ? N + 1 : 0)
@@ -920,11 +1035,12 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
             # `B + v0*v0' = C + U*U'`, with `C` corrected for zero and
             # violated entries.
             dκ = κ === nothing ? zero(T) : T(κ) - oneunit(T)
+            bscalel = dκ > 0 ? inv(2 * dκ) : zero(T)
             fill!(f, zero(T))
             copyto!(dg, czero)
             fill!(degV, 0)
             empty!(vrow)
-            _assemble_woodbury!(f, dg, degV, vrow, vcnt, vpat, x, κ, supp, symmetric, dκ)
+            _assemble_woodbury!(f, dg, degV, vrow, vcnt, vpat, x, κ, λ, bscalel, supp, symmetric, dκ)
             vptr[1] = 1
             for q in 1:N
                 vptr[q+1] = vptr[q] + vcnt[q]
@@ -971,47 +1087,53 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
         elseif use_lsqr
             edges = supp.edges
             cvals = supp.cvals
+            weighted = κ !== nothing
+            κl = weighted ? T(κ) : oneunit(T)
+            sscalel = weighted ? inv(2 * κl) : zero(T)
+            bscalel = weighted ? inv(2 * (κl - oneunit(T))) : zero(T)
             for (e, (p, q)) in enumerate(edges)
                 c = cvals[e]
-                viol = κ !== nothing && (x[p] + x[q] - c) < 0
+                l = λ[e]
+                viol = weighted && (x[p] + x[q] - c) < l * bscalel
                 vpat[e] = viol
-                sw = sqrt(mult(p, q) * (viol ? T(κ) : oneunit(T)))
+                sw = sqrt(mult(p, q) * (viol ? κl : oneunit(T)))
                 ws[e] = sw
-                cv[e] = sw * c
+                # Active entries fit toward the shifted target `c + λ/(2κ)`.
+                cv[e] = sw * (viol ? c + l * sscalel : c)
             end
             g = ne + 1   # index of the appended gauge row
-            if use_precond
-                # Weighted degrees, the diagonal of `RᵀWR`.
-                fill!(mdiag, zero(T))
-                nzv = nonzeros(Msp)
-                for (e, (p, q)) in enumerate(edges)
-                    w = ws[e]^2
-                    if p == q
-                        mdiag[p] += 4 * w
-                    else
-                        mdiag[p] += w
-                        mdiag[q] += w
-                        if use_factor
+            if use_factor
+                if prevκ[] != κl || vpat != prevpat
+                    # Refill the preconditioner with the weights this solve
+                    # freezes and refactor it in place: the pattern, and so the
+                    # symbolic analysis, is the same on every solve. Weighted
+                    # degrees `mdiag` are the diagonal of `RᵀWR`.
+                    fill!(mdiag, zero(T))
+                    nzv = nonzeros(Msp)
+                    for (e, (p, q)) in enumerate(edges)
+                        w = ws[e]^2
+                        if p == q
+                            mdiag[p] += 4 * w
+                        else
+                            mdiag[p] += w
+                            mdiag[q] += w
                             nzv[epos[2 * e - 1]] = w
                             nzv[epos[2 * e]] = w
                         end
                     end
+                    dmax = zero(T)
+                    for p in 1:N
+                        mdiag[p] += v0[p]^2
+                        dmax = max(dmax, mdiag[p])
+                    end
+                    ρ = _precond_ridge(dmax)
+                    for p in 1:N
+                        nzv[dpos[p]] = mdiag[p] + ρ
+                    end
+                    cholesky!(MF, Symmetric(Msp))
+                    prevκ[] = κl
+                    copyto!(prevpat, vpat)
                 end
-            end
-            if use_factor
-                # Refill the preconditioner with the weights this solve freezes
-                # and refactor it in place: the pattern, and so the symbolic
-                # analysis, is the same on every solve.
-                dmax = zero(T)
-                for p in 1:N
-                    mdiag[p] += v0[p]^2
-                    dmax = max(dmax, mdiag[p])
-                end
-                ρ = _precond_ridge(dmax)
-                for p in 1:N
-                    nzv[dpos[p]] = mdiag[p] + ρ
-                end
-                cholesky!(MF, Symmetric(Msp))
                 Kc = MF.PtL
                 Uc = MF.UP
                 # CHOLMOD factor-component solves allocate their result.
@@ -1039,6 +1161,17 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
                 nlsqr[] += it
                 return (Uc \ soly)::Vector{T}
             elseif use_precond
+                # Weighted degrees, the diagonal of `RᵀWR`.
+                fill!(mdiag, zero(T))
+                for (e, (p, q)) in enumerate(edges)
+                    w = ws[e]^2
+                    if p == q
+                        mdiag[p] += 4 * w
+                    else
+                        mdiag[p] += w
+                        mdiag[q] += w
+                    end
+                end
                 # An unknown outside the support gets an identity row.
                 for p in 1:N
                     d = mdiag[p] + v0[p]^2
@@ -1092,56 +1225,84 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
             edges = supp.edges
             cvals = supp.cvals
             fill!(f, zero(T))
-            B = v0 * v0'
+            weighted = κ !== nothing
+            κl = weighted ? T(κ) : oneunit(T)
+            bscalel = weighted ? inv(2 * (κl - oneunit(T))) : zero(T)
             for (e, (p, q)) in enumerate(edges)
                 c = cvals[e]
-                viol = κ !== nothing && (x[p] + x[q] - c) < 0
+                l = λ[e]
+                viol = weighted && (x[p] + x[q] - c) < l * bscalel
                 vpat[e] = viol
-                w = viol ? T(κ) : oneunit(T)
-                f[p] += w * c
-                B[p, p] += w
-                B[p, q] += w
-                if q != p
-                    f[q] += w * c
-                    B[q, q] += w
-                    B[q, p] += w
+                w = viol ? κl : oneunit(T)
+                # Active entries fit toward `c + λ/(2κ)`, adding `w*s = λ/2`.
+                t = viol ? w * c + l / 2 : w * c
+                f[p] += t
+                q == p || (f[q] += t)
+            end
+            if Bfact[] === nothing || prevκ[] != κl || vpat != prevpat
+                B = v0 * v0'
+                for (e, (p, q)) in enumerate(edges)
+                    w = vpat[e] ? κl : oneunit(T)
+                    B[p, p] += w
+                    B[p, q] += w
+                    if q != p
+                        B[q, q] += w
+                        B[q, p] += w
+                    end
                 end
+                # A small scale-relative ridge lifts unpinned gauge directions.
+                # Support-free variables receive an identity row.
+                dmax = zero(T)
+                for p in 1:N
+                    dmax = max(dmax, B[p, p])
+                end
+                ridge = (dmax > 0 ? dmax : oneunit(T)) * eps(T)
+                for p in 1:N
+                    B[p, p] = sys.hassupp[p] ? B[p, p] + ridge : oneunit(T)
+                end
+                # Narrower types promote to Float64 before reaching this path,
+                # so anything else is wider than LAPACK handles.
+                Bfact[] = T === Float64 ? bunchkaufman!(Symmetric(B)) : lu!(B)
+                prevκ[] = κl
+                copyto!(prevpat, vpat)
             end
-            # A small scale-relative ridge lifts unpinned gauge directions.
-            # Support-free variables receive an identity row.
-            dmax = zero(T)
-            for p in 1:N
-                dmax = max(dmax, B[p, p])
-            end
-            ridge = (dmax > 0 ? dmax : oneunit(T)) * eps(T)
-            for p in 1:N
-                B[p, p] = sys.hassupp[p] ? B[p, p] + ridge : oneunit(T)
-            end
-            return Symmetric(B) \ f
+            return (Bfact[] \ f)::Vector{T}
         end
     end
     x = x0 === nothing ? solve_weighted(zeros(T, N), nothing) : x0
-    # Record each stage's exit reason and final relative decrease.
-    exits = Vector{Symbol}(undef, length(κs))
-    drops = Vector{T}(undef, length(κs))
-    for (k, κ) in enumerate(κs)
-        fcur = _fκ(x, κ, supp, symmetric)
+    # Absolute thresholds preserve covariance under rescaling because the
+    # residuals are logarithmic.
+    vtol = 1000 * eps(T)
+    vwarn = max(sqrt(eps(T)), T(1e-6))
+    κcap = T(use_lsqr ? 1e5 : 1e8)
+    κcur = T(κ)
+    exits = Symbol[]
+    drops = T[]
+    viols = T[]
+    κtrace = T[]
+    converged = maxouter == 0
+    vprev = T(Inf)
+    nstall = 0
+    for _ in 1:maxouter
+        sscale = inv(2 * κcur)
+        bscale = inv(2 * (κcur - oneunit(T)))
+        fcur = _fal(x, κcur, λ, sscale, bscale, supp, symmetric)
         exit = :maxiter
         drop = zero(T)
         for _ in 1:maxiter
-            xnew = solve_weighted(x, κ)
+            xnew = solve_weighted(x, κcur)
             t = one(T)
             xt = xnew
-            fnew, stable = _fκpat(xt, κ, vpat, supp, symmetric)
+            fnew, stable = _falpat(xt, κcur, λ, sscale, bscale, vpat, supp, symmetric)
             while fnew > fcur && t > 500_000 * eps(T)
                 t /= 2
                 xt = x .+ t .* (xnew .- x)
-                fnew = _fκ(xt, κ, supp, symmetric)
+                fnew = _fal(xt, κcur, λ, sscale, bscale, supp, symmetric)
                 stable = false
             end
             x = xt
             drop = (fcur - fnew) / max(fcur, one(T))
-            # For exact inner solves, an unchanged violation pattern ends the stage.
+            # For exact inner solves, an unchanged active set ends the descent.
             if !use_lsqr && stable
                 exit = :stable
                 break
@@ -1152,8 +1313,26 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
             end
             fcur = fnew
         end
-        exits[k] = exit
-        drops[k] = drop
+        push!(exits, exit)
+        push!(drops, drop)
+        push!(κtrace, κcur)
+        v = _update_multipliers!(λ, x, κcur, supp, symmetric)
+        push!(viols, v)
+        if v <= vtol
+            converged = true
+            break
+        end
+        if 10 * v > 9 * vprev
+            # Stop after three passes at the inner solver's accuracy floor.
+            nstall += 1
+            nstall >= 3 && break
+        else
+            nstall = 0
+        end
+        if v > vprev / 10 && κcur < κcap
+            κcur = min(10 * κcur, κcap)
+        end
+        vprev = v
     end
     # Hard covers receive a final uniform feasibility shift.
     if boost
@@ -1163,14 +1342,16 @@ function _abslog2_continuation(sys::SupportSystem{T}, x0;
         end
     end
     return x, (; nsolves=nsolves[], lsqriters=nlsqr[], cgiters=ncg[],
-               cholsolves=nchol[], exits=Tuple(exits), stagedrops=Tuple(drops),
+               cholsolves=nchol[], nouter=length(exits), exits=Tuple(exits),
+               drops=Tuple(drops), kkt=Tuple(viols), κs=Tuple(κtrace),
+               converged, vtol, vwarn,
                linsolve=(use_lsqr ? :lsqr : use_woodbury ? :woodbury : :dense),
                precond=(!use_precond ? :none : use_factor ? :factor : :diagonal))
 end
 
 # Worker for `symcover_min(::AbsLog{2})`, returning `(a, stats)`. A supplied
 # `start` replaces the cold initial solve. Narrow types compute in `Float64`.
-function _symcover_min_abslog2(A::AbstractMatrix; κs=nothing,
+function _symcover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
                                maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
                                boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET,
                                fname=:symcover_min)
@@ -1182,10 +1363,10 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=nothing,
     axes(A, 2) == ax || throw(ArgumentError("symcover_min requires a square matrix"))
     # The problem depends only on `abs.(A)`, so the working type is real.
     T = float(real(eltype(A)))
-    # Continuation tolerances require at least Float64 resolution.
+    # Solver tolerances require at least Float64 resolution.
     if eps(T) > eps(Float64)
         a64, stats = _symcover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
-                                           κs, maxiter, linsolve, start, boost, fillbudget, fname)
+                                           κ, maxouter, maxiter, linsolve, start, boost, fillbudget, fname)
         # Narrowing rounds to nearest and so can round a product below its entry.
         a = T.(a64)
         boost && _certify_cover!(a, A, fname)
@@ -1228,11 +1409,9 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=nothing,
         use_lsqr = true
         linsolve = :lsqr
     end
-    # Select the default schedule after selecting the solver.
-    κsched = κs === nothing ? _kappa_schedule(T, use_lsqr) : κs
-    # Start LSQR continuation from the heuristic cover. An empty schedule returns
+    # Start the LSQR iteration from the heuristic cover. `maxouter == 0` returns
     # the unweighted fit instead.
-    if start === nothing && use_lsqr && !isempty(κsched)
+    if start === nothing && use_lsqr && maxouter > 0
         start = symcover(A)
     end
     # Woodbury uses a grid; dense and LSQR use an edge list.
@@ -1274,8 +1453,8 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=nothing,
                            zeros(T, n))
     x0 = start === nothing ? nothing :
          T[hassupp[ip] ? log(T(start[i])) : zero(T) for (ip, i) in enumerate(ax)]
-    α, stats = _abslog2_continuation(sys, x0; κs=κsched, maxiter, linsolve, boost, fillbudget)
-    _warn_truncated(fname, κsched, stats, maxiter)
+    α, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve, boost, fillbudget)
+    _warn_unconverged(fname, stats, maxouter)
     # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     a = similar(Array{T}, ax)
     for (ip, i) in enumerate(ax)
@@ -1286,7 +1465,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κs=nothing,
 end
 
 # Worker for `cover_min(::AbsLog{2})`, returning `(a, b, stats)`.
-function _cover_min_abslog2(A::AbstractMatrix; κs=nothing,
+function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
                             maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
                             boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET)
     linsolve in (:auto, :dense, :lsqr, :woodbury) ||
@@ -1295,10 +1474,10 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=nothing,
     axc = axes(A, 2)
     # The problem depends only on `abs.(A)`, so the working type is real.
     T = float(real(eltype(A)))
-    # Continuation tolerances require at least Float64 resolution.
+    # Solver tolerances require at least Float64 resolution.
     if eps(T) > eps(Float64)
         a64, b64, stats = _cover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
-                                             κs, maxiter, linsolve, start, boost, fillbudget)
+                                             κ, maxouter, maxiter, linsolve, start, boost, fillbudget)
         # Narrowing rounds to nearest and so can round a product below its entry.
         a, b = T.(a64), T.(b64)
         boost && _certify_cover!(a, b, A, :cover_min)
@@ -1349,10 +1528,8 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=nothing,
         use_lsqr = true
         linsolve = :lsqr
     end
-    # Select the default schedule after selecting the solver.
-    κsched = κs === nothing ? _kappa_schedule(T, use_lsqr) : κs
-    # Start LSQR continuation from the heuristic cover.
-    if start === nothing && use_lsqr && !isempty(κsched)
+    # Start the LSQR iteration from the heuristic cover.
+    if start === nothing && use_lsqr && maxouter > 0
         start = cover(A)
     end
     # Woodbury uses a grid; dense and LSQR use an edge list.
@@ -1416,8 +1593,8 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=nothing,
         end
         s0
     end
-    x, stats = _abslog2_continuation(sys, x0; κs=κsched, maxiter, linsolve, boost, fillbudget)
-    _warn_truncated(:cover_min, κsched, stats, maxiter)
+    x, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve, boost, fillbudget)
+    _warn_unconverged(:cover_min, stats, maxouter)
     # Apply the balance convention independently to each support component.
     rowcomp, colcomp, ncomp, _, _ = _support_components(A)
     Lα = zeros(T, ncomp)
@@ -1452,11 +1629,11 @@ function _cover_min_abslog2(A::AbstractMatrix; κs=nothing,
 end
 
 # Soft `AbsLog{2}` covers are the unweighted initial solve with no feasibility
-# shift. Convexity makes continuation and multistart unnecessary.
+# shift. Convexity makes the constrained iteration and multistart unnecessary.
 _soft_symcover_min_abslog2(A::AbstractMatrix; kwargs...) =
-    _symcover_min_abslog2(A; κs=(), boost=false, fname=:soft_symcover_min, kwargs...)
+    _symcover_min_abslog2(A; maxouter=0, boost=false, fname=:soft_symcover_min, kwargs...)
 _soft_cover_min_abslog2(A::AbstractMatrix; kwargs...) =
-    _cover_min_abslog2(A; κs=(), boost=false, kwargs...)
+    _cover_min_abslog2(A; maxouter=0, boost=false, kwargs...)
 
 # JuMP reference used to test the native symmetric solver.
 function symcover_min_jump end
