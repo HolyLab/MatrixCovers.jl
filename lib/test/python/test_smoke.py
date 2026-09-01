@@ -26,6 +26,12 @@ check("symcover result covers A", mc.iscover(a, A_sym, rtol=1e-8))
 a_min = mc.symcover_min(A_sym)
 check("symcover_min matches reference", np.allclose(a_min, [2.0, 2.0], rtol=1e-6))
 
+# penalty accepted as a member and as a string
+a_min_member = mc.symcover_min(A_sym, penalty=mc.Penalty.abslog2)
+a_min_str = mc.symcover_min(A_sym, penalty="abslog2")
+check("symcover_min(penalty=Penalty.abslog2) matches reference", np.allclose(a_min_member, [2.0, 2.0], rtol=1e-6))
+check("symcover_min(penalty='abslog2') matches reference", np.allclose(a_min_str, [2.0, 2.0], rtol=1e-6))
+
 # cover / cover_min
 a_asym, b_asym = mc.cover(A_asym)
 check(
@@ -71,35 +77,47 @@ G = A_asym.T @ A_asym
 check("gramcover covers A'*A", np.all(s[:, None] * s[None, :] >= np.abs(G) - 1e-8))
 
 # error paths
+
 try:
     mc.symcover_min(A_sym, penalty="not-a-penalty")
     check("unknown penalty string raises ValueError", False)
-except ValueError:
+except ValueError as e:
     check("unknown penalty string raises ValueError", True)
+    check("unknown penalty string names valid members",
+          all(name in str(e) for name in ("abslog1", "abslog2", "abslinear1", "abslinear2")))
 
 try:
     from matrixcovers import _lowlevel
-    _lowlevel.mc_symcover_min(
+    _lowlevel.matrixcovers_symcover_min(
+        _lowlevel.CMatrix_borrowed_Float64.from_numpy(np.asfortranarray(A_sym)),
         99,
-        _lowlevel.CMatrix_Float64.from_numpy(np.asfortranarray(A_sym)),
-        -1, 1,
-        _lowlevel.CVector_Float64.from_numpy(np.zeros(2)),
+        _lowlevel.COpt_Int64.from_optional(None),
+        1,
     )
     check("bad low-level penalty enum raises JLWError", False)
 except mc.JLWError as e:
-    check("bad low-level penalty enum raises JLWError", e.code == 1)
+    check("bad low-level penalty enum raises JLWError", e.code == 2)
 
 try:
     mc.iscover(np.zeros(5), A_sym)
     check("shape-mismatched call raises cleanly", False)
 except mc.JLWError as e:
-    check("shape-mismatched call raises cleanly", e.code == 4)
+    check("shape-mismatched call raises cleanly", e.code == 3)
 
 try:
     mc.symcover_min(A_sym, penalty="abslinear2")
     check("extension-only penalty raises JLWError code 2", False)
 except mc.JLWError as e:
     check("extension-only penalty raises JLWError code 2", e.code == 2)
+
+try:
+    mc.symcover_min(A_sym, penalty="abslinear1")
+    check("symcover_min(abslinear1) raises JLWError code 2 mentioning the extension", False)
+except mc.JLWError as e:
+    check(
+        "symcover_min(abslinear1) raises JLWError code 2 mentioning the extension",
+        e.code == 2 and "extension" in e.message,
+    )
 
 if failures:
     print(f"\n{len(failures)} check(s) failed: {failures}")

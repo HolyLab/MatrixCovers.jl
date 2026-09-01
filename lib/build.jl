@@ -17,6 +17,9 @@ function prepare_project()
     toml = TOML.parsefile(joinpath(HERE, "Project.toml"))
     sources = get(toml, "sources", Dict{String, Any}())
     sources["MatrixCovers"] = Dict("path" => REPO_ROOT)
+    # Developer override for building against an unreleased JLWInterop.
+    jlwinterop_path = get(ENV, "MATRIXCOVERS_JLWINTEROP_PATH", "")
+    isempty(jlwinterop_path) || (sources["JLWInterop"] = Dict("path" => jlwinterop_path))
     toml["sources"] = sources
     tmp = mktempdir(; prefix = "matrixcovers-lib-project-")
     open(joinpath(tmp, "Project.toml"), "w") do io
