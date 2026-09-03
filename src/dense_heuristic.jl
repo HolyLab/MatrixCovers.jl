@@ -20,9 +20,8 @@ _use_dense_grid(A::AbstractMatrix, ::Type{T}) where {T} =
 # occupies `_trioff(j)+1 : _trioff(j)+j`.
 _trioff(j::Int) = (j * (j - 1)) >> 1
 
-# Pack the upper triangle as log magnitudes, with `-Inf` for zeros, and compute
-# the row sums and support counts used by `unconstrained_min!`.
-function _tri_logabs!(Lp::Vector{T}, s::Vector{T}, cnt::Vector{Int}, A::AbstractMatrix) where {T}
+# Pack the upper triangle as log magnitudes, with `-Inf` for zeros.
+function _tri_logabs!(Lp::Vector{T}, A::AbstractMatrix) where {T}
     ax = axes(A, 1)
     or = first(ax) - 1
     n = length(ax)
@@ -34,16 +33,24 @@ function _tri_logabs!(Lp::Vector{T}, s::Vector{T}, cnt::Vector{Int}, A::Abstract
         end
     end
     _fastlog!(Lp)
+    return Lp
+end
+
+# Row sums of the diagonally normalized log magnitudes `Lp[i,j] - ρ[i] - ρ[j]`
+# and the row support counts; see `_sym_unconstrained!`.
+function _tri_normsums!(s::Vector{T}, cnt::Vector{Int}, Lp::Vector{T}, ρ::Vector{T}, n::Int) where {T}
     fill!(s, zero(T))
     fill!(cnt, 0)
     ninf = T(-Inf)
     for jp in 1:n
         o = _trioff(jp)
+        rj = ρ[jp]
         sj = zero(T)
         cj = 0
         for ip in 1:jp-1
             l = Lp[o+ip]
             if l != ninf
+                l -= ρ[ip] + rj
                 s[ip] += l
                 cnt[ip] += 1
                 sj += l
@@ -54,11 +61,11 @@ function _tri_logabs!(Lp::Vector{T}, s::Vector{T}, cnt::Vector{Int}, A::Abstract
         cnt[jp] += cj
         l = Lp[o+jp]
         if l != ninf
-            s[jp] += l
+            s[jp] += l - 2 * rj
             cnt[jp] += 1
         end
     end
-    return Lp
+    return s, cnt
 end
 
 # Fill a log-magnitude grid and the row and column summaries.
@@ -141,9 +148,8 @@ function _grid_violated(L::Matrix{T}, lα::Vector{T}, lβ::Vector{T}, m::Int, n:
     return entries
 end
 
-# Keep supported scales positive when `exp` underflows.
-_uncon_scale(si::T, ni::Int, halfmu::T) where {T} =
-    iszero(ni) ? zero(T) : max(exp(si / ni - halfmu), floatmin(T))
+# The asymmetric start has no reference shift; see `_uncon_scale` in heuristic_covers.jl.
+_uncon_scale(si::T, ni::Int, halfmu::T) where {T} = _uncon_scale(si, ni, halfmu, zero(T))
 
 # Greedy boost that updates scales and log scales together.
 function _dense_boost!(α::Vector{T}, lα::Vector{T}, entries, zmax::T) where {T}
@@ -166,11 +172,34 @@ function _symcover_dense!(a::AbstractVector, A::AbstractMatrix, ::Type{T}, maxit
     α = Vector{T}(undef, n)
     lα = Vector{T}(undef, n)
     cnt = Vector{Int}(undef, n)
-    _tri_logabs!(Lp, α, cnt, A)          # `α` carries the row log sums here
+    _tri_logabs!(Lp, A)
+    # Covariant reference from the diagonal; see `_sym_reference!`.
+    ρ = Vector{T}(undef, n)
+    for jp in 1:n
+        l = Lp[_trioff(jp)+jp]
+        ρ[jp] = ifelse(l == T(-Inf), T(NaN), l / 2)
+    end
+    _tri_normsums!(α, cnt, Lp, ρ, n)     # `α` carries the row log sums here
+    nmissing = count(ip -> cnt[ip] > 0 && isnan(ρ[ip]), 1:n)
+    if nmissing > 0
+        # Rare path: some supported row has a zero diagonal entry.
+        function foreach_entries(f)
+            for jp in 1:n
+                o = _trioff(jp)
+                for ip in 1:jp
+                    l = Lp[o+ip]
+                    l == T(-Inf) || f(ip, jp, l)
+                end
+            end
+        end
+        _sym_reference!(ρ, foreach_entries, nmissing)
+        _tri_normsums!(α, cnt, Lp, ρ, n)
+    end
+    # Unsupported rows may keep NaN references; `_uncon_scale` never reads them.
     nztotal = sum(cnt)
     halfmu = iszero(nztotal) ? zero(T) : sum(α) / (2 * nztotal)
     for ip in 1:n
-        α[ip] = _uncon_scale(α[ip], cnt[ip], halfmu)
+        α[ip] = _uncon_scale(α[ip], cnt[ip], halfmu, ρ[ip])
         lα[ip] = log(α[ip])
     end
 

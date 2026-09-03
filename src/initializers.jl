@@ -16,7 +16,8 @@ Build a symmetric starting point for [`symcover_min`](@ref) or
 
 `strategy` names the point:
 
-- `:geomean` — geometric means of the nonzero entries in each row.
+- `:geomean` — the unconstrained `AbsLog{2}` start of [`symcover`](@ref):
+  geometric means of the diagonally normalized entries in each row.
 - `:leaveout` — the geometric mean recomputed with the most-underweighted
   support entry omitted. It fails if removing that entry empties a row.
 - `:diagfeasible` — a cover grown from the diagonal by nearest-neighbor
@@ -189,8 +190,8 @@ function _leaveout_logmean_init!(a::AbstractVector{T}, A::AbstractMatrix) where 
     # Account for both endpoints of an off-diagonal entry.
     nza[ibest] > 1 || return false
     ibest == jbest || nza[jbest] > 1 || return false
-    # Minimize the reduced-support `AbsLog{2}` objective by Gauss-Seidel. Starting
-    # from a covariant point preserves covariance at every sweep.
+    # Minimize the reduced-support `AbsLog{2}` objective by Gauss-Seidel. Each
+    # sweep preserves covariance, so the result is covariant whenever the start is.
     α = similar(a)
     for i in ax
         α[i] = iszero(nza[i]) ? zero(T) : log(a[i])

@@ -13,8 +13,10 @@ Given a square matrix `A` assumed to be symmetric, return a vector `a`
 representing a symmetric hard cover of `A`: `a[i] * a[j] >= abs(A[i, j])` for
 all `i`, `j`.
 
-The method initializes from per-row geometric means, covers the most-violated
-entries first, then applies `maxiter` tightening iterations.
+The method initializes from per-row geometric means of the diagonally
+normalized entries `abs(A[i, j]) / sqrt(abs(A[i, i] * A[j, j]))`, rescaled by
+`sqrt(abs(A[i, i]))`, covers the most-violated entries first, then applies
+`maxiter` tightening iterations.
 
 `ϕ` is accepted for API compatibility but is currently ignored.
 For a cover that provably minimizes a given `ϕ`, use [`symcover_min`](@ref).
@@ -36,6 +38,12 @@ julia> a * a'   # covers |A|: a[i]*a[j] >= abs(A[i, j])
  4.0  4.0
  4.0  4.0
 ```
+
+# Extended help
+
+The result is scale-covariant whenever every connected component of the support has a
+nonzero diagonal entry (rows with a zero diagonal take their reference from
+neighbors that have one).
 """
 symcover(ϕ::AbstractCoverPenalty, A::AbstractMatrix; kwargs...) = symcover(A; kwargs...)
 
@@ -293,59 +301,119 @@ function _balance_cover!(a::AbstractVector, b::AbstractVector, rowcomp::Vector{I
 end
 
 
-# Analytical minimizer of the unconstrained `AbsLog{2}` symmetric objective
+# Symmetric unconstrained `AbsLog{2}` start. The objective
 #   ∑_{i,j: A[i,j]≠0} (log(a[i]*a[j]) - log|A[i,j]|)²
-# Returns row support counts. The Sherman-Morrison approximation is exact on
-# complete support.
-function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, A::AbstractMatrix) where T
+# is stationary where (diag(n) + S) α = 𝔞, with `n` the row support counts, `S`
+# the support indicator, and 𝔞 the row sums of log|A_ij|. The start is one
+# Jacobi-type sweep of that system, α = diag(n)⁻¹(𝔞 - S ρ) + c e, from the
+# reference point ρ of `_sym_reference!`, with the constant `c` fixed by the
+# balance nᵀα = eᵀ𝔞/2 that every exact solution satisfies. Equivalently, it is
+# the per-row geometric mean of the diagonally normalized entries
+# |A_ij| / sqrt(|A_ii A_jj|), scaled back by sqrt|A_ii|. On complete support the
+# sweep is exact (Sherman–Morrison), and because ρ co-varies with `A`, the
+# start is exactly scale-covariant on any support whose components each hold a
+# nonzero diagonal entry.
+#
+# Returns the row support counts.
+function _sym_unconstrained!(a::AbstractVector{T}, foreach_entries::F) where {T,F}
     ax = eachindex(a)
-    axes(A) == (ax, ax) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(string(axes(A))), axes(a)=$(string(axes(a)))"))
-    loga = fill!(similar(a), zero(T))
-    nza  = zeros(Int, ax)
-    foreach_support_sym(A) do i, j, v
-        lAij = log(T(v))
-        loga[i] += lAij
-        nza[i]  += 1
-        if i != j
-            loga[j] += lAij
-            nza[j]  += 1
+    nza = zeros(Int, ax)
+    ρ = fill!(similar(a, T), T(NaN))   # NaN marks a row without a reference
+    foreach_entries() do i, j, lv
+        nza[i] += 1
+        if i == j
+            ρ[i] = lv / 2
+        else
+            nza[j] += 1
         end
+    end
+    nmissing = count(i -> !iszero(nza[i]) && isnan(ρ[i]), ax)
+    _sym_reference!(ρ, foreach_entries, nmissing)
+    loga = fill!(similar(a, T), zero(T))
+    foreach_entries() do i, j, lv
+        l = lv - ρ[i] - ρ[j]
+        loga[i] += l
+        i == j || (loga[j] += l)
     end
     nztotal = sum(nza)
     halfmu = iszero(nztotal) ? zero(T) : sum(loga) / (2 * nztotal)
     for i in ax
-        # exp can underflow for extreme dynamic range; a zero scale on a
-        # supported row would make the boost's log-deficits infinite, so
-        # clamp to the smallest normal positive value.
-        a[i] = iszero(nza[i]) ? zero(T) : max(exp(loga[i] / nza[i] - halfmu), floatmin(T))
+        a[i] = _uncon_scale(loga[i], nza[i], halfmu, ρ[i])
     end
     return nza
+end
+
+# Keep supported scales positive when `exp` underflows.
+_uncon_scale(si::T, ni::Int, halfmu::T, ρi::T) where {T} =
+    iszero(ni) ? zero(T) : max(exp(si / ni - halfmu + ρi), floatmin(T))
+
+# Covariant reference log-scales. The caller is expected to initialize
+#           {log|A_ii|/2    if A_ii ≠ 0
+#    ρ[i] = {
+#           {NaN            otherwise
+# `nmissing` counts supported rows (those with some A_ij ≠ 0)  for which
+# A_ii == 0.
+#
+# Each pass assigns every such row the mean of `log|A_ik| - ρ[k]` over its
+# already-referenced neighbors `k`, so the reference spreads outward by graph
+# distance from the diagonal. A pass costs one traversal, so the total is
+# proportional to the largest graph distance from the diagonal.
+#
+# Rows in components with no nonzero diagonal entry never receive a reference
+# and are set to zero, on which the start is not covariant.
+function _sym_reference!(ρ::AbstractVector{T}, foreach_entries::F, nmissing::Int) where {T,F}
+    if nmissing > 0
+        acc = similar(ρ, T)
+        cnt = zeros(Int, eachindex(ρ))
+        while nmissing > 0
+            fill!(acc, zero(T))
+            fill!(cnt, 0)
+            foreach_entries() do i, j, lv
+                i == j && return
+                ri, rj = ρ[i], ρ[j]
+                # Only entries joining a referenced row to an unreferenced one contribute.
+                if isnan(ri) && !isnan(rj)
+                    acc[i] += lv - rj
+                    cnt[i] += 1
+                elseif isnan(rj) && !isnan(ri)
+                    acc[j] += lv - ri
+                    cnt[j] += 1
+                end
+            end
+            nnew = 0
+            for i in eachindex(ρ)
+                if cnt[i] > 0
+                    ρ[i] = acc[i] / cnt[i]
+                    nnew += 1
+                end
+            end
+            nnew == 0 && break
+            nmissing -= nnew
+        end
+    end
+    for i in eachindex(ρ)
+        isnan(ρ[i]) && (ρ[i] = zero(T))
+    end
+    return ρ
+end
+
+function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, A::AbstractMatrix) where T
+    ax = eachindex(a)
+    axes(A) == (ax, ax) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(string(axes(A))), axes(a)=$(string(axes(a)))"))
+    foreach_entries(f) = foreach_support_sym((i, j, v) -> f(i, j, log(T(v))), A)
+    return _sym_unconstrained!(a, foreach_entries)
 end
 
 # The symmetric objective over a flattened support: `sup` must have been built
 # by `flat_support_sym` over a matrix whose axes match `eachindex(a)`.
 function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, sup::FlatSupport) where T
     is, js, lv = sup.is, sup.js, sup.lv
-    loga = fill!(similar(a), zero(T))
-    nza  = zeros(Int, eachindex(a))
-    for k in eachindex(is, js, lv)
-        i, j, lAij = is[k], js[k], lv[k]
-        loga[i] += lAij
-        nza[i]  += 1
-        if i != j
-            loga[j] += lAij
-            nza[j]  += 1
+    function foreach_entries(f)
+        for k in eachindex(is, js, lv)
+            f(is[k], js[k], lv[k])
         end
     end
-    nztotal = sum(nza)
-    halfmu = iszero(nztotal) ? zero(T) : sum(loga) / (2 * nztotal)
-    for i in eachindex(a)
-        # exp can underflow for extreme dynamic range; a zero scale on a
-        # supported row would make the boost's log-deficits infinite, so
-        # clamp to the smallest normal positive value.
-        a[i] = iszero(nza[i]) ? zero(T) : max(exp(loga[i] / nza[i] - halfmu), floatmin(T))
-    end
-    return nza
+    return _sym_unconstrained!(a, foreach_entries)
 end
 
 function unconstrained_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
