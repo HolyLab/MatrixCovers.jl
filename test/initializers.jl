@@ -88,6 +88,23 @@
         @test ah[3] < ag[3]
     end
 
+    @testset ":leaveout is :geomean on the reduced support" begin
+        # Dropping an entry removes it from the row means and from the diagonal
+        # reference alike, so the start equals the :geomean start of the matrix
+        # with that entry zeroed. The most-underweighted entry is the one scaled
+        # by 1e-8, whether off-diagonal or diagonal.
+        rng = StableRNG(11)
+        B = Matrix(Symmetric(exp.(randn(rng, 5, 5))))
+        for (i, j) in ((2, 4), (3, 3))
+            A = copy(B)
+            A[i, j] = A[j, i] = 1e-8 * B[i, j]
+            Z = copy(A)
+            Z[i, j] = Z[j, i] = 0.0
+            @test initialize_symcover(A; strategy=:leaveout, feasible=:none) ==
+                  initialize_symcover(Z; strategy=:geomean, feasible=:none)
+        end
+    end
+
     @testset ":diagfeasible propagates from sparse anchors" begin
         # Propagate the diagonal scale backward through a path.
         n = 6
