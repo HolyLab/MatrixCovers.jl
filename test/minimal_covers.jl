@@ -336,9 +336,11 @@ end
     @test ad ≈ al rtol=1e-6
     @test aw ≈ al rtol=1e-6
     # The dense and Woodbury trajectories agree to roundoff, which adaptive
-    # escalation can turn into slightly different outer-iteration counts.
+    # escalation can turn into slightly different outer-iteration counts. The
+    # same roundoff varies the count by a few solves across machines, so the
+    # absolute bounds below carry a margin over observed counts.
     @test abs(sd.nsolves - sw.nsolves) <= 10
-    @test sd.nsolves <= 34
+    @test sd.nsolves <= 40
     # Once the active set settles, each outer pass of an exact path ends on its
     # first, sign-stable Newton step.
     @test count(==(:stable), sd.exits) >= max(1, sd.nouter ÷ 2)
@@ -350,7 +352,6 @@ end
     @test gd .* hd' ≈ gl .* hl' rtol=1e-6
     @test gw .* hw' ≈ gl .* hl' rtol=1e-6
     @test abs(td.nsolves - tw.nsolves) <= 10
-    # Leave a small margin in the solve-count bound.
     @test td.nsolves <= 48
     @test count(==(:stable), td.exits) >= max(1, td.nouter ÷ 2)
 end

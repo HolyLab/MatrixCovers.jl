@@ -16,7 +16,8 @@ Build a symmetric starting point for [`symcover_min`](@ref) or
 
 `strategy` names the point:
 
-- `:geomean` — geometric means of the nonzero entries in each row.
+- `:geomean` — the unconstrained `AbsLog{2}` start of [`symcover`](@ref):
+  geometric means of the diagonally normalized entries in each row.
 - `:leaveout` — the geometric mean recomputed with the most-underweighted
   support entry omitted. It fails if removing that entry empties a row.
 - `:diagfeasible` — a cover grown from the diagonal by nearest-neighbor
@@ -157,67 +158,39 @@ function _reject_kwargs(strategy::Symbol, kwargs)
     throw(ArgumentError("strategy=:$strategy accepts no further keyword arguments, got $(string(join(keys(kwargs), ", ")))"))
 end
 
-# Recompute the geometric mean after dropping the most negative log-residual.
-# Residual ties use raw magnitude; this is the strategy's only covariance
-# exception. Return `false` if no entry can be removed without emptying a row.
+# Recompute the unconstrained start with the most negative log-residual entry
+# removed from the support. Residual ties use raw magnitude; this is the
+# strategy's only covariance exception. Return `false` if no entry can be
+# removed without emptying a row.
 function _leaveout_logmean_init!(a::AbstractVector{T}, A::AbstractMatrix) where T
     ax = eachindex(a)
     axes(A) == (ax, ax) || throw(DimensionMismatch("`_leaveout_logmean_init!(a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(string(axes(A))), axes(a)=$(string(axes(a))))"))
     nza = unconstrained_min!(AbsLog{2}(), a, A)
     sum(nza) == 0 && return false
-    # Pair scans use the upper triangle; Gauss-Seidel uses complete rows.
-    S = _sym_support(A, T)
     # Use a roundoff-tolerant set for tied residuals.
-    zmin = T(Inf)
-    for i in ax, s in _slots(S, i)
-        j = S.idx[s]
-        j < i && continue
-        zmin = min(zmin, log(S.val[s]) - log(a[i]) - log(a[j]))
+    zmin = Ref(T(Inf))
+    foreach_support_sym(A) do i, j, v
+        zmin[] = min(zmin[], log(T(v)) - log(a[i]) - log(a[j]))
     end
-    ztol = 64 * eps(T) * max(one(T), abs(zmin))
-    ibest = jbest = first(ax) - 1
-    Abest = T(Inf)
-    for i in ax, s in _slots(S, i)
-        j = S.idx[s]
-        j < i && continue
-        Aij = S.val[s]
+    ztol = 64 * eps(T) * max(one(T), abs(zmin[]))
+    best = Ref((first(ax) - 1, first(ax) - 1, T(Inf)))
+    foreach_support_sym(A) do i, j, v
+        Aij = T(v)
         z = log(Aij) - log(a[i]) - log(a[j])
-        if z <= zmin + ztol && Aij < Abest
-            ibest, jbest, Abest = i, j, Aij
+        if z <= zmin[] + ztol && Aij < best[][3]
+            best[] = (i, j, Aij)
         end
     end
+    ibest, jbest, _ = best[]
     # Account for both endpoints of an off-diagonal entry.
     nza[ibest] > 1 || return false
     ibest == jbest || nza[jbest] > 1 || return false
-    # Minimize the reduced-support `AbsLog{2}` objective by Gauss-Seidel. Starting
-    # from a covariant point preserves covariance at every sweep.
-    α = similar(a)
-    for i in ax
-        α[i] = iszero(nza[i]) ? zero(T) : log(a[i])
+    # One sweep of the same kernel on the reduced support. Omitting the entry
+    # from the iterator also omits it from the diagonal reference, so a row
+    # whose diagonal entry is dropped takes its reference from its neighbors.
+    foreach_entries(f) = foreach_support_sym(A) do i, j, v
+        (i == ibest && j == jbest) || f(i, j, log(T(v)))
     end
-    for _ in 1:8
-        for i in ax
-            iszero(nza[i]) && continue
-            num = zero(T)   # Σ_j W[i,j] (log|A[i,j]| - α[j]), α[i]-coefficient split out
-            den = zero(T)
-            for s in _slots(S, i)
-                j = S.idx[s]
-                (min(i, j) == ibest && max(i, j) == jbest) && continue
-                lAij = log(S.val[s])
-                if j == i
-                    num += lAij
-                    den += 2
-                else
-                    num += lAij - α[j]
-                    den += 1
-                end
-            end
-            iszero(den) && continue   # row's only support was the dropped entry (guarded above)
-            α[i] = num / den
-        end
-    end
-    for i in ax
-        a[i] = iszero(nza[i]) ? zero(T) : exp(α[i])
-    end
+    _sym_unconstrained!(a, foreach_entries)
     return true
 end

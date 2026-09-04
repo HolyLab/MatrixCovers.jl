@@ -241,3 +241,46 @@ end
     a, b = tighten_cover!(zeros(3), zeros(3), Diagonal([1.0, 2.0, 3.0]))
     @test all(iszero, a) && all(iszero, b)
 end
+
+@testset "symcover scale covariance on irregular support" begin
+    # The unconstrained start references each row to its diagonal entry, so
+    # symcover co-varies with D*A*D on any support whose components contain a
+    # nonzero diagonal entry, not only on complete support.
+    rng = StableRNG(7)
+    start(A) = (a = zeros(size(A, 1)); unconstrained_min!(AbsLog{2}(), a, A); a)
+    for n in (12, 40, 100)   # n = 100 uses the dense-grid kernel for Matrix storage
+        S = sprandn(rng, n, n, 0.2)
+        A = Matrix(S + S') + Diagonal(randn(rng, n) .+ 0.1)
+        d = exp.(2 .* randn(rng, n))
+        @test covaries(start, A, d; rtol=1e-9)
+        @test covaries(A -> symcover(A; maxiter=0), A, d; rtol=1e-9)
+        @test covaries(symcover, A, d; rtol=1e-9)
+        @test covaries(symcover, sparse(A), d; rtol=1e-9)
+        @test symcover(sparse(A)) ≈ symcover(A) rtol=1e-9
+    end
+    # A power-of-two rescaling is exact in floating point.
+    n = 30
+    S = sprandn(rng, n, n, 0.2)
+    A = Matrix(S + S') + Diagonal(randn(rng, n) .+ 0.1)
+    d = exp2.(rand(rng, -20:20, n))
+    @test covaries(symcover, A, d; rtol=4eps())
+
+    # Rows with a zero diagonal take their reference from neighbors, layer by
+    # layer: a path whose only diagonal entry sits at one end propagates through
+    # every row.
+    for n in (10, 70)
+        A = Matrix(SymTridiagonal([1.0; zeros(n - 1)], exp.(randn(rng, n - 1))))
+        d = exp.(2 .* randn(rng, n))
+        @test covaries(start, A, d; rtol=1e-9)
+        @test covaries(symcover, A, d; rtol=1e-9)
+        @test iscover(symcover(A), A; rtol=8eps())
+    end
+
+    # On complete support the start is the exact minimizer of the unconstrained
+    # objective: (diag(n) + S) α = 𝔞 with S the all-ones support.
+    n = 8
+    B = randn(rng, n, n); A = B + B'
+    L = log.(abs.(A))
+    α = (n * I + ones(n, n)) \ vec(sum(L, dims=2))
+    @test start(A) ≈ exp.(α) rtol=1e-10
+end
