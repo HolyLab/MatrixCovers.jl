@@ -156,17 +156,27 @@ julia> round.(extrema(P2 ./ P1); digits=3)
 
 [`cover`](@ref) is exactly covariant when every row and column has the same
 nonzero pattern, including dense matrices without zeros. On irregular sparse
-support it may be only approximately covariant:
+support its geometric-mean start is only approximately covariant; the
+conjugate-gradient refinement (`cgiter`, default 4) moves it toward a
+covariant least-squares fit, reaching it here but not necessarily on larger
+problems:
 
 ```jldoctest covariance
 julia> e = [2.0, 0.3, 5.0]; E = Diagonal(e);
 
-julia> r1, c1 = cover(A); r2, c2 = cover(D * A * E);
+julia> function covariance_spread(cgiter)
+           r1, c1 = cover(A; cgiter)
+           r2, c2 = cover(D * A * E; cgiter)
+           Q1 = (d .* r1) * (e .* c1)'
+           Q2 = r2 * c2'
+           return round.(extrema(Q2 ./ Q1); digits=3)
+       end;
 
-julia> Q1 = (d .* r1) * (e .* c1)'; Q2 = r2 * c2';
-
-julia> round.(extrema(Q2 ./ Q1); digits=3)
+julia> covariance_spread(0)
 (0.872, 1.205)
+
+julia> covariance_spread(4)
+(1.0, 1.0)
 ```
 
 Use [`symcover_min`](@ref) or [`cover_min`](@ref) when exact covariance is
