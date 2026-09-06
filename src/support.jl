@@ -1,6 +1,27 @@
 # Traversal hooks for matrix support. Callbacks specialize at each call site,
 # and indices follow the matrix axes.
 
+# `eachindex` over three or more arrays, with a mismatch error that
+# `juliac --trim=safe` can compile: Base formats its own error by splatting
+# the axes, which is not statically resolvable at that arity.
+@inline function _eachindex(A, B, C)
+    inds = eachindex(A, B)
+    eachindex(C) == inds || _throw_eachindex_mismatch(inds, eachindex(C))
+    return inds
+end
+@inline function _eachindex(A, B, C, D)
+    inds = _eachindex(A, B, C)
+    eachindex(D) == inds || _throw_eachindex_mismatch(inds, eachindex(D))
+    return inds
+end
+@inline function _eachindex(A, B, C, D, E)
+    inds = _eachindex(A, B, C, D)
+    eachindex(E) == inds || _throw_eachindex_mismatch(inds, eachindex(E))
+    return inds
+end
+@noinline _throw_eachindex_mismatch(inds, other) =
+    throw(DimensionMismatch(LazyString("all inputs to eachindex must have the same indices, got ", inds, " and ", other)))
+
 """
     foreach_support(f, A)
 
