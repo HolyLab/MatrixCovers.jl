@@ -253,7 +253,7 @@ end
 # `cover!` over a dense log-magnitude grid, up to but not including the balance
 # convention.
 function _cover_dense!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
-                       ::Type{T}, maxiter::Int) where {T}
+                       ::Type{T}, maxiter::Int, cgiter::Int) where {T}
     or = first(axes(A, 1)) - 1
     oc = first(axes(A, 2)) - 1
     m, n = size(A)
@@ -274,6 +274,21 @@ function _cover_dense!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
     for jp in 1:n
         β[jp] = _uncon_scale(β[jp], nb[jp], halfmu)
         lβ[jp] = log(β[jp])
+    end
+    if cgiter > 0
+        function foreach_grid(f)
+            for jp in 1:n, ip in 1:m
+                l = L[ip, jp]
+                isfinite(l) && f(ip, jp, l)   # -Inf marks a zero entry
+            end
+        end
+        _cg_refine!(lα, lβ, foreach_grid, cgiter)
+        for ip in 1:m
+            iszero(na[ip]) || (α[ip] = max(exp(lα[ip]), floatmin(T)); lα[ip] = log(α[ip]))
+        end
+        for jp in 1:n
+            iszero(nb[jp]) || (β[jp] = max(exp(lβ[jp]), floatmin(T)); lβ[jp] = log(β[jp]))
+        end
     end
 
     nviol = 0

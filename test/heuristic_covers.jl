@@ -284,3 +284,58 @@ end
     α = (n * I + ones(n, n)) \ vec(sum(L, dims=2))
     @test start(A) ≈ exp.(α) rtol=1e-10
 end
+
+@testset "cover: conjugate-gradient refinement of the start" begin
+    # Centered log-product deviation under row and column scaling.
+    function covdev(coverfn, A, dr, dc)
+        a, b = coverfn(A)
+        aD, bD = coverfn(dr .* A .* dc')
+        d = log.((aD .* bD') ./ ((dr .* a) .* (dc .* b)'))[A .!= 0]
+        return maximum(abs, d .- sum(d) / length(d))
+    end
+    rng = StableRNG(20260905)
+    # Refinement reduces scaling dependence on banded support.
+    n = 12
+    A = zeros(n, n)
+    for i in 1:n, j in max(1, i - 1):min(n, i + 1)
+        A[i, j] = exp(2 * randn(rng))
+    end
+    dr, dc = exp.(4 .* randn(rng, n)), exp.(4 .* randn(rng, n))
+    dev0 = covdev(A -> cover(A; cgiter=0), A, dr, dc)
+    dev4 = covdev(A -> cover(A), A, dr, dc)
+    devx = covdev(A -> cover(A; cgiter=4n), A, dr, dc)
+    @test dev0 > 0.1
+    @test dev4 < dev0 / 3
+    @test devx < 1e-6
+    @test covaries(A -> cover(A; cgiter=4n), A, dr, dc; rtol=1e-6)
+    for k in (0, 4, 4n)
+        a, b = cover(A; cgiter=k)
+        @test iscover(a, b, A; rtol=8eps())
+    end
+    @test_throws ArgumentError cover(A; cgiter=-1)
+
+    # The dense-grid and flattened-support paths refine identically.
+    m = 2 * MatrixCovers.DENSE_GRID_MIN
+    B = zeros(m, m)
+    for i in 1:m, j in max(1, i - 2):min(m, i + 1)
+        B[i, j] = exp(2 * randn(rng)) * (rand(rng) < 0.7)
+    end
+    for i in 1:m
+        B[i, i] = exp(2 * randn(rng))
+    end
+    for k in (0, 4, 40)
+        ad, bd = cover(B; cgiter=k)
+        as, bs = cover(sparse(B); cgiter=k)
+        @test ad .* bd' ≈ as .* bs' rtol = 1e-10
+    end
+
+    # Fully populated support needs no refinement.
+    C = exp.(2 .* randn(rng, 9, 7))
+    @test cover(C; cgiter=4) == cover(C; cgiter=0)
+    @test cover(sparse(C); cgiter=4) == cover(sparse(C); cgiter=0)
+
+    # Empty rows and columns keep zero scales through the refinement.
+    Z = [0.0 2.0 0.0; 0.0 0.0 0.0; 1.0 0.0 0.0]
+    a, b = cover(Z)
+    @test a[2] == 0 && b[3] == 0 && iscover(a, b, Z; rtol=8eps())
+end
