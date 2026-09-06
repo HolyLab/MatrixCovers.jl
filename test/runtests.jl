@@ -24,6 +24,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
     include("gram_covers.jl")       # gramcover/gramcover!: symmetric covers of A'*W*A
     include("soft_covers.jl")       # soft_symcover/soft_cover multistart descent
     include("initializers.jl")      # initialize_symcover/initialize_cover strategies
+    include("sparse_cholesky.jl")   # the CHOLMOD driver and the multi-array eachindex helper
     include("minimal_covers.jl")    # the *_min family (native solvers)
     include("storage_types.jl")     # sparse/structured/wrapped storage vs dense reference
     include("element_types.jl")     # Float32/BigFloat: eltype-scaled internal tolerances
@@ -45,7 +46,9 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
                      :_balance_cover!, :inflate_feasible!)
         # External non-public names with no usable public equivalent.
         foreign = (:FreeUnits, :Unit, :Units, :Optimizer, :Experimental, :register_error_hint,
-                   :CHOLMOD, :symbolic)
+                   :RefValue, :getcolptr, :LibSuiteSparse, :TRUE,
+                   :SuiteSparse_config_malloc_func_set, :SuiteSparse_config_calloc_func_set,
+                   :SuiteSparse_config_realloc_func_set, :SuiteSparse_config_free_func_set)
         test_explicit_imports(
             MatrixCovers;
             all_explicit_imports_are_public = VERSION >= v"1.11" ?

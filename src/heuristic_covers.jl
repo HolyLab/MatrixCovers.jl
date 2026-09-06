@@ -216,6 +216,10 @@ function _flat_index_type(ax)
     isempty(ax) && return Int32
     return (typemin(Int32) <= first(ax) && last(ax) <= typemax(Int32)) ? Int32 : I
 end
+function _flat_index_type(ax1, ax2)
+    I1, I2 = _flat_index_type(ax1), _flat_index_type(ax2)
+    return I1 === I2 ? I1 : promote_type(I1, I2)
+end
 
 # Storage-specific upper bounds for `sizehint!`; zero means unknown.
 _support_sizehint(::AbstractMatrix) = 0
@@ -238,8 +242,11 @@ function _flat_support_sym(A::AbstractMatrix, ::Type{T}, ::Type{Ti}) where {T,Ti
     return FlatSupport(is, js, lv)
 end
 
+# Rows and columns share one index type so that the result has one of two
+# concrete types, which keeps the callers statically resolvable.
 flat_support(A::AbstractMatrix, ::Type{T}) where T =
-    _flat_support(A, T, _flat_index_type(axes(A, 1)), _flat_index_type(axes(A, 2)))
+    _flat_support(A, T, _flat_index_type(axes(A, 1), axes(A, 2)))
+_flat_support(A::AbstractMatrix, ::Type{T}, ::Type{Ti}) where {T,Ti} = _flat_support(A, T, Ti, Ti)
 
 function _flat_support(A::AbstractMatrix, ::Type{T}, ::Type{Ti}, ::Type{Tj}) where {T,Ti,Tj}
     is, js, lv = Ti[], Tj[], T[]
@@ -259,7 +266,7 @@ function _flat_violated(sup::FlatSupport{Ti,Tj,T}, la, lb, nviol::Int) where {Ti
     is, js, lv = sup.is, sup.js, sup.lv
     entries = Vector{Tuple{Ti,Tj,T}}(undef, nviol + 1)
     k = 1
-    for p in eachindex(is, js, lv)
+    for p in _eachindex(is, js, lv)
         i, j, lvp = is[p], js[p], lv[p]
         entries[k] = (i, j, lvp)
         k += ifelse(lvp - la[i] - lb[j] > zero(T), 1, 0)
@@ -421,7 +428,7 @@ end
 function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, sup::FlatSupport) where T
     is, js, lv = sup.is, sup.js, sup.lv
     function foreach_entries(f)
-        for k in eachindex(is, js, lv)
+        for k in _eachindex(is, js, lv)
             f(is[k], js[k], lv[k])
         end
     end
@@ -469,7 +476,7 @@ function unconstrained_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, s
     logb = fill!(similar(b, T), zero(T))
     nza  = zeros(Int, eachindex(a))
     nzb  = zeros(Int, eachindex(b))
-    for k in eachindex(is, js, lv)
+    for k in _eachindex(is, js, lv)
         i, j, lAij = is[k], js[k], lv[k]
         loga[i] += lAij
         logb[j] += lAij
@@ -575,7 +582,7 @@ function cg_refine_start!(a::AbstractVector, b::AbstractVector, sup::FlatSupport
     lβ = map(x -> log(T(x)), b)
     is, js, lv = sup.is, sup.js, sup.lv
     function foreach_entries(f)
-        for k in eachindex(is, js, lv)
+        for k in _eachindex(is, js, lv)
             f(is[k], js[k], lv[k])
         end
     end
@@ -659,7 +666,7 @@ function tighten_cover!(a::AbstractVector{T}, sup::FlatSupport; maxiter::Int=3) 
     for _ in 1:maxiter
         map!(log, la, a)   # log(0) = -Inf marks zero scales; see the matrix method
         fill!(lratio, T(Inf))
-        for k in eachindex(is, js, lv)
+        for k in _eachindex(is, js, lv)
             i, j = is[k], js[k]
             lr = la[i] + la[j] - lv[k]
             lratio[i] = ifelse(lr < lratio[i], lr, lratio[i])
@@ -723,7 +730,7 @@ function tighten_cover!(a::AbstractVector, b::AbstractVector, sup::FlatSupport; 
         map!(log, lb, b)
         fill!(lratioa, T(Inf))
         fill!(lratiob, T(Inf))
-        for k in eachindex(is, js, lv)
+        for k in _eachindex(is, js, lv)
             i, j = is[k], js[k]
             lr = la[i] + lb[j] - lv[k]
             lratioa[i] = ifelse(lr < lratioa[i], lr, lratioa[i])
@@ -872,7 +879,7 @@ function boost_feasible!(a::AbstractVector{T}, sup::FlatSupport) where T
     la = map(log, a)
     nviol = 0
     zmax = zero(T)
-    for k in eachindex(is, js, lv)
+    for k in _eachindex(is, js, lv)
         z = lv[k] - la[is[k]] - la[js[k]]
         nviol += ifelse(z > zero(T), 1, 0)
         zmax = ifelse(z > zmax, z, zmax)
@@ -946,7 +953,7 @@ function boost_feasible!(a::AbstractVector, b::AbstractVector, sup::FlatSupport)
     la, lb = map(log, a), map(log, b)
     nviol = 0
     zmax = zero(T)
-    for k in eachindex(is, js, lv)
+    for k in _eachindex(is, js, lv)
         z = lv[k] - la[is[k]] - lb[js[k]]
         nviol += ifelse(z > zero(T), 1, 0)
         zmax = ifelse(z > zmax, z, zmax)
@@ -1108,7 +1115,7 @@ function inflate_feasible!(a::AbstractVector, b::AbstractVector, sup::FlatSuppor
     is, js, lv = sup.is, sup.js, sup.lv
     la, lb = map(log, a), map(log, b)
     t = zero(T)
-    for k in eachindex(is, js, lv)
+    for k in _eachindex(is, js, lv)
         u = (lv[k] - la[is[k]] - lb[js[k]]) / 2
         t = ifelse(u > t, u, t)
     end

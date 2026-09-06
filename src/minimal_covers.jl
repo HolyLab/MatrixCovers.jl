@@ -277,13 +277,13 @@ const AUTO_LSQR_MAX_DENSITY = 1 // 4
 # Condition estimate above which Woodbury uses sparse Cholesky instead of CG.
 const WOODBURY_CG_KAPPA = 1000
 
-# Solve `(C + U*U')x = f` from a sparse factorization of `C` using the
-# Woodbury identity. `rhs` stores the combined `[f U]` solve.
-function _woodbury_solve!(x, F, U, f, rhs)
+# Solve `(C + U*U')x = f` from the factorization `F` of `C` using the
+# Woodbury identity. `rhs` and `sol` hold the combined `[f U]` solve.
+function _woodbury_solve!(x, F::SparseCholesky, U, f, rhs, sol)
     k = size(U, 2)
     copyto!(view(rhs, :, 1), f)
     copyto!(view(rhs, :, 2:k+1), U)
-    sol = F \ rhs
+    solve!(sol, F, CHOLMOD_A, rhs)
     y = view(sol, :, 1)
     Y = view(sol, :, 2:k+1)
     K = U' * Y
@@ -459,7 +459,7 @@ function _fal(x, κ, λ, sscale, bscale, supp::Grid{T}, symmetric::Bool) where {
             lj = view(λ, 1:j-1, j)
             xi = view(x, 1:j-1)
             vj = zero(T)
-            @simd for i in eachindex(cj, xi, lj)
+            @simd for i in _eachindex(cj, xi, lj)
                 c = cj[i]
                 z = xi[i] + xj - c
                 l = lj[i]
@@ -483,7 +483,7 @@ function _fal(x, κ, λ, sscale, bscale, supp::Grid{T}, symmetric::Bool) where {
             cj = view(C, :, j)
             lj = view(λ, :, j)
             vj = zero(T)
-            @simd for i in eachindex(cj, xr, lj)
+            @simd for i in _eachindex(cj, xr, lj)
                 c = cj[i]
                 z = xr[i] + xj - c
                 l = lj[i]
@@ -531,7 +531,7 @@ function _falpat(x, κ, λ, sscale, bscale, pat, supp::Grid{T}, symmetric::Bool)
             xi = view(x, 1:j-1)
             vj = zero(T)
             # Keep the Boolean pattern out of the vectorized floating-point loop.
-            @simd for i in eachindex(cj, xi, lj)
+            @simd for i in _eachindex(cj, xi, lj)
                 c = cj[i]
                 z = xi[i] + xj - c
                 l = lj[i]
@@ -543,7 +543,7 @@ function _falpat(x, κ, λ, sscale, bscale, pat, supp::Grid{T}, symmetric::Bool)
             # Stop comparing after the first pattern change.
             if ndiff == 0
                 dj = 0
-                @simd for i in eachindex(cj, pj, xi, lj)
+                @simd for i in _eachindex(cj, pj, xi, lj)
                     c = cj[i]
                     dj += ifelse((isfinite(c) & (xi[i] + xj - c < lj[i] * bscale)) == pj[i], 0, 1)
                 end
@@ -567,7 +567,7 @@ function _falpat(x, κ, λ, sscale, bscale, pat, supp::Grid{T}, symmetric::Bool)
             pj = view(pat, :, j)
             lj = view(λ, :, j)
             vj = zero(T)
-            @simd for i in eachindex(cj, xr, lj)
+            @simd for i in _eachindex(cj, xr, lj)
                 c = cj[i]
                 z = xr[i] + xj - c
                 l = lj[i]
@@ -578,7 +578,7 @@ function _falpat(x, κ, λ, sscale, bscale, pat, supp::Grid{T}, symmetric::Bool)
             end
             if ndiff == 0
                 dj = 0
-                @simd for i in eachindex(cj, pj, xr, lj)
+                @simd for i in _eachindex(cj, pj, xr, lj)
                     c = cj[i]
                     dj += ifelse((isfinite(c) & (xr[i] + xj - c < lj[i] * bscale)) == pj[i], 0, 1)
                 end
@@ -620,7 +620,7 @@ function _update_multipliers!(λ, x, κ, supp::Grid{T}, symmetric::Bool) where {
             lj = view(λ, 1:j-1, j)
             xi = view(x, 1:j-1)
             vj = typemin(T)
-            @simd for i in eachindex(cj, xi, lj)
+            @simd for i in _eachindex(cj, xi, lj)
                 c = cj[i]
                 fin = isfinite(c)
                 z = xi[i] + xj - c
@@ -642,7 +642,7 @@ function _update_multipliers!(λ, x, κ, supp::Grid{T}, symmetric::Bool) where {
             cj = view(C, :, j)
             lj = view(λ, :, j)
             vj = typemin(T)
-            @simd for i in eachindex(cj, xr, lj)
+            @simd for i in _eachindex(cj, xr, lj)
                 c = cj[i]
                 fin = isfinite(c)
                 z = xr[i] + xj - c
@@ -724,7 +724,7 @@ function _assemble_woodbury!(f, dg, degV, vrow, vcnt, vpat, x, κ, λ, bscale,
             fi = view(f, 1:j-1)
             vj = view(vpat, 1:j-1, j)
             fq = zero(T)
-            @simd for i in eachindex(cj, xi, fi, vj, lj)
+            @simd for i in _eachindex(cj, xi, fi, vj, lj)
                 c = cj[i]
                 fin = isfinite(c)
                 viol = weighted & fin & (xi[i] + xj - c < lj[i] * bscale)
@@ -768,7 +768,7 @@ function _assemble_woodbury!(f, dg, degV, vrow, vcnt, vpat, x, κ, λ, bscale,
             lj = view(λ, :, j)
             vj = view(vpat, :, j)
             fq = zero(T)
-            @simd for i in eachindex(cj, xr, fr, vj, lj)
+            @simd for i in _eachindex(cj, xr, fr, vj, lj)
                 c = cj[i]
                 fin = isfinite(c)
                 viol = weighted & fin & (xr[i] + xj - c < lj[i] * bscale)
@@ -883,7 +883,10 @@ end
 # bipartite support components positive definite. `N == 0` disables it.
 function _precond_pattern(::Type{T}, supp::EdgeList, v0, N::Int, mult) where {T}
     N == 0 && return spzeros(T, 0, 0)
-    Mi, Mj, Mv = collect(1:N), collect(1:N), zeros(T, N)
+    # Diagonal values first; each off-diagonal edge is stored in both triangles.
+    Mv = zeros(T, N)
+    colptr = zeros(Int, N + 1)
+    colptr[1] = 1
     for (p, q) in supp.edges
         if p == q
             Mv[p] += 4 * oneunit(T)
@@ -891,21 +894,40 @@ function _precond_pattern(::Type{T}, supp::EdgeList, v0, N::Int, mult) where {T}
             w = mult(p, q) * oneunit(T)
             Mv[p] += w
             Mv[q] += w
-            push!(Mi, p, q)
-            push!(Mj, q, p)
-            push!(Mv, w, w)
+            colptr[p+1] += 1
+            colptr[q+1] += 1
         end
     end
     dmax = zero(T)
     for p in 1:N
         Mv[p] += v0[p]^2
         dmax = max(dmax, Mv[p])
+        colptr[p+1] += 1
     end
     ρ = _precond_ridge(dmax)
-    for p in 1:N
-        Mv[p] += ρ
+    cumsum!(colptr, colptr)
+    nz = colptr[N+1] - 1
+    rowval = zeros(Int, nz)
+    nzval = zeros(T, nz)
+    cursor = colptr[1:N]
+    for (p, q) in supp.edges
+        p == q && continue
+        w = mult(p, q) * oneunit(T)
+        rowval[cursor[q]] = p; nzval[cursor[q]] = w; cursor[q] += 1
+        rowval[cursor[p]] = q; nzval[cursor[p]] = w; cursor[p] += 1
     end
-    return sparse(Mi, Mj, Mv, N, N)
+    for p in 1:N
+        rowval[cursor[p]] = p
+        nzval[cursor[p]] = Mv[p] + ρ
+    end
+    # Rows within a column arrive in edge order; the factorization needs them sorted.
+    for q in 1:N
+        r = colptr[q]:colptr[q+1]-1
+        perm = sortperm(view(rowval, r))
+        rowval[r] = rowval[r][perm]
+        nzval[r] = nzval[r][perm]
+    end
+    return SparseMatrixCSC(N, N, colptr, rowval, nzval)
 end
 
 _precond_pattern(::Type{T}, ::Grid, v0, N::Int, mult) where {T} = spzeros(T, 0, 0)
@@ -918,18 +940,15 @@ _precond_ridge(dmax::T) where {T} = (dmax > 0 ? dmax : oneunit(T)) * sqrt(eps(T)
 # consumption but increasing the number of iterations for convergence.
 const LSQR_FILL_BUDGET = 1 << 30
 
-# Return CHOLMOD's symbolic factorization and its predicted number of values.
-function _precond_analysis(M::SparseMatrixCSC)
-    F = SparseArrays.CHOLMOD.symbolic(SparseArrays.CHOLMOD.Sparse(Symmetric(M)))
-    s = unsafe_load(pointer(F))
-    Int(s.n) == size(M, 1) ||
-        error("CHOLMOD analyzed a matrix of order $(Int(s.n)), but `M` has order $(size(M, 1))")
-    s.is_super == 0 || return F, Int(s.xsize)
-    counts = unsafe_wrap(Array, convert(Ptr{_factor_index(F)}, s.ColCount), Int(s.n))
-    return F, sum(Int, counts)
+# Return the symbolic factorization of `M` and its predicted number of values.
+function _precond_analysis(M::SparseMatrixCSC{Float64,Int})
+    F = analyze!(SparseCholesky(), M)
+    return F, factor_entries(F)
 end
 
-_factor_index(::SparseArrays.CHOLMOD.Factor{<:Any,Ti}) where {Ti} = Ti
+# Storage for the dense normal-equation factorization of the `:dense` path.
+_dense_factor_type(::Type{Float64}) = LinearAlgebra.BunchKaufman{Float64,Matrix{Float64},Vector{Int}}
+_dense_factor_type(::Type{T}) where {T} = LinearAlgebra.LU{T,Matrix{T},Vector{Int}}
 
 # `AbsLog{2}` augmented-Lagrangian iteration. `boost=true` applies a final
 # feasibility shift; the support layout selects the inner solver.
@@ -970,7 +989,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     # change, and the weights depend only on (κ, active set): cache that key.
     prevκ = Ref(zero(T))
     prevpat = _violation_pattern(supp)
-    Bfact = Ref{Any}(nothing)
+    Bfact = Ref{Union{Nothing,_dense_factor_type(T)}}(nothing)
     vrow = Int[]                             # violated rows, grouped by column (Woodbury path only)
     vcnt = zeros(Int, use_woodbury ? N : 0)  # violated off-diagonal entries per column
     vptr = zeros(Int, use_woodbury ? N + 1 : 0)
@@ -999,6 +1018,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     Crowval = Int[]
     Cnzval = T[]
     px = zeros(T, use_precond ? N : 0)   # scale vector recovered from the LSQR variable
+    pxv = zeros(T, use_precond ? N : 0)  # `(L'P) \ y`, the unscaled LSQR variable
     pg = zeros(T, use_precond ? N : 0)   # `Rᵀ√W y` before the preconditioner is applied
     mdiag = zeros(T, use_precond ? N : 0)   # weighted degrees, the preconditioner's diagonal
     # The normal-matrix pattern is constant, so one symbolic analysis serves all
@@ -1019,6 +1039,8 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     end
     psqrt = zeros(T, use_factor ? 0 : (use_precond ? N : 0))  # `K` of the diagonal preconditioner
     rhs = zeros(T, use_woodbury ? N : 0, size(U, 2) + 1)
+    wsol = similar(rhs)
+    WF = use_woodbury ? SparseCholesky() : nothing
     dmin = use_woodbury ? minimum(sys.dfull) : oneunit(T)
     cgx = zeros(T, use_woodbury ? N : 0)
     cgr = zeros(T, use_woodbury ? N : 0)
@@ -1083,10 +1105,15 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                 ok && return copy(cgx)
             end
             nchol[] += 1
-            return _woodbury_solve!(zeros(T, N), cholesky(Symmetric(C, :U)), U, f, rhs)
-        elseif use_lsqr
-            edges = supp.edges
-            cvals = supp.cvals
+            analyze!(WF, C)
+            factorize!(WF, C)
+            return _woodbury_solve!(zeros(T, N), WF, U, f, rhs, wsol)
+        end
+        # The closures below capture `edges`; a captured variable assigned in
+        # more than one branch would be boxed and lose its type.
+        edges = supp.edges
+        cvals = supp.cvals
+        if use_lsqr
             weighted = κ !== nothing
             κl = weighted ? T(κ) : oneunit(T)
             sscalel = weighted ? inv(2 * κl) : zero(T)
@@ -1130,19 +1157,17 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                     for p in 1:N
                         nzv[dpos[p]] = mdiag[p] + ρ
                     end
-                    cholesky!(MF, Symmetric(Msp))
+                    factorize!(MF, Msp)
                     prevκ[] = κl
                     copyto!(prevpat, vpat)
                 end
-                Kc = MF.PtL
-                Uc = MF.UP
-                # CHOLMOD factor-component solves allocate their result.
+                # `K = P'L` is the preconditioner; LSQR iterates on `y = K' x`.
                 Pmul! = function (y, yv)
-                    xv = Uc \ yv
+                    solve_up!(pxv, MF, yv)
                     for (e, (p, q)) in enumerate(edges)
-                        y[e] = ws[e] * (xv[p] + xv[q])
+                        y[e] = ws[e] * (pxv[p] + pxv[q])
                     end
-                    y[g] = dot(v0, xv)
+                    y[g] = dot(v0, pxv)
                     return y
                 end
                 Ptmul! = function (z, y)
@@ -1153,13 +1178,14 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                         pg[q] += t
                     end
                     @. pg += v0 * y[g]
-                    copyto!(z, Kc \ pg)
+                    solve_ptl!(z, MF, pg)
                     return z
                 end
                 mul!(px, Msp, x)
-                soly, it = _lsqr(Pmul!, Ptmul!, cv, Kc \ px)
+                solve_ptl!(px, MF, px)
+                soly, it = _lsqr(Pmul!, Ptmul!, cv, px)
                 nlsqr[] += it
-                return (Uc \ soly)::Vector{T}
+                return solve_up!(soly, MF, soly)
             elseif use_precond
                 # Weighted degrees, the diagonal of `RᵀWR`.
                 fill!(mdiag, zero(T))
@@ -1222,8 +1248,6 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
             nlsqr[] += it
             return sol
         else
-            edges = supp.edges
-            cvals = supp.cvals
             fill!(f, zero(T))
             weighted = κ !== nothing
             κl = weighted ? T(κ) : oneunit(T)
