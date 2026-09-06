@@ -90,13 +90,16 @@ function _symcover!(a::AbstractVector, A::AbstractMatrix; maxiter::Int=3)
 end
 
 """
-    a, b = cover(ϕ, A; maxiter=3)
-    a, b = cover(A; maxiter=3)
+    a, b = cover(ϕ, A; maxiter=3, cgiter=4)
+    a, b = cover(A; maxiter=3, cgiter=4)
 
 Given a matrix `A`, return vectors `a` and `b` such that
 `a[i] * b[j] >= abs(A[i, j])` for all `i`, `j`. The method initializes from row
-and column geometric means, covers the most-violated entries first, then applies
-`maxiter` tightening iterations.
+and column geometric means, refines that start with up to `cgiter` conjugate-gradient
+iterations, covers the most-violated entries first, then applies `maxiter`
+tightening iterations.
+
+`cgiter=0` disables refinement.
 
 The factors use the per-component balance convention described by
 [`cover_min`](@ref).
@@ -119,6 +122,13 @@ julia> a * b'
  2.16541  2.03444  3.0
  6.0      5.63709  8.31251
 ```
+
+# Extended help
+
+Conjugate-gradient refinement fits `log(a[i]*b[j])` to `log(abs(A[i, j]))`
+in least squares over the nonzero entries. The exact fit is scale-covariant;
+a finite number of iterations need not achieve this. Each iteration makes
+one pass over the support, stopping early when the residual is small.
 """
 cover(ϕ::AbstractCoverPenalty, A::AbstractMatrix; kwargs...) = cover(A; kwargs...)
 
@@ -160,13 +170,15 @@ function cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs.
     return _cover!(a, b, A; kwargs...)
 end
 
-function _cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; maxiter::Int=3)
+function _cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; maxiter::Int=3, cgiter::Int=4)
+    cgiter >= 0 || throw(ArgumentError("cgiter must be nonnegative, got $cgiter"))
     T = float(promote_type(eltype(a), eltype(b)))
     if _use_dense_grid(A, T)
-        _cover_dense!(a, b, A, T, maxiter)
+        _cover_dense!(a, b, A, T, maxiter, cgiter)
     else
         sup = flat_support(A, T)
         unconstrained_min!(AbsLog{2}(), a, b, sup)
+        cg_refine_start!(a, b, sup, cgiter)
         boost_feasible!(a, b, sup)
         tighten_cover!(a, b, sup; maxiter)
         # Apply the package's balance convention, then restore coverage lost to rounding.
@@ -478,6 +490,103 @@ function unconstrained_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, s
         b[j] = iszero(nzb[j]) ? zero(T) : max(exp(logb[j] / nzb[j] - halfmu), floatmin(T))
     end
     return nza, nzb
+end
+
+# Refine the log scales by CG on the normal equations for
+# ∑_{ij ∈ support} (lα[i] + lβ[j] - log|A_ij|)².
+# `foreach_entries(f)` calls `f(i, j, log|A_ij|)` over the support.
+# Updates preserve the initial gauge and leave unsupported log scales at -Inf.
+function _cg_refine!(lα::AbstractVector{T}, lβ::AbstractVector{T}, foreach_entries::F, maxiter::Int) where {T,F}
+    maxiter > 0 || return lα, lβ
+    axa, axb = eachindex(lα), eachindex(lβ)
+    na = zeros(Int, axa)
+    nb = zeros(Int, axb)
+    fa = fill!(similar(lα, T), zero(T))
+    fb = fill!(similar(lβ, T), zero(T))
+    ra = fill!(similar(lα, T), zero(T))
+    rb = fill!(similar(lβ, T), zero(T))
+    # Accumulate support counts, right-hand sides, and off-diagonal residuals.
+    foreach_entries() do i, j, lv
+        na[i] += 1
+        nb[j] += 1
+        fa[i] += lv
+        fb[j] += lv
+        ra[i] += lv - lβ[j]
+        rb[j] += lv - lα[i]
+    end
+    rr = zero(T)     # squared residual norm
+    rref = zero(T)   # squared right-hand-side norm
+    for i in axa
+        if iszero(na[i])
+            ra[i] = zero(T)
+        else
+            ra[i] -= na[i] * lα[i]
+            rr += ra[i]^2
+            rref += fa[i]^2
+        end
+    end
+    for j in axb
+        if iszero(nb[j])
+            rb[j] = zero(T)
+        else
+            rb[j] -= nb[j] * lβ[j]
+            rr += rb[j]^2
+            rref += fb[j]^2
+        end
+    end
+    tol = eps(T) * rref
+    pa = copy(ra)
+    pb = copy(rb)
+    Apa = similar(ra)
+    Apb = similar(rb)
+    for _ in 1:maxiter
+        rr <= tol && break
+        for i in axa
+            Apa[i] = na[i] * pa[i]
+        end
+        for j in axb
+            Apb[j] = nb[j] * pb[j]
+        end
+        foreach_entries() do i, j, _
+            Apa[i] += pb[j]
+            Apb[j] += pa[i]
+        end
+        pAp = LinearAlgebra.dot(pa, Apa) + LinearAlgebra.dot(pb, Apb)
+        pAp > 0 || break
+        γ = rr / pAp
+        lα .+= γ .* pa
+        lβ .+= γ .* pb
+        ra .-= γ .* Apa
+        rb .-= γ .* Apb
+        rr2 = LinearAlgebra.dot(ra, ra) + LinearAlgebra.dot(rb, rb)
+        δ = rr2 / rr
+        pa .= ra .+ δ .* pa
+        pb .= rb .+ δ .* pb
+        rr = rr2
+    end
+    return lα, lβ
+end
+
+# Apply log-space refinement to `a`, `b`, preserving zeros and clamping underflow.
+function cg_refine_start!(a::AbstractVector, b::AbstractVector, sup::FlatSupport, maxiter::Int)
+    maxiter > 0 || return a, b
+    T = float(promote_type(eltype(a), eltype(b)))
+    lα = map(x -> log(T(x)), a)
+    lβ = map(x -> log(T(x)), b)
+    is, js, lv = sup.is, sup.js, sup.lv
+    function foreach_entries(f)
+        for k in eachindex(is, js, lv)
+            f(is[k], js[k], lv[k])
+        end
+    end
+    _cg_refine!(lα, lβ, foreach_entries, maxiter)
+    for i in eachindex(a)
+        iszero(a[i]) || (a[i] = max(exp(lα[i]), floatmin(T)))
+    end
+    for j in eachindex(b)
+        iszero(b[j]) || (b[j] = max(exp(lβ[j]), floatmin(T)))
+    end
+    return a, b
 end
 
 # Feasible cover starting from the diagonal alone, resolved by
