@@ -93,7 +93,7 @@ const GEN_NOTIONS = (
     end
 
     @testset "gen: initialize_cover($strategy, $feasible) is balanced" for
-            strategy in (:hardcover, :geomean), feasible in (:inflate, :boost, :none)
+            strategy in (:hardcover, :geomean, :covariant), feasible in (:inflate, :boost, :none)
         @test isbalanced(initialize_cover(Agen; strategy, feasible)..., Agen)
         @test isbalanced(initialize_cover(Ablk; strategy, feasible)..., Ablk)
     end

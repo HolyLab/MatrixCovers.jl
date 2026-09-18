@@ -285,7 +285,7 @@ end
     @test start(A) ≈ exp.(α) rtol=1e-10
 end
 
-@testset "cover: conjugate-gradient refinement of the start" begin
+@testset "cover: covariant start and conjugate-gradient refinement" begin
     # Centered log-product deviation under row and column scaling.
     function covdev(coverfn, A, dr, dc)
         a, b = coverfn(A)
@@ -294,27 +294,40 @@ end
         return maximum(abs, d .- sum(d) / length(d))
     end
     rng = StableRNG(20260905)
-    # Refinement reduces scaling dependence on banded support.
     n = 12
     A = zeros(n, n)
     for i in 1:n, j in max(1, i - 1):min(n, i + 1)
         A[i, j] = exp(2 * randn(rng))
     end
     dr, dc = exp.(4 .* randn(rng, n)), exp.(4 .* randn(rng, n))
-    dev0 = covdev(A -> cover(A; cgiter=0), A, dr, dc)
-    dev4 = covdev(A -> cover(A), A, dr, dc)
-    devx = covdev(A -> cover(A; cgiter=4n), A, dr, dc)
-    @test dev0 > 0.1
-    @test dev4 < dev0 / 3
-    @test devx < 1e-6
-    @test covaries(A -> cover(A; cgiter=4n), A, dr, dc; rtol=1e-6)
-    for k in (0, 4, 4n)
+    # Covariance holds at every refinement count.
+    for k in (0, 1, 4, 4n)
+        @test covdev(A -> cover(A; cgiter=k), A, dr, dc) < 1e-9
+        @test covaries(A -> cover(A; cgiter=k), A, dr, dc; rtol=1e-9)
         a, b = cover(A; cgiter=k)
         @test iscover(a, b, A; rtol=8eps())
     end
     @test_throws ArgumentError cover(A; cgiter=-1)
 
-    # The dense-grid and flattened-support paths refine identically.
+    # Refinement reduces the least-squares residual.
+    sup = MatrixCovers.flat_support(A, Float64)
+    function fitresidual(k)
+        a, b = zeros(n), zeros(n)
+        MatrixCovers.covariant_start!(a, b, sup)
+        MatrixCovers.cg_refine_start!(a, b, sup, k)
+        return sum((log(a[i]) + log(b[j]) - log(A[i, j]))^2
+                   for i in 1:n, j in 1:n if A[i, j] != 0)
+    end
+    @test fitresidual(4) < fitresidual(0)
+    @test fitresidual(4n) < fitresidual(4)
+
+    # Powers of two rescale the input exactly in binary floating point.
+    d2r, d2c = exp2.(rand(rng, -10:10, n)), exp2.(rand(rng, -10:10, n))
+    for k in (0, 1, 4, 4n)
+        @test covdev(A -> cover(A; cgiter=k), A, d2r, d2c) < 1e-12
+    end
+
+    # The dense-grid and flattened-support paths start and refine identically.
     m = 2 * MatrixCovers.DENSE_GRID_MIN
     B = zeros(m, m)
     for i in 1:m, j in max(1, i - 2):min(m, i + 1)
@@ -326,16 +339,90 @@ end
     for k in (0, 4, 40)
         ad, bd = cover(B; cgiter=k)
         as, bs = cover(sparse(B); cgiter=k)
-        @test ad .* bd' ≈ as .* bs' rtol = 1e-10
+        @test ad .* bd' ≈ as .* bs' rtol = 1e-12
+    end
+    # A grid with scattered zeros exercises the same fallback on both paths.
+    C = exp.(2 .* randn(rng, m, m)) .* (rand(rng, m, m) .< 0.9)
+    C[7, :] .= 0.0                        # an unsupported row
+    for k in (0, 4)
+        ad, bd = cover(C; cgiter=k)
+        as, bs = cover(sparse(C); cgiter=k)
+        @test ad .* bd' ≈ as .* bs' rtol = 1e-12
     end
 
-    # Fully populated support needs no refinement.
-    C = exp.(2 .* randn(rng, 9, 7))
-    @test cover(C; cgiter=4) == cover(C; cgiter=0)
-    @test cover(sparse(C); cgiter=4) == cover(sparse(C); cgiter=0)
+    # Refinement preserves exact starts on complete and tree-shaped support.
+    F = exp.(2 .* randn(rng, 9, 7))
+    Fbig = exp.(2 .* randn(rng, m, m))
+    P = Matrix(Bidiagonal(exp.(randn(rng, n)), exp.(randn(rng, n - 1)), :U))
+    for A0 in (F, sparse(F), Fbig, P, sparse(P))
+        a0, b0 = cover(A0; cgiter=0)
+        for k in (4, 50)
+            a, b = cover(A0; cgiter=k)
+            @test all(isfinite, a) && all(isfinite, b)
+            @test a .* b' ≈ a0 .* b0' rtol = 1e-12
+        end
+    end
 
-    # Empty rows and columns keep zero scales through the refinement.
+    # Empty rows and columns keep zero scales through start and refinement.
     Z = [0.0 2.0 0.0; 0.0 0.0 0.0; 1.0 0.0 0.0]
     a, b = cover(Z)
     @test a[2] == 0 && b[3] == 0 && iscover(a, b, Z; rtol=8eps())
+end
+
+@testset "cover scale covariance on irregular support" begin
+    # Compare supported products: balancing disconnected components can change
+    # off-support products and individual factors under rescaling.
+    function covaries_on_support(A, d1, d2; cgiter=4, rtol=1e-12)
+        a, b = cover(A; cgiter)
+        B = d1 .* A .* transpose(d2)
+        aB, bB = cover(B; cgiter)
+        ok = iscover(aB, bB, B; rtol=8eps())
+        foreach_support(A) do i, j, v
+            ok &= isapprox(aB[i] * bB[j], d1[i] * a[i] * d2[j] * b[j]; rtol)
+        end
+        return ok
+    end
+
+    rng = StableRNG(2718)
+    dyadic(k) = exp2.(rand(rng, -10:10, k))
+
+    n = 12
+    tridiag = Matrix(Tridiagonal(randn(rng, n - 1), randn(rng, n), randn(rng, n - 1)))
+    banded = [abs(i - j) <= 2 ? randn(rng) : 0.0 for i in 1:15, j in 1:15]
+    S = sprandn(rng, 30, 25, 0.15)
+    # Exercise the dense-grid kernel with incomplete support.
+    densezeros = randn(rng, 70, 70)
+    densezeros[3, 4] = 0.0
+    densezeros[10, :] .= 0.0
+    densezeros[:, 20] .= 0.0
+    rect = randn(rng, 7, 13)
+    blocks = Matrix(blockdiag(sparse(randn(rng, 4, 3)), sparse(randn(rng, 5, 6))))
+
+    for A in (tridiag, banded, S, Matrix(S), densezeros, rect, blocks)
+        m, k = size(A)
+        d1, d2 = dyadic(m), dyadic(k)
+        for cgiter in (0, 1, 4)
+            @test covaries_on_support(A, d1, d2; cgiter)
+        end
+    end
+
+    # On complete support the start is the row/column geometric mean.
+    for (m, k) in ((5, 7), (70, 70))
+        A = exp.(3 .* randn(rng, m, k))
+        sup = MatrixCovers.flat_support(A, Float64)
+        a1, b1 = zeros(m), zeros(k)
+        MatrixCovers.covariant_start!(a1, b1, sup)
+        a2, b2 = zeros(m), zeros(k)
+        unconstrained_min!(AbsLog{2}(), a2, b2, sup)
+        @test a1 .* b1' ≈ a2 .* b2' rtol = 1e-12
+    end
+
+    # Offset axes preserve the scales.
+    Ao = OffsetArray(densezeros, -2:67, 0:69)
+    a, b = cover(densezeros)
+    ao, bo = cover(Ao)
+    @test axes(ao, 1) == axes(Ao, 1) && axes(bo, 1) == axes(Ao, 2)
+    @test collect(ao) ≈ a rtol = 1e-12
+    @test collect(bo) ≈ b rtol = 1e-12
+    @test iscover(ao, bo, Ao; rtol=8eps())
 end

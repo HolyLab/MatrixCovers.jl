@@ -102,11 +102,12 @@ function _grid_logabs!(L::Matrix{T}, sa::Vector{T}, sb::Vector{T},
     return L
 end
 
+# Full support has `n` entries in every row.
+_grid_full_support(na::Vector{Int}, n::Int) = all(==(n), na)
+
 # Derive the balance summary directly for full support; traverse sparse support.
 function _grid_components(A::AbstractMatrix, na::Vector{Int}, nb::Vector{Int}, m::Int, n::Int)
-    for ip in 1:m
-        na[ip] == n || return _support_components(A)
-    end
+    _grid_full_support(na, n) || return _support_components(A)
     return ones(Int, m), ones(Int, n), 1, na, nb
 end
 
@@ -265,23 +266,49 @@ function _cover_dense!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
     na = Vector{Int}(undef, m)
     nb = Vector{Int}(undef, n)
     _grid_logabs!(L, α, β, na, nb, A)    # `α`, `β` carry the log sums here
-    nztotal = sum(na)
-    halfmu = iszero(nztotal) ? zero(T) : sum(α) / (2 * nztotal)
-    for ip in 1:m
-        α[ip] = _uncon_scale(α[ip], na[ip], halfmu)
-        lα[ip] = log(α[ip])
+    function foreach_grid(f)
+        for jp in 1:n, ip in 1:m
+            l = L[ip, jp]
+            isfinite(l) && f(ip, jp, l)   # -Inf marks a zero entry
+        end
     end
-    for jp in 1:n
-        β[jp] = _uncon_scale(β[jp], nb[jp], halfmu)
-        lβ[jp] = log(β[jp])
-    end
-    if cgiter > 0
-        function foreach_grid(f)
-            for jp in 1:n, ip in 1:m
-                l = L[ip, jp]
-                isfinite(l) && f(ip, jp, l)   # -Inf marks a zero entry
+    if _grid_full_support(na, n)
+        # Geometric means solve the normal equations on complete support.
+        nztotal = sum(na)
+        halfmu = iszero(nztotal) ? zero(T) : sum(α) / (2 * nztotal)
+        for ip in 1:m
+            α[ip] = _uncon_scale(α[ip], na[ip], halfmu)
+        end
+        for jp in 1:n
+            β[jp] = _uncon_scale(β[jp], nb[jp], halfmu)
+        end
+    else
+        # Scan the row or column for neighboring support vertices.
+        function foreach_gridneighbor(f, v)
+            if v <= m
+                for jp in 1:n
+                    l = L[v, jp]
+                    isfinite(l) && f(m + jp, l)
+                end
+            else
+                jp = v - m
+                for ip in 1:m
+                    l = L[ip, jp]
+                    isfinite(l) && f(ip, l)
+                end
             end
         end
+        _covariant_start!(α, β, na, nb, foreach_grid, foreach_gridneighbor)
+        for ip in 1:m
+            α[ip] = iszero(na[ip]) ? zero(T) : max(exp(α[ip]), floatmin(T))
+        end
+        for jp in 1:n
+            β[jp] = iszero(nb[jp]) ? zero(T) : max(exp(β[jp]), floatmin(T))
+        end
+    end
+    map!(log, lα, α)
+    map!(log, lβ, β)
+    if cgiter > 0 && !_grid_full_support(na, n)
         _cg_refine!(lα, lβ, foreach_grid, cgiter)
         for ip in 1:m
             iszero(na[ip]) || (α[ip] = max(exp(lα[ip]), floatmin(T)); lα[ip] = log(α[ip]))
