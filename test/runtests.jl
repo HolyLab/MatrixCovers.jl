@@ -42,7 +42,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
                      :foreach_support, :foreach_support_sym,
                      :cover_min_jump, :symcover_min_jump, :check_solved,
                      :require_abs_symmetric,
-                     :_edge_list, :_sym_edge_list, :_degrees,
+                     :_edge_list, :_sym_edge_list, :_degrees, :_support_components,
                      :_balance_cover!, :inflate_feasible!)
         # External non-public names with no usable public equivalent.
         foreign = (:FreeUnits, :Unit, :Units, :Optimizer, :Experimental, :register_error_hint,
