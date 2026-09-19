@@ -22,6 +22,17 @@ function _ipopt_model()
     return model
 end
 
+# Fix α → α + c, β → β - c independently on each support component to
+# prevent drift along directions where the objective is constant.
+function _pin_gauge!(model, α, β, A, nza::Vector{Int}, nzb::Vector{Int})
+    rowcomp, colcomp, ncomp, _, _ = MatrixCovers._support_components(A)
+    for c in 1:ncomp
+        @constraint(model, sum(nza[i] * α[i] for i in eachindex(nza) if rowcomp[i] == c) ==
+                           sum(nzb[j] * β[j] for j in eachindex(nzb) if colcomp[j] == c))
+    end
+    return model
+end
+
 # Symmetric triangle with full-grid multiplicities.
 function _triangle(fi, fj, flog)
     keep = [e for e in eachindex(fi) if fi[e] <= fj[e]]
@@ -98,7 +109,7 @@ end
 # ============================================================
 # Hard cover: cover_min!(::AbsLinear{p}, a, b, A)
 # Asymmetric hard-cover model in row and column log scales. The model pins the
-# global gauge; post-processing balances components and restores feasibility.
+# gauge of every support component; post-processing restores feasibility.
 # ============================================================
 
 function MatrixCovers.cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractVector, A)
@@ -121,7 +132,7 @@ function MatrixCovers.cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractV
     for e in eachindex(ei)
         @constraint(model, α[ei[e]] + β[ej[e]] >= elog[e])
     end
-    @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
+    _pin_gauge!(model, α, β, A, nza, nzb)
     JuMP.optimize!(model)
     check_solved(model, "cover_min!")
     for (i, k) in pairs(pr)
@@ -158,7 +169,7 @@ function MatrixCovers.cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractV
     for e in eachindex(ei)
         @constraint(model, α[ei[e]] + β[ej[e]] >= elog[e])
     end
-    @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
+    _pin_gauge!(model, α, β, A, nza, nzb)
     JuMP.optimize!(model)
     check_solved(model, "cover_min!")
     for (i, k) in pairs(pr)
@@ -252,7 +263,7 @@ function MatrixCovers.soft_cover_min!(::AbsLinear{2}, a::AbstractVector, b::Abst
     @variable(model, β[j=1:n], start = β0[j])
     @objective(model, Min,
         sum((1 - exp(elog[e] - α[ei[e]] - β[ej[e]]))^2 for e in eachindex(ei)) + n_zeros)
-    @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
+    _pin_gauge!(model, α, β, A, nza, nzb)
     JuMP.optimize!(model)
     check_solved(model, "soft_cover_min!")
     for (i, k) in pairs(pr)
@@ -286,7 +297,7 @@ function MatrixCovers.soft_cover_min!(::AbsLinear{1}, a::AbstractVector, b::Abst
         @constraint(model, -1 + exp(elog[e] - α[ei[e]] - β[ej[e]]) <= t[e])
     end
     @objective(model, Min, sum(t) + n_zeros)
-    @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
+    _pin_gauge!(model, α, β, A, nza, nzb)
     JuMP.optimize!(model)
     check_solved(model, "soft_cover_min!")
     for (i, k) in pairs(pr)

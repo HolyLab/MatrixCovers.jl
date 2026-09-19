@@ -70,8 +70,13 @@ Build an asymmetric starting point for [`cover_min`](@ref) or
 [`soft_cover`](@ref). The `feasible` keyword matches
 [`initialize_symcover`](@ref).
 
-Supported strategies are `:hardcover` (the result of [`cover`](@ref), forwarding
-`maxiter`) and `:geomean` (the unconstrained `AbsLog{2}` minimum).
+`strategy` names the point:
+
+- `:geomean` — geometric means of the nonzero entries in each row and column.
+- `:covariant` — the scale-covariant start of [`cover`](@ref), without
+  conjugate-gradient refinement. It agrees with `:geomean` on complete support.
+- `:hardcover` — the result of [`cover`](@ref). It forwards `maxiter` and
+  `cgiter`, and ignores `feasible`.
 
 Supported rows and columns receive positive scales; unsupported ones receive
 zero. The factors use the balance convention of [`cover_min`](@ref).
@@ -104,10 +109,13 @@ function initialize_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatr
     elseif strategy === :geomean
         _reject_kwargs(strategy, kwargs)
         unconstrained_min!(AbsLog{2}(), a, b, A)
+    elseif strategy === :covariant
+        _reject_kwargs(strategy, kwargs)
+        covariant_start!(a, b, flat_support(A, float(promote_type(eltype(a), eltype(b)))))
     elseif strategy === :leaveout || strategy === :diagfeasible
-        throw(ArgumentError("strategy=:$strategy has no asymmetric formulation; expected one of :hardcover, :geomean"))
+        throw(ArgumentError("strategy=:$strategy has no asymmetric formulation; expected one of :hardcover, :geomean, :covariant"))
     else
-        throw(ArgumentError("unknown strategy :$strategy; expected one of :hardcover, :geomean"))
+        throw(ArgumentError("unknown strategy :$strategy; expected one of :hardcover, :geomean, :covariant"))
     end
     _make_feasible!(feasible, a, b, A)
     # Restore the package's balance convention after a selective boost.

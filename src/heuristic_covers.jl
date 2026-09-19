@@ -94,11 +94,9 @@ end
     a, b = cover(A; maxiter=3, cgiter=4)
 
 Given a matrix `A`, return vectors `a` and `b` such that
-`a[i] * b[j] >= abs(A[i, j])` for all `i`, `j`. The method initializes from row
-and column geometric means, refines that start with up to `cgiter` conjugate-gradient
-iterations, covers the most-violated entries first, then applies `maxiter`
-tightening iterations.
-
+`a[i] * b[j] >= abs(A[i, j])` for all `i`, `j`. The heuristic uses up to
+`cgiter` conjugate-gradient iterations to refine its starting point, then
+ensures coverage and applies `maxiter` tightening iterations.
 `cgiter=0` disables refinement.
 
 The factors use the per-component balance convention described by
@@ -125,10 +123,14 @@ julia> a * b'
 
 # Extended help
 
-Conjugate-gradient refinement fits `log(a[i]*b[j])` to `log(abs(A[i, j]))`
-in least squares over the nonzero entries. The exact fit is scale-covariant;
-a finite number of iterations need not achieve this. Each iteration makes
-one pass over the support, stopping early when the residual is small.
+The cover products are scale-covariant on the support: for positive diagonal
+`D1`, `D2`, covering `D1 * A * D2` multiplies each supported product by
+`D1[i, i] * D2[j, j]`. This holds for every `cgiter`.
+
+Initialization and refinement approximate the least-squares fit of
+`log(a[i]) + log(b[j])` to `log(abs(A[i, j]))` over nonzero entries. The start
+is exact on trees and complete bipartite components. Each refinement iteration
+makes one pass over the support; complete support needs no refinement.
 """
 cover(ϕ::AbstractCoverPenalty, A::AbstractMatrix; kwargs...) = cover(A; kwargs...)
 
@@ -177,8 +179,9 @@ function _cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; maxite
         _cover_dense!(a, b, A, T, maxiter, cgiter)
     else
         sup = flat_support(A, T)
-        unconstrained_min!(AbsLog{2}(), a, b, sup)
-        cg_refine_start!(a, b, sup, cgiter)
+        covariant_start!(a, b, sup)
+        # On complete support the start already solves the normal equations.
+        _complete_support(sup, length(a), length(b)) || cg_refine_start!(a, b, sup, cgiter)
         boost_feasible!(a, b, sup)
         tighten_cover!(a, b, sup; maxiter)
         # Apply the package's balance convention, then restore coverage lost to rounding.
@@ -499,6 +502,220 @@ function unconstrained_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, s
     return nza, nzb
 end
 
+# Group indices by endpoint: `ent[ptr[p]:ptr[p+1]-1]` lists the indices `k`
+# with `idxs[k] == p + off`. `cnt[p]` gives the group size.
+function _entry_groups(idxs::AbstractVector{<:Integer}, cnt::Vector{Int}, off::Integer)
+    ptr = Vector{Int}(undef, length(cnt) + 1)
+    ptr[1] = 1
+    for p in eachindex(cnt)
+        ptr[p+1] = ptr[p] + cnt[p]
+    end
+    ent = Vector{Int}(undef, ptr[end] - 1)
+    cursor = ptr[1:end-1]          # next free slot of each group
+    for k in eachindex(idxs)
+        p = idxs[k] - off
+        ent[cursor[p]] = k
+        cursor[p] += 1
+    end
+    return ptr, ent
+end
+
+# Counting sort by decreasing degree, breaking ties by vertex number.
+# Rows are vertices `1:m`, columns `m+1:m+n`.
+function _degree_order(na::Vector{Int}, nb::Vector{Int})
+    m, n = length(na), length(nb)
+    deg(v) = v <= m ? na[v] : nb[v-m]
+    dmax = max(isempty(na) ? 0 : maximum(na), isempty(nb) ? 0 : maximum(nb))
+    cnt = zeros(Int, dmax + 2)
+    for v in 1:(m+n)
+        cnt[dmax-deg(v)+2] += 1    # the key `dmax - deg` sorts by decreasing degree
+    end
+    cnt[1] = 1
+    cumsum!(cnt, cnt)
+    order = Vector{Int}(undef, m + n)
+    for v in 1:(m+n)
+        k = dmax - deg(v) + 1
+        order[cnt[k]] = v
+        cnt[k] += 1
+    end
+    return order
+end
+
+# Mutable traversal state avoids boxed captures in the closures below.
+mutable struct _BFSWork{T}
+    qend::Int      # last filled slot of the queue
+    level::Int     # distance assigned to the vertices being discovered
+    dprev::Int     # distance of the layer a value is averaged over
+    tot::T         # running layer sum
+    cnt::Int       # number of terms in it
+end
+
+# Root each support component at its highest-degree vertex (lowest index on
+# ties), with value zero. Other vertices average `log|A_uv| - value[u]` over
+# neighbors in the preceding BFS layer. Fill `comp` and return its count.
+function _bfs_levels!(value::Vector{T}, comp::Vector{Int}, na::Vector{Int},
+                      nb::Vector{Int}, foreach_neighbor::F) where {T,F}
+    m, n = length(na), length(nb)
+    deg(v) = v <= m ? na[v] : nb[v-m]
+    dist = fill(-1, m + n)
+    queue = Vector{Int}(undef, m + n)
+    work = _BFSWork{T}(0, 0, 0, zero(T), 0)
+    discover(w, _) = begin
+        if dist[w] < 0
+            dist[w] = work.level
+            work.qend += 1
+            queue[work.qend] = w
+        end
+    end
+    layerterm(u, lv) = begin
+        if dist[u] == work.dprev
+            work.tot += lv - value[u]
+            work.cnt += 1
+        end
+    end
+    ncomp = 0
+    for root in _degree_order(na, nb)
+        (iszero(deg(root)) || comp[root] != 0) && continue
+        ncomp += 1
+        cstart = work.qend + 1
+        work.qend = cstart
+        queue[cstart] = root
+        dist[root] = 0
+        value[root] = zero(T)
+        head = cstart
+        while head <= work.qend
+            u = queue[head]
+            head += 1
+            work.level = dist[u] + 1
+            foreach_neighbor(discover, u)
+        end
+        # Breadth-first order, so a vertex's preceding layer is already valued.
+        for c in cstart:work.qend
+            v = queue[c]
+            comp[v] = ncomp
+            v == root && continue
+            work.dprev = dist[v] - 1
+            work.tot = zero(T)
+            work.cnt = 0
+            foreach_neighbor(layerterm, v)
+            work.cnt > 0 || error("support graph vertex $(string(v)) has no neighbor in the preceding breadth-first layer")
+            value[v] = work.tot / work.cnt
+        end
+    end
+    return ncomp
+end
+
+# Scale-covariant start for ∑_{A[i,j]≠0} (α[i] + β[j] - log|A[i,j]|)².
+# `α`, `β` receive log scales; `na`, `nb` are support counts, all by position.
+# `foreach_entries(f)` calls `f(ip, jp, log|A_ij|)` for each nonzero entry.
+# `foreach_neighbor(f, v)` calls `f(u, log|A_uv|)` for each neighbor, with
+# rows numbered `1:m` and columns `m+1:m+n`.
+#
+# BFS initialization followed by one Jacobi sweep preserves invariance of the
+# edge residuals. Per-component shifts then zero the residual sum and enforce
+# ∑ᵢ nᵢ αᵢ = ∑ⱼ nⱼ βⱼ. Unsupported log scales stay zero; callers zero the scales.
+function _covariant_start!(α::Vector{T}, β::Vector{T}, na::Vector{Int}, nb::Vector{Int},
+                           foreach_entries::F, foreach_neighbor::G) where {T,F,G}
+    m, n = length(α), length(β)
+    value = zeros(T, m + n)
+    comp = zeros(Int, m + n)
+    ncomp = _bfs_levels!(value, comp, na, nb, foreach_neighbor)
+    # Jacobi sweep of the normal equations; collect log sums per component.
+    fill!(α, zero(T))
+    fill!(β, zero(T))
+    sL = zeros(T, ncomp)
+    nent = zeros(Int, ncomp)
+    foreach_entries() do ip, jp, lv
+        α[ip] += lv - value[m+jp]
+        β[jp] += lv - value[ip]
+        c = comp[ip]
+        sL[c] += lv
+        nent[c] += 1
+    end
+    for ip in 1:m
+        iszero(na[ip]) || (α[ip] /= na[ip])
+    end
+    for jp in 1:n
+        iszero(nb[jp]) || (β[jp] /= nb[jp])
+    end
+    # The two conditions give c1 + c2 = (∑L - nᵀα - nᵀβ)/nent for the level and
+    # c1 - c2 = (nᵀβ - nᵀα)/nent for the gauge, both per component.
+    wα = zeros(T, ncomp)
+    wβ = zeros(T, ncomp)
+    for ip in 1:m
+        iszero(na[ip]) || (wα[comp[ip]] += na[ip] * α[ip])
+    end
+    for jp in 1:n
+        iszero(nb[jp]) || (wβ[comp[m+jp]] += nb[jp] * β[jp])
+    end
+    for ip in 1:m
+        iszero(na[ip]) && continue
+        c = comp[ip]
+        α[ip] += (sL[c] / 2 - wα[c]) / nent[c]
+    end
+    for jp in 1:n
+        iszero(nb[jp]) && continue
+        c = comp[m+jp]
+        β[jp] += (sL[c] / 2 - wβ[c]) / nent[c]
+    end
+    return α, β
+end
+
+# Whether every one of the `m * n` row/column pairs carries a stored entry.
+_complete_support(sup::FlatSupport, m::Int, n::Int) = length(sup.lv) == m * n
+
+# `sup` must match the axes of `a` and `b`. Unsupported scales are zero;
+# supported scales are bounded below by floatmin(T).
+function covariant_start!(a::AbstractVector, b::AbstractVector, sup::FlatSupport)
+    T = float(promote_type(eltype(a), eltype(b)))
+    is, js, lv = sup.is, sup.js, sup.lv
+    axa, axb = eachindex(a), eachindex(b)
+    m, n = length(axa), length(axb)
+    if _complete_support(sup, m, n)
+        # Geometric means solve the normal equations on complete support.
+        unconstrained_min!(AbsLog{2}(), a, b, sup)
+        return a, b
+    end
+    or, oc = first(axa) - 1, first(axb) - 1
+    na = zeros(Int, m)
+    nb = zeros(Int, n)
+    for k in _eachindex(is, js, lv)
+        na[is[k]-or] += 1
+        nb[js[k]-oc] += 1
+    end
+    rowptr, rowent = _entry_groups(is, na, or)
+    colptr, colent = _entry_groups(js, nb, oc)
+    function foreach_entries(f)
+        for k in _eachindex(is, js, lv)
+            f(is[k] - or, js[k] - oc, lv[k])
+        end
+    end
+    function foreach_neighbor(f, v)
+        if v <= m
+            for s in rowptr[v]:rowptr[v+1]-1
+                k = rowent[s]
+                f(m + (js[k] - oc), lv[k])
+            end
+        else
+            q = v - m
+            for s in colptr[q]:colptr[q+1]-1
+                k = colent[s]
+                f(is[k] - or, lv[k])
+            end
+        end
+    end
+    α = Vector{T}(undef, m)
+    β = Vector{T}(undef, n)
+    _covariant_start!(α, β, na, nb, foreach_entries, foreach_neighbor)
+    for (p, i) in enumerate(axa)
+        a[i] = iszero(na[p]) ? zero(T) : max(exp(α[p]), floatmin(T))
+    end
+    for (q, j) in enumerate(axb)
+        b[j] = iszero(nb[q]) ? zero(T) : max(exp(β[q]), floatmin(T))
+    end
+    return a, b
+end
+
 # Refine the log scales by CG on the normal equations for
 # ∑_{ij ∈ support} (lα[i] + lβ[j] - log|A_ij|)².
 # `foreach_entries(f)` calls `f(i, j, log|A_ij|)` over the support.
@@ -508,28 +725,22 @@ function _cg_refine!(lα::AbstractVector{T}, lβ::AbstractVector{T}, foreach_ent
     axa, axb = eachindex(lα), eachindex(lβ)
     na = zeros(Int, axa)
     nb = zeros(Int, axb)
-    fa = fill!(similar(lα, T), zero(T))
-    fb = fill!(similar(lβ, T), zero(T))
     ra = fill!(similar(lα, T), zero(T))
     rb = fill!(similar(lβ, T), zero(T))
-    # Accumulate support counts, right-hand sides, and off-diagonal residuals.
+    # Accumulate support counts and off-diagonal residuals.
     foreach_entries() do i, j, lv
         na[i] += 1
         nb[j] += 1
-        fa[i] += lv
-        fb[j] += lv
         ra[i] += lv - lβ[j]
         rb[j] += lv - lα[i]
     end
     rr = zero(T)     # squared residual norm
-    rref = zero(T)   # squared right-hand-side norm
     for i in axa
         if iszero(na[i])
             ra[i] = zero(T)
         else
             ra[i] -= na[i] * lα[i]
             rr += ra[i]^2
-            rref += fa[i]^2
         end
     end
     for j in axb
@@ -538,10 +749,13 @@ function _cg_refine!(lα::AbstractVector{T}, lβ::AbstractVector{T}, foreach_ent
         else
             rb[j] -= nb[j] * lβ[j]
             rr += rb[j]^2
-            rref += fb[j]^2
         end
     end
-    tol = eps(T) * rref
+    # Relative residuals give a scale-invariant stopping rule.
+    tol = eps(T) * rr
+    # Use the largest diagonal entry as the curvature scale; stop when a search
+    # direction lies numerically in the gauge null space.
+    qmax = T(max(maximum(na; init=0), maximum(nb; init=0)))
     pa = copy(ra)
     pb = copy(rb)
     Apa = similar(ra)
@@ -559,7 +773,8 @@ function _cg_refine!(lα::AbstractVector{T}, lβ::AbstractVector{T}, foreach_ent
             Apb[j] += pa[i]
         end
         pAp = LinearAlgebra.dot(pa, Apa) + LinearAlgebra.dot(pb, Apb)
-        pAp > 0 || break
+        pp = LinearAlgebra.dot(pa, pa) + LinearAlgebra.dot(pb, pb)
+        pAp > eps(T) * qmax * pp || break
         γ = rr / pAp
         lα .+= γ .* pa
         lβ .+= γ .* pb
