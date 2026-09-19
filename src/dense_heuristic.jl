@@ -252,9 +252,9 @@ function _symcover_dense!(a::AbstractVector, A::AbstractMatrix, ::Type{T}, maxit
 end
 
 # `cover!` over a dense log-magnitude grid, up to but not including the balance
-# convention.
+# convention. `start` is one of `COVER_STARTS`.
 function _cover_dense!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
-                       ::Type{T}, maxiter::Int, cgiter::Int) where {T}
+                       ::Type{T}, maxiter::Int, cgiter::Int, start::Symbol) where {T}
     or = first(axes(A, 1)) - 1
     oc = first(axes(A, 2)) - 1
     m, n = size(A)
@@ -272,8 +272,10 @@ function _cover_dense!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
             isfinite(l) && f(ip, jp, l)   # -Inf marks a zero entry
         end
     end
-    if _grid_full_support(na, n)
-        # Geometric means solve the normal equations on complete support.
+    fullsupport = _grid_full_support(na, n)
+    if start === :geomean || fullsupport
+        # Row and column geometric means, which also solve the normal equations
+        # when the support is complete.
         nztotal = sum(na)
         halfmu = iszero(nztotal) ? zero(T) : sum(α) / (2 * nztotal)
         for ip in 1:m
@@ -308,7 +310,7 @@ function _cover_dense!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
     end
     map!(log, lα, α)
     map!(log, lβ, β)
-    if cgiter > 0 && !_grid_full_support(na, n)
+    if cgiter > 0 && !fullsupport
         _cg_refine!(lα, lβ, foreach_grid, cgiter)
         for ip in 1:m
             iszero(na[ip]) || (α[ip] = max(exp(lα[ip]), floatmin(T)); lα[ip] = log(α[ip]))

@@ -75,8 +75,8 @@ Build an asymmetric starting point for [`cover_min`](@ref) or
 - `:geomean` — geometric means of the nonzero entries in each row and column.
 - `:covariant` — the scale-covariant start of [`cover`](@ref), without
   conjugate-gradient refinement. It agrees with `:geomean` on complete support.
-- `:hardcover` — the result of [`cover`](@ref). It forwards `maxiter` and
-  `cgiter`, and ignores `feasible`.
+- `:hardcover` — the result of [`cover`](@ref). It forwards `maxiter`,
+  `cgiter`, and `start`, and ignores `feasible`.
 
 Supported rows and columns receive positive scales; unsupported ones receive
 zero. The factors use the balance convention of [`cover_min`](@ref).
