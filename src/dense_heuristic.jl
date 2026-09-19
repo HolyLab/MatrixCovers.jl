@@ -111,58 +111,8 @@ function _grid_components(A::AbstractMatrix, na::Vector{Int}, nb::Vector{Int}, m
     return ones(Int, m), ones(Int, n), 1, na, nb
 end
 
-# Use compact boost-list indices when the dimensions fit.
-_grid_label(m::Int, n::Int) = max(m, n) <= typemax(Int32) ? Int32 : Int
-
-# Select violated upper-triangle entries in traversal order without branching.
-function _tri_violated(Lp::Vector{T}, lα::Vector{T}, n::Int, nviol::Int,
-                       ::Type{IT}) where {T,IT}
-    entries = Vector{Tuple{IT,IT,T}}(undef, nviol + 1)
-    k = 1
-    for jp in 1:n
-        o = _trioff(jp)
-        lj = lα[jp]
-        for ip in 1:jp
-            lv = Lp[o+ip]
-            entries[k] = (ip % IT, jp % IT, lv)
-            k += ifelse(lv - lα[ip] - lj > zero(T), 1, 0)
-        end
-    end
-    resize!(entries, nviol)
-    return entries
-end
-
-# The violated entries of a full grid, selected as in `_tri_violated`.
-function _grid_violated(L::Matrix{T}, lα::Vector{T}, lβ::Vector{T}, m::Int, n::Int,
-                        nviol::Int, ::Type{IT}) where {T,IT}
-    entries = Vector{Tuple{IT,IT,T}}(undef, nviol + 1)
-    k = 1
-    for jp in 1:n
-        lj = lβ[jp]
-        for ip in 1:m
-            lv = L[ip, jp]
-            entries[k] = (ip % IT, jp % IT, lv)
-            k += ifelse(lv - lα[ip] - lj > zero(T), 1, 0)
-        end
-    end
-    resize!(entries, nviol)
-    return entries
-end
-
 # The asymmetric start has no reference shift; see `_uncon_scale` in heuristic_covers.jl.
 _uncon_scale(si::T, ni::Int, halfmu::T) where {T} = _uncon_scale(si, ni, halfmu, zero(T))
-
-# Greedy boost that updates scales and log scales together.
-function _dense_boost!(α::Vector{T}, lα::Vector{T}, entries, zmax::T) where {T}
-    deficit((i, j, lv)) = lv - lα[i] - lα[j]
-    function apply!((i, j, lv), z)
-        h = z / 2
-        lα[i] += h; α[i] = exp(lα[i])
-        i == j || (lα[j] += h; α[j] = exp(lα[j]))
-    end
-    bucket_boost!(deficit, apply!, entries, T, zmax)
-    return α
-end
 
 # `symcover!` over a packed upper-triangular log-magnitude grid.
 function _symcover_dense!(a::AbstractVector, A::AbstractMatrix, ::Type{T}, maxiter::Int) where {T}
@@ -204,22 +154,49 @@ function _symcover_dense!(a::AbstractVector, A::AbstractMatrix, ::Type{T}, maxit
         lα[ip] = log(α[ip])
     end
 
-    # Only initially violated entries can require a boost.
-    nviol = 0
-    zmax = zero(T)
+    # Simultaneous feasibility boost; see `boost_feasible!`. `s[ip]` totals the
+    # shortfalls of the entries touching row `ip`, and `r[ip]` is the largest
+    # share that row is asked for. Unsupported entries carry `-Inf` logs and so
+    # contribute nothing.
+    s = zeros(T, n)
     for jp in 1:n
         o = _trioff(jp)
         lj = lα[jp]
-        for ip in 1:jp
-            z = Lp[o+ip] - lα[ip] - lj
-            nviol += ifelse(z > zero(T), 1, 0)
-            zmax = ifelse(z > zmax, z, zmax)
+        sj = zero(T)
+        for ip in 1:jp-1
+            z = _pos_deficit(Lp[o+ip], lα[ip], lj)
+            s[ip] += z
+            sj += z
         end
+        s[jp] += sj + _pos_deficit(Lp[o+jp], lj, lj)
     end
     # A supported zero scale produces an infinite deficit.
-    isfinite(zmax) ||
+    all(isfinite, s) ||
         throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row"))
-    _dense_boost!(α, lα, _tri_violated(Lp, lα, n, nviol, _grid_label(n, n)), zmax)
+    map!(sqrt, s, s)
+    r = zeros(T, n)
+    for jp in 1:n
+        o = _trioff(jp)
+        lj = lα[jp]
+        wj = s[jp]
+        rj = zero(T)
+        for ip in 1:jp-1
+            z = _pos_deficit(Lp[o+ip], lα[ip], lj)
+            zi, zj = _split_deficit(z, s[ip], wj)
+            r[ip] = ifelse(zi > r[ip], zi, r[ip])
+            rj = ifelse(zj > rj, zj, rj)
+        end
+        # A diagonal entry has one endpoint, which must absorb half its shortfall.
+        zd = _pos_deficit(Lp[o+jp], lj, lj) / 2
+        rj = ifelse(zd > rj, zd, rj)
+        r[jp] = ifelse(rj > r[jp], rj, r[jp])
+    end
+    for ip in 1:n
+        ri = r[ip]
+        ri > zero(T) || continue
+        lα[ip] += ri
+        α[ip] = exp(lα[ip])
+    end
 
     lratio = Vector{T}(undef, n)
     for _ in 1:maxiter
@@ -320,27 +297,51 @@ function _cover_dense!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
         end
     end
 
-    nviol = 0
-    zmax = zero(T)
+    # Simultaneous feasibility boost; see `boost_feasible!`. `sa`/`sb` total the
+    # shortfalls of each row and column, `ra`/`rb` the largest share each is
+    # asked for.
+    sa = zeros(T, m)
+    sb = zeros(T, n)
     for jp in 1:n
         lj = lβ[jp]
+        sj = zero(T)
         for ip in 1:m
-            z = L[ip, jp] - lα[ip] - lj
-            nviol += ifelse(z > zero(T), 1, 0)
-            zmax = ifelse(z > zmax, z, zmax)
+            z = _pos_deficit(L[ip, jp], lα[ip], lj)
+            sa[ip] += z
+            sj += z
         end
+        sb[jp] = sj
     end
-    isfinite(zmax) ||
+    (all(isfinite, sa) && all(isfinite, sb)) ||
         throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row/column"))
-    entries = _grid_violated(L, lα, lβ, m, n, nviol, _grid_label(m, n))
-    # Row and column scales require separate updates.
-    deficit((i, j, lv)) = lv - lα[i] - lβ[j]
-    function apply!((i, j, lv), z)
-        h = z / 2
-        lα[i] += h; α[i] = exp(lα[i])
-        lβ[j] += h; β[j] = exp(lβ[j])
+    map!(sqrt, sa, sa)
+    map!(sqrt, sb, sb)
+    ra = zeros(T, m)
+    rb = zeros(T, n)
+    for jp in 1:n
+        lj = lβ[jp]
+        wj = sb[jp]
+        rj = zero(T)
+        for ip in 1:m
+            z = _pos_deficit(L[ip, jp], lα[ip], lj)
+            zi, zj = _split_deficit(z, sa[ip], wj)
+            ra[ip] = ifelse(zi > ra[ip], zi, ra[ip])
+            rj = ifelse(zj > rj, zj, rj)
+        end
+        rb[jp] = rj
     end
-    bucket_boost!(deficit, apply!, entries, T, zmax)
+    for ip in 1:m
+        ri = ra[ip]
+        ri > zero(T) || continue
+        lα[ip] += ri
+        α[ip] = exp(lα[ip])
+    end
+    for jp in 1:n
+        rj = rb[jp]
+        rj > zero(T) || continue
+        lβ[jp] += rj
+        β[jp] = exp(lβ[jp])
+    end
 
     ratioa = Vector{T}(undef, m)
     for _ in 1:maxiter

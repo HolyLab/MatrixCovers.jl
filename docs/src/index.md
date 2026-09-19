@@ -182,7 +182,7 @@ Unless the support is rank one, that point depends on the units `A` is written i
 
 ```jldoctest covariance
 julia> covariance_spread(0; start=:geomean)
-(0.872, 1.205)
+(0.846, 1.236)
 
 julia> covariance_spread(4; start=:geomean)
 (1.0, 1.0)
@@ -208,8 +208,8 @@ julia> aq, bq = cover_min(AbsLog{2}(), A);
 
 julia> a * b'
 2×3 Matrix{Float64}:
- 2.16541  2.03444  3.0
- 6.0      5.63709  8.31251
+ 2.17597  2.03823  3.0
+ 6.0      5.62019  8.27216
 
 julia> aq * bq'
 2×3 Matrix{Float64}:
@@ -217,7 +217,7 @@ julia> aq * bq'
  6.0      5.42884  8.14325
 
 julia> round(cover_objective(AbsLog{2}(), a, b, A); digits=6)
-1.146646
+1.146449
 
 julia> round(cover_objective(AbsLog{2}(), aq, bq, A); digits=6)
 1.141281
