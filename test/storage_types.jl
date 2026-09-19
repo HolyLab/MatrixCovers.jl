@@ -112,8 +112,9 @@ end
 end
 
 @testset "traversal-based kernels match dense reference" begin
-    # Order-insensitive kernels match dense results directly. For bucketed boosts,
-    # traversal-order differences are compared by feasibility and objective.
+    # Order-insensitive kernels match dense results directly. Where the
+    # traversal order changes the summation order of the start, results are
+    # compared by feasibility and objective instead.
     rng = StableRNG(11)
     n = 8
     Adense = randn(rng, n, n); Adense = Adense + Adense'
@@ -135,7 +136,7 @@ end
     @test symcover(AbsLog{2}(), D) ≈ symcover(AbsLog{2}(), Matrix(D)) rtol=1e-12
     @test symcover(AbsLog{2}(), St) ≈ symcover(AbsLog{2}(), Tsym) rtol=1e-12   # same symmetric-valued matrix
 
-    # Different traversal orders may choose different within-bucket ties.
+    # Traversal orders that accumulate the start's row sums differently.
     objclose(a1, M1, a2, M2) = isapprox(cover_objective(AbsLog{2}(), a1, M1),
         cover_objective(AbsLog{2}(), a2, M2); rtol=1e-2, atol=1e-10)
     for A in (Ssp_L,)

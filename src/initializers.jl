@@ -28,7 +28,9 @@ Build a symmetric starting point for [`symcover_min`](@ref) or
 `feasible` controls whether and how the point is made into a cover:
 
 - `:inflate` multiplies every scale by the smallest common factor that covers `A`.
-- `:boost` raises scales that touch violated entries.
+- `:boost` splits each violated entry's shortfall (in log magnitude) between
+  the scales it touches, and raises each scale by the largest share it is
+  asked for.
 - `:none` returns the strategy's point without a coverage guarantee.
 
 Supported rows receive positive scales; unsupported rows receive zero.

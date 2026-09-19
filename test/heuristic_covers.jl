@@ -1,5 +1,5 @@
 # The fast heuristic covers: symcover/cover, their in-place forms, and the
-# bucketed feasibility boost.
+# feasibility boost.
 
 @testset "symcover" begin
     # Cover property: a[i]*a[j] >= abs(A[i,j]) for all i, j
@@ -147,7 +147,7 @@ end
     @test_throws "indices of `b` must match column-indexing of `A`" cover!(zeros(2), zeros(4), B)
 end
 
-@testset "bucket boost" begin
+@testset "feasibility boost" begin
     rng = StableRNG(42)
 
     # Feasibility on randomized dense (with zero rows/diagonal), sparse, banded, and
@@ -210,7 +210,35 @@ end
         E3   = cover_objective(AbsLog{2}(), symcover(AbsLog{2}(), A; maxiter=3), A)
         iszero(Emin) || push!(gaps, log(E3 / Emin))
     end
-    @test median(gaps) < 0.0195 * 1.5
+    @test median(gaps) < 0.0286 * 1.5
+end
+
+@testset "permutation equivariance" begin
+    rng = StableRNG(2026)
+    # `:geomean` and the simultaneous boost depend on the support only through
+    # sums and maxima, so permuting rows and columns permutes the result.
+    # Sizes above and below `MatrixCovers.DENSE_GRID_MIN` exercise both the
+    # dense-grid and the flat-support paths.
+    for A in (sprandn(rng, 100, 100, 0.05), randn(rng, 80, 80), randn(rng, 12, 12),
+              Float64.(rand(rng, 1:4, 40, 40)), Float64.(rand(rng, 1:4, 90, 90)))
+        p = randperm(rng, size(A, 1))
+        q = randperm(rng, size(A, 2))
+        a, b = cover(A; start=:geomean)
+        ap, bp = cover(A[p, q]; start=:geomean)
+        @test ap ≈ a[p] rtol=1e-10
+        @test bp ≈ b[q] rtol=1e-10
+    end
+
+    # `symcover` under a simultaneous row/column permutation.
+    n = 60
+    for A in (let B = randn(rng, n, n); (B + B') / 2 end,
+              let S = sprandn(rng, n, n, 0.08); Matrix(S + S') end,
+              let M = Float64.(rand(rng, 1:4, n, n)); (M + M') / 2 end,
+              let B = randn(rng, n, n); C = (B + B') / 2; C[3, 3] = C[7, 7] = 0; C end)
+        p = randperm(rng, n)
+        a = symcover(A)
+        @test symcover(A[p, p]) ≈ a[p] rtol=1e-10
+    end
 end
 
 @testset "boost feasibility: dominant off-diagonal bands and extreme dynamic range" begin

@@ -7,7 +7,7 @@ using Unitful       # triggers MatrixCoversUnitfulExt extension
 using LinearAlgebra
 using OffsetArrays
 using Statistics: median
-using Random: MersenneTwister
+using Random: MersenneTwister, randperm
 using StableRNGs: StableRNG
 using Aqua
 using ExplicitImports

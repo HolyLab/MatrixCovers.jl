@@ -15,8 +15,8 @@ all `i`, `j`.
 
 The method initializes from per-row geometric means of the diagonally
 normalized entries `abs(A[i, j]) / sqrt(abs(A[i, i] * A[j, j]))`, rescaled by
-`sqrt(abs(A[i, i]))`, covers the most-violated entries first, then applies
-`maxiter` tightening iterations.
+`sqrt(abs(A[i, i]))`, raises the scales until every entry is covered, then
+applies `maxiter` tightening iterations.
 
 `ϕ` is accepted for API compatibility but is currently ignored.
 For a cover that provably minimizes a given `ϕ`, use [`symcover_min`](@ref).
@@ -44,6 +44,9 @@ julia> a * a'   # covers |A|: a[i]*a[j] >= abs(A[i, j])
 The result is scale-covariant whenever every connected component of the support has a
 nonzero diagonal entry (rows with a zero diagonal take their reference from
 neighbors that have one).
+
+The result is also permutation-equivariant up to floating-point round-off:
+covering `A[p, p]` for a permutation `p` gives `a[p]`.
 """
 symcover(ϕ::AbstractCoverPenalty, A::AbstractMatrix; kwargs...) = symcover(A; kwargs...)
 
@@ -101,8 +104,8 @@ refinement.
 
 `start` selects the point the refinement begins from: `:covariant` ensures the
 result is scale-covariant (typically at the cost of permutation-equivariance),
-whereas `:geomean` prioritizes permutation-equivariance (typically at the cost
-of scale-covariance).
+whereas `:geomean` makes the result permutation-equivariant up to
+floating-point round-off (typically at the cost of scale-covariance).
 
 The factors use the per-component balance convention described by
 [`cover_min`](@ref).
@@ -118,12 +121,12 @@ See also: [`cover!`](@ref), [`cover_min`](@ref), [`symcover`](@ref).
 julia> A = [1 2 3; 6 5 4];
 
 julia> a, b = cover(A)
-([1.2544610775677627, 3.475905976749231], [1.7261686708831454, 1.621762761307448, 2.3914651906272066])
+([1.2605791487949616, 3.475905976751536], [1.7261686708847903, 1.6168981055127307, 2.3798584982725366])
 
 julia> a * b'
 2×3 Matrix{Float64}:
- 2.16541  2.03444  3.0
- 6.0      5.63709  8.31251
+ 2.17597  2.03823  3.0
+ 6.0      5.62019  8.27216
 ```
 
 # Extended help
@@ -139,6 +142,9 @@ makes one pass over the support; complete support needs no refinement.
 
 The two starts coincide on complete support, where the geometric mean already
 solves the least-squares problem described below.
+
+With `start=:geomean` the cover is permutation-equivariant up to floating-point
+round-off: covering `A[p, q]` for permutations `p`, `q` gives `a[p]` and `b[q]`.
 """
 cover(ϕ::AbstractCoverPenalty, A::AbstractMatrix; kwargs...) = cover(A; kwargs...)
 
@@ -284,20 +290,6 @@ function _flat_support(A::AbstractMatrix, ::Type{T}, ::Type{Ti}, ::Type{Tj}) whe
     end
     _fastlog!(lv)   # one vectorized pass over the collected magnitudes
     return FlatSupport(is, js, lv)
-end
-
-# Select violated entries in traversal order without branching.
-function _flat_violated(sup::FlatSupport{Ti,Tj,T}, la, lb, nviol::Int) where {Ti,Tj,T}
-    is, js, lv = sup.is, sup.js, sup.lv
-    entries = Vector{Tuple{Ti,Tj,T}}(undef, nviol + 1)
-    k = 1
-    for p in _eachindex(is, js, lv)
-        i, j, lvp = is[p], js[p], lv[p]
-        entries[k] = (i, j, lvp)
-        k += ifelse(lvp - la[i] - lb[j] > zero(T), 1, 0)
-    end
-    resize!(entries, nviol)
-    return entries
 end
 
 # Apply the row/column balance convention independently to each support
@@ -995,217 +987,172 @@ function tighten_cover!(a::AbstractVector, b::AbstractVector, A::Transpose; kwar
     return a, b
 end
 
-# Approximate greedy max-deficit boost. Deficits only decrease, so entries move
-# to lower buckets. Log-deficit buckets preserve covariance except for ties.
-const BOOST_BUCKET_WIDTH = log(2) / 4   # quality indistinguishable from exact greedy; only bucket count grows as w shrinks
-
-# Visit deficit buckets from highest to lowest. Original entries are stored
-# contiguously; entries demoted from higher buckets use per-bucket stacks.
-function bucket_boost!(deficit::F, apply!::G, entries::AbstractVector, ::Type{T}, zmax::T) where {F,G,T}
-    zmax > zero(T) || return
-    w = T(BOOST_BUCKET_WIDTH)
-    B = max(1, ceil(Int, zmax / w))
-    # `z` is a positive log difference no greater than `zmax`; its spacing keeps
-    # `z / w` from underflowing, so the ceiling remains in `1:B`.
-    bucketof(z) = unsafe_trunc(Int, ceil(z / w))
-    ptr = zeros(Int, B + 1)
-    for entry in entries
-        z = deficit(entry)
-        z > zero(T) || continue
-        ptr[bucketof(z)+1] += 1
-    end
-    ptr[1] = 1
-    cumsum!(ptr, ptr)
-    cursor = ptr[1:end-1]              # next free slot of each level
-    sorted = similar(entries, ptr[end] - 1)
-    for k in reverse(eachindex(entries))
-        entry = entries[k]
-        z = deficit(entry)
-        z > zero(T) || continue
-        b = bucketof(z)
-        sorted[cursor[b]] = entry
-        cursor[b] += 1
-    end
-    # Demoted entries, as a stack per level over one shared array.
-    dhead = zeros(Int, B)
-    dentry = similar(entries, 0)
-    dnext = Int[]
-    demote!(entry, b2) = (push!(dentry, entry); push!(dnext, dhead[b2]); dhead[b2] = length(dentry))
-    function visit!(entry, b)
-        z = deficit(entry)
-        z > zero(T) || return
-        b2 = bucketof(z)
-        b2 < b ? demote!(entry, b2) : apply!(entry, z)
-        return
-    end
-    for b in B:-1:1
-        e = dhead[b]
-        while e != 0
-            enext = dnext[e]              # save before a further demotion appends
-            visit!(dentry[e], b)
-            e = enext
-        end
-        for s in ptr[b]:ptr[b+1]-1
-            visit!(sorted[s], b)
-        end
-    end
-    return
-end
-
 # Symmetric-contract feasibility boost: scale `a` in place so that
 # `a[i]*a[j] >= |A[i,j]|`, up to the round-off of the log-domain updates,
 # for every entry visited by `foreach_support_sym`
 # (the diagonal included, so no separate clamp step is needed). Requires a
 # start with strictly positive scale on every supported row (the geometric-mean
 # init from `unconstrained_min!` guarantees this).
+#
+# Write z = log|A_ij| - log(a[i]) - log(a[j]) for the log deficit of an entry
+# and z⁺ = max(z, 0). The first pass accumulates s[i] = ∑ z⁺ over the entries
+# touching row `i`. The second splits each positive deficit between its two
+# endpoints in proportion to sqrt(s), zi = z*√s[i]/(√s[i] + √s[j]) and
+# zj = z - zi, and keeps r[i], the largest share row `i` is asked for. Raising
+# every log-scale by r[i] then restores feasibility: the two shares of an entry
+# sum to its deficit, and each endpoint rises by at least its own share. The
+# weighting gives the row with the larger accumulated deficit the larger share,
+# since raising it repairs more entries at once.
+#
+# Both passes combine entries with `+` and `max` alone, so the result depends
+# on the support and not on the traversal order.
 function boost_feasible!(a::AbstractVector{T}, A::AbstractMatrix) where T
-    IdxT = eltype(eachindex(a))
-    # `la` caches log.(a) and is updated alongside `a`, so deficits cost no log
-    # calls; log(0) = -Inf on unsupported rows is never read (every entry's
-    # endpoints pass the positive-scale check below). Growing log-scales
-    # directly (rather than multiplying by exp(z/2)) stays finite even when
-    # exp(z/2) alone would overflow.
+    # `la` caches log.(a); log(0) = -Inf on unsupported rows is never read.
+    # Growing log-scales directly (rather than multiplying by exp(z)) stays
+    # finite even when exp(z) alone would overflow.
     la = map(log, a)
-    # `entries` holds only entries already violated at this starting point:
-    # bucket_boost! never revisits an entry once satisfied, so a still-slack
-    # entry need not be stored at all. A zero scale on either endpoint makes
-    # its deficit +Inf, so such entries are always violated and the fail-fast
-    # check below always runs on them. Two passes (count then fill) allocate
-    # `entries` once at its exact size, instead of the repeated grow-and-copy
-    # of building it with `push!`.
-    nviol = Ref(0)
-    zmax = Ref(zero(T))
+    s = fill(zero(T), eachindex(a))
     foreach_support_sym(A) do i, j, v
-        z = log(T(v)) - la[i] - la[j]
-        if z > zero(T)
-            nviol[] += 1
-            zmax[] = max(zmax[], z)
-        end
+        z = _pos_deficit(log(T(v)), la[i], la[j])
+        s[i] += z
+        # A diagonal entry has one endpoint and contributes once.
+        s[j] += ifelse(i == j, zero(T), z)
     end
-    entries = Vector{Tuple{IdxT,IdxT,T}}(undef, nviol[])
-    nfill = Ref(0)
+    # A zero scale on a supported row gives that row an infinite deficit.
+    all(isfinite, s) ||
+        throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row"))
+    map!(sqrt, s, s)
+    r = fill(zero(T), eachindex(a))
     foreach_support_sym(A) do i, j, v
-        lv = log(T(v))
-        z = lv - la[i] - la[j]
-        if z > zero(T)
-            (iszero(a[i]) || iszero(a[j])) &&
-                throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row"))
-            nfill[] += 1
-            entries[nfill[]] = (i, j, lv)
-        end
+        z = _pos_deficit(log(T(v)), la[i], la[j])
+        zi, zj = _split_deficit(z, s[i], s[j])
+        r[i] = ifelse(zi > r[i], zi, r[i])
+        r[j] = ifelse(zj > r[j], zj, r[j])
     end
-    deficit((i, j, lv)) = lv - la[i] - la[j]
-    function apply!((i, j, lv), z)
-        h = z / 2
-        la[i] += h; a[i] = exp(la[i])
-        i == j || (la[j] += h; a[j] = exp(la[j]))
-    end
-    bucket_boost!(deficit, apply!, entries, T, zmax[])
+    _apply_boost!(a, la, r)
     return a
 end
 
-# Symmetric boost over a flattened support. As in the matrix method, only
-# entries already violated at the start are stored; the count pass runs
-# branchlessly (about half a fresh start's entries violate, so a data-dependent
-# branch would mispredict constantly), and `_flat_violated` selects them the
-# same way. A zero scale on a supported row makes some deficit +Inf, which the
-# `isfinite` check below turns into the matrix method's error.
+# Symmetric boost over a flattened support; see the matrix method. The loops
+# are branch-free because about half of a fresh start's entries violate, so a
+# data-dependent branch would mispredict constantly. A diagonal entry has
+# `is[k] == js[k]`, so its two shares are each half its deficit and the two
+# `max` updates coincide.
 function boost_feasible!(a::AbstractVector{T}, sup::FlatSupport) where T
     is, js, lv = sup.is, sup.js, sup.lv
-    # `la` caches log.(a) and is updated alongside `a`; see the matrix method.
     la = map(log, a)
-    nviol = 0
-    zmax = zero(T)
+    s = fill(zero(T), eachindex(a))
     for k in _eachindex(is, js, lv)
-        z = lv[k] - la[is[k]] - la[js[k]]
-        nviol += ifelse(z > zero(T), 1, 0)
-        zmax = ifelse(z > zmax, z, zmax)
+        i, j = is[k], js[k]
+        z = _pos_deficit(lv[k], la[i], la[j])
+        s[i] += z
+        s[j] += ifelse(i == j, zero(T), z)
     end
-    isfinite(zmax) ||
+    all(isfinite, s) ||
         throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row"))
-    entries = _flat_violated(sup, la, la, nviol)
-    deficit((i, j, lvk)) = lvk - la[i] - la[j]
-    function apply!((i, j, lvk), z)
-        h = z / 2
-        la[i] += h; a[i] = exp(la[i])
-        i == j || (la[j] += h; a[j] = exp(la[j]))
+    map!(sqrt, s, s)
+    r = fill(zero(T), eachindex(a))
+    for k in _eachindex(is, js, lv)
+        i, j = is[k], js[k]
+        z = _pos_deficit(lv[k], la[i], la[j])
+        zi, zj = _split_deficit(z, s[i], s[j])
+        r[i] = ifelse(zi > r[i], zi, r[i])
+        r[j] = ifelse(zj > r[j], zj, r[j])
     end
-    bucket_boost!(deficit, apply!, entries, T, zmax)
+    _apply_boost!(a, la, r)
     return a
 end
 
 # Asymmetric feasibility boost: scale `a`, `b` in place so that
 # `a[i]*b[j] >= |A[i,j]|`, up to the round-off of the log-domain updates,
-# for every entry visited by `foreach_support`. The
-# diagonal is treated as an ordinary entry. Requires a start with strictly
-# positive scale on every supported row of `a` and column of `b`.
+# for every entry visited by `foreach_support`. The diagonal is treated as an
+# ordinary entry. Requires a start with strictly positive scale on every
+# supported row of `a` and column of `b`. The update is the two-sided form of
+# the symmetric method: each deficit is split between its row and its column in
+# proportion to sqrt of their accumulated deficits.
 function boost_feasible!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
     T = float(promote_type(eltype(a), eltype(b)))
-    IdxA, IdxB = eltype(eachindex(a)), eltype(eachindex(b))
-    # `la`/`lb` cache log.(a)/log.(b) and are updated alongside `a`/`b`; see
-    # the symmetric method.
     la, lb = map(log, a), map(log, b)
-    # `entries` holds only entries already violated at this starting point;
-    # see the symmetric method for why this is safe and why the fail-fast
-    # check always fires on a zero-scale endpoint. Two passes (count then
-    # fill) allocate `entries` once at its exact size, instead of the
-    # repeated grow-and-copy of building it with `push!`.
-    nviol = Ref(0)
-    zmax = Ref(zero(T))
+    sa = fill(zero(T), eachindex(a))
+    sb = fill(zero(T), eachindex(b))
     foreach_support(A) do i, j, v
-        z = log(T(v)) - la[i] - lb[j]
-        if z > zero(T)
-            nviol[] += 1
-            zmax[] = max(zmax[], z)
-        end
+        z = _pos_deficit(log(T(v)), la[i], lb[j])
+        sa[i] += z
+        sb[j] += z
     end
-    entries = Vector{Tuple{IdxA,IdxB,T}}(undef, nviol[])
-    nfill = Ref(0)
+    (all(isfinite, sa) && all(isfinite, sb)) ||
+        throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row/column"))
+    map!(sqrt, sa, sa)
+    map!(sqrt, sb, sb)
+    ra = fill(zero(T), eachindex(a))
+    rb = fill(zero(T), eachindex(b))
     foreach_support(A) do i, j, v
-        lv = log(T(v))
-        z = lv - la[i] - lb[j]
-        if z > zero(T)
-            (iszero(a[i]) || iszero(b[j])) &&
-                throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row/column"))
-            nfill[] += 1
-            entries[nfill[]] = (i, j, lv)
-        end
+        z = _pos_deficit(log(T(v)), la[i], lb[j])
+        zi, zj = _split_deficit(z, sa[i], sb[j])
+        ra[i] = ifelse(zi > ra[i], zi, ra[i])
+        rb[j] = ifelse(zj > rb[j], zj, rb[j])
     end
-    deficit((i, j, lv)) = lv - la[i] - lb[j]
-    function apply!((i, j, lv), z)
-        h = z / 2
-        la[i] += h; a[i] = exp(la[i])
-        lb[j] += h; b[j] = exp(lb[j])
-    end
-    bucket_boost!(deficit, apply!, entries, T, zmax[])
+    _apply_boost!(a, la, ra)
+    _apply_boost!(b, lb, rb)
     return a, b
 end
 
-# Asymmetric boost over a flattened support; see the symmetric flat method.
+# Asymmetric boost over a flattened support; see the matrix method.
 function boost_feasible!(a::AbstractVector, b::AbstractVector, sup::FlatSupport)
     T = float(promote_type(eltype(a), eltype(b)))
     is, js, lv = sup.is, sup.js, sup.lv
-    # `la`/`lb` cache log.(a)/log.(b) and are updated alongside `a`/`b`; see
-    # the matrix methods.
     la, lb = map(log, a), map(log, b)
-    nviol = 0
-    zmax = zero(T)
+    sa = fill(zero(T), eachindex(a))
+    sb = fill(zero(T), eachindex(b))
     for k in _eachindex(is, js, lv)
-        z = lv[k] - la[is[k]] - lb[js[k]]
-        nviol += ifelse(z > zero(T), 1, 0)
-        zmax = ifelse(z > zmax, z, zmax)
+        z = _pos_deficit(lv[k], la[is[k]], lb[js[k]])
+        sa[is[k]] += z
+        sb[js[k]] += z
     end
-    isfinite(zmax) ||
+    (all(isfinite, sa) && all(isfinite, sb)) ||
         throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row/column"))
-    entries = _flat_violated(sup, la, lb, nviol)
-    deficit((i, j, lvk)) = lvk - la[i] - lb[j]
-    function apply!((i, j, lvk), z)
-        h = z / 2
-        la[i] += h; a[i] = exp(la[i])
-        lb[j] += h; b[j] = exp(lb[j])
+    map!(sqrt, sa, sa)
+    map!(sqrt, sb, sb)
+    ra = fill(zero(T), eachindex(a))
+    rb = fill(zero(T), eachindex(b))
+    for k in _eachindex(is, js, lv)
+        i, j = is[k], js[k]
+        z = _pos_deficit(lv[k], la[i], lb[j])
+        zi, zj = _split_deficit(z, sa[i], sb[j])
+        ra[i] = ifelse(zi > ra[i], zi, ra[i])
+        rb[j] = ifelse(zj > rb[j], zj, rb[j])
     end
-    bucket_boost!(deficit, apply!, entries, T, zmax)
+    _apply_boost!(a, la, ra)
+    _apply_boost!(b, lb, rb)
     return a, b
+end
+
+# The shortfall of one entry, clamped at zero. A NaN (an unstored magnitude of
+# zero on a zero scale) fails the comparison and so contributes nothing.
+function _pos_deficit(lv, li, lj)
+    z = lv - li - lj
+    return ifelse(z > zero(z), z, zero(z))
+end
+
+# Divide a nonnegative deficit between its two endpoints, weighted by `wi` and
+# `wj`. The weights are positive whenever `z` is, so the guard is needed only
+# to keep `0/0` out of a zero deficit's share.
+function _split_deficit(z, wi, wj)
+    f = ifelse(z > zero(z), wi / (wi + wj), zero(z))
+    zi = f * z
+    return zi, z - zi
+end
+
+# Raise the log-scales by their accumulated shares. Scales with no share keep
+# their exact value rather than being rebuilt from their log.
+function _apply_boost!(a::AbstractVector, la::AbstractVector, r::AbstractVector)
+    for i in eachindex(a, la, r)
+        ri = r[i]
+        ri > zero(ri) || continue
+        la[i] += ri
+        a[i] = exp(la[i])
+    end
+    return a
 end
 
 # Sequential nearest-neighbor feasibility propagation by diagonal offset.
