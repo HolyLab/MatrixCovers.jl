@@ -90,20 +90,25 @@ function _symcover!(a::AbstractVector, A::AbstractMatrix; maxiter::Int=3)
 end
 
 """
-    a, b = cover(ϕ, A; maxiter=3, cgiter=4)
-    a, b = cover(A; maxiter=3, cgiter=4)
+    a, b = cover(ϕ, A; maxiter=3, cgiter=4, start=:covariant)
+    a, b = cover(A; maxiter=3, cgiter=4, start=:covariant)
 
-Given a matrix `A`, return vectors `a` and `b` such that
-`a[i] * b[j] >= abs(A[i, j])` for all `i`, `j`. The heuristic uses up to
-`cgiter` conjugate-gradient iterations to refine its starting point, then
-ensures coverage and applies `maxiter` tightening iterations.
-`cgiter=0` disables refinement.
+Given a matrix `A`, return vectors `a` and `b` such that `a[i] * b[j] >=
+abs(A[i, j])` for all `i`, `j`. The heuristic uses up to `cgiter`
+conjugate-gradient iterations to refine its starting point, then ensures
+coverage and applies `maxiter` tightening iterations. `cgiter=0` disables
+refinement.
+
+`start` selects the point the refinement begins from: `:covariant` ensures the
+result is scale-covariant (typically at the cost of permutation-equivariance),
+whereas `:geomean` prioritizes permutation-equivariance (typically at the cost
+of scale-covariance).
 
 The factors use the per-component balance convention described by
 [`cover_min`](@ref).
 
-`ϕ` is accepted for API compatibility but is currently ignored.
-For a cover that provably minimizes a given `ϕ`, use [`cover_min`](@ref).
+`ϕ` is accepted for API compatibility but is currently ignored. For a cover that
+provably minimizes a given `ϕ`, use [`cover_min`](@ref).
 
 See also: [`cover!`](@ref), [`cover_min`](@ref), [`symcover`](@ref).
 
@@ -123,14 +128,17 @@ julia> a * b'
 
 # Extended help
 
-The cover products are scale-covariant on the support: for positive diagonal
-`D1`, `D2`, covering `D1 * A * D2` multiplies each supported product by
-`D1[i, i] * D2[j, j]`. This holds for every `cgiter`.
+With `start=:covariant` the cover products are scale-covariant on the support:
+for positive diagonal `D1`, `D2`, covering `D1 * A * D2` multiplies each
+supported product by `D1[i, i] * D2[j, j]`. This holds for every `cgiter`.
 
-Initialization and refinement approximate the least-squares fit of
-`log(a[i]) + log(b[j])` to `log(abs(A[i, j]))` over nonzero entries. The start
+Initialization and refinement approximate the least-squares fit of `log(a[i]) +
+log(b[j])` to `log(abs(A[i, j]))` over nonzero entries. The `:covariant` start
 is exact on trees and complete bipartite components. Each refinement iteration
 makes one pass over the support; complete support needs no refinement.
+
+The two starts coincide on complete support, where the geometric mean already
+solves the least-squares problem described below.
 """
 cover(ϕ::AbstractCoverPenalty, A::AbstractMatrix; kwargs...) = cover(A; kwargs...)
 
@@ -152,8 +160,8 @@ function cover(A::Transpose; kwargs...)
 end
 
 """
-    a, b = cover!(ϕ, a, b, A; maxiter=3)
-    a, b = cover!(a, b, A; maxiter=3)
+    a, b = cover!(ϕ, a, b, A; maxiter=3, cgiter=4, start=:covariant)
+    a, b = cover!(a, b, A; maxiter=3, cgiter=4, start=:covariant)
 
 Mutating counterpart of [`cover`](@ref): writes the hard cover into `a` and
 `b` and returns them, rather than allocating new vectors. `eachindex(a)` must
@@ -172,15 +180,21 @@ function cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs.
     return _cover!(a, b, A; kwargs...)
 end
 
-function _cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; maxiter::Int=3, cgiter::Int=4)
+function _cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; maxiter::Int=3,
+                 cgiter::Int=4, start::Symbol=:covariant)
     cgiter >= 0 || throw(ArgumentError("cgiter must be nonnegative, got $cgiter"))
+    _check_cover_start(start)
     T = float(promote_type(eltype(a), eltype(b)))
     if _use_dense_grid(A, T)
-        _cover_dense!(a, b, A, T, maxiter, cgiter)
+        _cover_dense!(a, b, A, T, maxiter, cgiter, start)
     else
         sup = flat_support(A, T)
-        covariant_start!(a, b, sup)
-        # On complete support the start already solves the normal equations.
+        if start === :covariant
+            covariant_start!(a, b, sup)
+        else
+            unconstrained_min!(AbsLog{2}(), a, b, sup)
+        end
+        # On complete support both starts already solve the normal equations.
         _complete_support(sup, length(a), length(b)) || cg_refine_start!(a, b, sup, cgiter)
         boost_feasible!(a, b, sup)
         tighten_cover!(a, b, sup; maxiter)
@@ -204,6 +218,14 @@ end
 # ============================================================
 # Internal helpers
 # ============================================================
+
+# The starting points `cover!` accepts.
+const COVER_STARTS = (:covariant, :geomean)
+
+_check_cover_start(start::Symbol) =
+    start in COVER_STARTS ? nothing :
+        throw(ArgumentError("unknown start :$start; expected one of :covariant, :geomean"))
+
 # Matrix support flattened in traversal order as row, column, and `log|A_ij|`
 # arrays.
 struct FlatSupport{Ti<:Integer,Tj<:Integer,T}

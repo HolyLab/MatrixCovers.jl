@@ -426,3 +426,87 @@ end
     @test collect(bo) ≈ b rtol = 1e-12
     @test iscover(ao, bo, Ao; rtol=8eps())
 end
+
+@testset "cover: geometric-mean start" begin
+    # Centered log-product deviation under row and column scaling; see the
+    # covariant-start testset.
+    function covdev(coverfn, A, dr, dc)
+        a, b = coverfn(A)
+        aD, bD = coverfn(dr .* A .* dc')
+        d = log.((aD .* bD') ./ ((dr .* a) .* (dc .* b)'))[A .!= 0]
+        return maximum(abs, d .- sum(d) / length(d))
+    end
+
+    rng = StableRNG(31415)
+    n = 12
+    trid = Matrix(Tridiagonal(exp.(randn(rng, n - 1)), exp.(randn(rng, n)), exp.(randn(rng, n - 1))))
+
+    # The default is the covariant start.
+    for A in (exp.(randn(rng, 9, 7)), trid, sparse(trid))
+        @test cover(A) == cover(A; start=:covariant)
+    end
+
+    # The geometric-mean start yields covers obeying the package's conventions.
+    for A in (exp.(2 .* randn(rng, 6, 9)), trid, sparse(trid),
+              Matrix(sprandn(rng, 20, 14, 0.3)), sprandn(rng, 20, 14, 0.3))
+        a, b = cover(A; start=:geomean)
+        @test iscover(a, b, A; rtol=8eps())
+        @test isbalanced(a, b, A)
+    end
+
+    # On complete support the two starts coincide, on both the flattened-support
+    # and dense-grid paths.
+    m = 2 * MatrixCovers.DENSE_GRID_MIN
+    for A in (exp.(2 .* randn(rng, 6, 9)), exp.(2 .* randn(rng, m, m)),
+              sparse(exp.(2 .* randn(rng, m, m))))
+        ac, bc = cover(A; start=:covariant)
+        ag, bg = cover(A; start=:geomean)
+        @test ac .* bc' ≈ ag .* bg' rtol = 1e-12
+    end
+
+    # On an irregular support the geometric mean is not scale-covariant without
+    # refinement, while the covariant start is.
+    dr, dc = exp2.(rand(rng, -10:10, n)), exp2.(rand(rng, -10:10, n))
+    @test covdev(A -> cover(A; cgiter=0, start=:covariant), trid, dr, dc) < 1e-12
+    @test covdev(A -> cover(A; cgiter=0, start=:geomean), trid, dr, dc) > 0.1
+
+    # The dense-grid and flattened-support paths agree on a grid with zeros.
+    C = exp.(2 .* randn(rng, m, m)) .* (rand(rng, m, m) .< 0.9)
+    C[7, :] .= 0.0                        # an unsupported row
+    C[:, 11] .= 0.0                       # an unsupported column
+    for k in (0, 4)
+        ad, bd = cover(C; cgiter=k, start=:geomean)
+        as, bs = cover(sparse(C); cgiter=k, start=:geomean)
+        @test ad .* bd' ≈ as .* bs' rtol = 1e-12
+    end
+
+    # Offset axes preserve the scales.
+    Co = OffsetArray(C, -2:m-3, 0:m-1)
+    a, b = cover(C; start=:geomean)
+    ao, bo = cover(Co; start=:geomean)
+    @test axes(ao, 1) == axes(Co, 1) && axes(bo, 1) == axes(Co, 2)
+    @test collect(ao) ≈ a rtol = 1e-12
+    @test collect(bo) ≈ b rtol = 1e-12
+    @test iscover(ao, bo, Co; rtol=8eps())
+
+    # The mutating form and the Adjoint/Transpose wrappers take the keyword.
+    B = exp.(randn(rng, 5, 8)) .* (rand(rng, 5, 8) .< 0.8)
+    ab, bb = cover(B; start=:geomean)
+    abuf, bbuf = similar(ab), similar(bb)
+    @test cover!(abuf, bbuf, B; start=:geomean) === (abuf, bbuf)
+    @test abuf == ab && bbuf == bb
+    for Bw in (B', transpose(B))
+        aw, bw = cover(Bw; start=:geomean)
+        @test aw ≈ bb && bw ≈ ab
+        awbuf, bwbuf = similar(aw), similar(bw)
+        cover!(awbuf, bwbuf, Bw; start=:geomean)
+        @test awbuf == aw && bwbuf == bw
+    end
+
+    # `initialize_cover` forwards the keyword to the hard cover.
+    @test initialize_cover(B; strategy=:hardcover, feasible=:none, start=:geomean) == (ab, bb)
+
+    # Any other start is rejected before work begins.
+    @test_throws "unknown start :nope; expected one of :covariant, :geomean" cover(B; start=:nope)
+    @test_throws "unknown start :nope; expected one of :covariant, :geomean" cover!(abuf, bbuf, B; start=:nope)
+end

@@ -162,9 +162,9 @@ This holds for any number of conjugate-gradient refinement iterations
 ```jldoctest covariance
 julia> e = [2.0, 0.3, 5.0]; E = Diagonal(e);
 
-julia> function covariance_spread(cgiter)
-           r1, c1 = cover(A; cgiter)
-           r2, c2 = cover(D * A * E; cgiter)
+julia> function covariance_spread(cgiter; start=:covariant)
+           r1, c1 = cover(A; cgiter, start)
+           r2, c2 = cover(D * A * E; cgiter, start)
            Q1 = (d .* r1) * (e .* c1)'
            Q2 = r2 * c2'
            return round.(extrema(Q2 ./ Q1); digits=3)
@@ -174,6 +174,17 @@ julia> covariance_spread(0)
 (1.0, 1.0)
 
 julia> covariance_spread(4)
+(1.0, 1.0)
+```
+
+The `start=:geomean` alternative begins from the row and column geometric means.
+Unless the support is rank one, that point depends on the units `A` is written in, so the cover becomes scale-covariant only as the refinement converges:
+
+```jldoctest covariance
+julia> covariance_spread(0; start=:geomean)
+(0.872, 1.205)
+
+julia> covariance_spread(4; start=:geomean)
 (1.0, 1.0)
 ```
 
