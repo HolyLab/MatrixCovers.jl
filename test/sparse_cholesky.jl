@@ -1,5 +1,5 @@
 using MatrixCovers: SparseCholesky, analyze!, factorize!, solve!, solve_ptl!, solve_up!,
-                    factor_entries, CHOLMOD_A, _eachindex
+                    factor_entries, factor_flops, CHOLMOD_A, _eachindex
 
 @testset "SparseCholesky matches SparseArrays" begin
     rng = MersenneTwister(0)
@@ -39,6 +39,10 @@ using MatrixCovers: SparseCholesky, analyze!, factorize!, solve!, solve_ptl!, so
     Sd = sparse(Diagonal(1.0:8.0))
     analyze!(Fs, Sd)
     @test factor_entries(Fs) == 8
+    # The flop prediction is a nonnegative `Float64`, available after `analyze!`.
+    @test factor_flops(Fs) isa Float64
+    @test factor_flops(Fs) >= 0
+    @test_throws "`analyze!` must run before `factor_flops`" factor_flops(SparseCholesky())
     # Failures are reported through exceptions.
     Sb = copy(Su)
     nonzeros(Sb)[1] = -1e6
