@@ -37,15 +37,17 @@ below), and `linsolve`:
 - `:auto` chooses `:woodbury` when supported, `:lsqr` when the stored support
   fills at most a quarter of the grid, and `:dense` otherwise.
 
-The solver increases `κ` when the KKT residual contracts slowly. Statistics
+The solver increases `κ` when the KKT residual contracts slowly, and when a
+positive multiplier remains on an entry with slack. Statistics
 include the penalty weights (`κs`) and KKT residuals (`kkt`).
 
 For `Float64`, `:lsqr` uses a Cholesky preconditioner when its predicted storage
 does not exceed `fillbudget` bytes (default `2^30`). Otherwise it uses a diagonal
 preconditioner. The returned statistics identify the choice as `precond`.
 
-If the solver warns that the result may not minimize the objective, increase
-`maxouter` or, rarely, `κ`.
+If the solver warns that the result may not minimize the objective, follow the
+advice in the warning: increase `maxouter` when the update limit was reached,
+and `κ` when the residual stopped contracting before the limit.
 
 The native solver computes in `Float64` for narrower input types, then converts
 the result to the required element type.
@@ -594,25 +596,33 @@ end
 _multiplier_storage(::Type{T}, supp::EdgeList) where {T} = zeros(T, length(supp.edges))
 _multiplier_storage(::Type{T}, supp::Grid) where {T} = zeros(T, size(supp.C))
 
-# Update multipliers and return `max(-z, min(z, λ))` over the support.
-function _update_multipliers!(λ, x, κ, supp::EdgeList{T}, symmetric::Bool) where {T}
+# Update multipliers and return `(v, κdrain)`, where `v = max(-z, min(z, λ))`
+# over the support. An update lowers the multiplier of an entry with slack
+# `z > 0` by `2(κ-1)z`, so `κdrain = max(1 + λ/(2z))` over entries with
+# `z > zmin` is the penalty at which one update zeroes every such multiplier.
+function _update_multipliers!(λ, x, κ, zmin, supp::EdgeList{T}, symmetric::Bool) where {T}
     edges, cvals = supp.edges, supp.cvals
     dλ = 2 * (T(κ) - oneunit(T))
     v = zero(T)
+    κdrain = oneunit(T)
     for (e, (p, q)) in enumerate(edges)
         z = x[p] + x[q] - cvals[e]
         l = max(zero(T), λ[e] - dλ * z)
         λ[e] = l
         v = max(v, -z, min(z, l))
+        κdrain = max(κdrain, _drain_penalty(z, l, zmin))
     end
-    return v
+    return v, κdrain
 end
 
-function _update_multipliers!(λ, x, κ, supp::Grid{T}, symmetric::Bool) where {T}
+_drain_penalty(z::T, l::T, zmin::T) where {T} = ifelse(z > zmin, oneunit(T) + l / (2z), oneunit(T))
+
+function _update_multipliers!(λ, x, κ, zmin, supp::Grid{T}, symmetric::Bool) where {T}
     C = supp.C
     m, n = size(C)
     dλ = 2 * (T(κ) - oneunit(T))
     v = zero(T)
+    κdrain = oneunit(T)
     if symmetric
         for j in 1:n
             xj = x[j]
@@ -620,6 +630,7 @@ function _update_multipliers!(λ, x, κ, supp::Grid{T}, symmetric::Bool) where {
             lj = view(λ, 1:j-1, j)
             xi = view(x, 1:j-1)
             vj = typemin(T)
+            kj = oneunit(T)
             @simd for i in _eachindex(cj, xi, lj)
                 c = cj[i]
                 fin = isfinite(c)
@@ -627,6 +638,7 @@ function _update_multipliers!(λ, x, κ, supp::Grid{T}, symmetric::Bool) where {
                 l = ifelse(fin, max(zero(T), lj[i] - dλ * z), zero(T))
                 lj[i] = l
                 vj = max(vj, ifelse(fin, max(-z, min(z, l)), typemin(T)))
+                kj = max(kj, _drain_penalty(z, l, zmin))
             end
             c = C[j, j]
             fin = isfinite(c)
@@ -634,6 +646,7 @@ function _update_multipliers!(λ, x, κ, supp::Grid{T}, symmetric::Bool) where {
             l = ifelse(fin, max(zero(T), λ[j, j] - dλ * z), zero(T))
             λ[j, j] = l
             v = max(v, vj, ifelse(fin, max(-z, min(z, l)), typemin(T)), zero(T))
+            κdrain = max(κdrain, kj, _drain_penalty(z, l, zmin))
         end
     else
         xr = view(x, 1:m)
@@ -642,6 +655,7 @@ function _update_multipliers!(λ, x, κ, supp::Grid{T}, symmetric::Bool) where {
             cj = view(C, :, j)
             lj = view(λ, :, j)
             vj = typemin(T)
+            kj = oneunit(T)
             @simd for i in _eachindex(cj, xr, lj)
                 c = cj[i]
                 fin = isfinite(c)
@@ -649,11 +663,13 @@ function _update_multipliers!(λ, x, κ, supp::Grid{T}, symmetric::Bool) where {
                 l = ifelse(fin, max(zero(T), lj[i] - dλ * z), zero(T))
                 lj[i] = l
                 vj = max(vj, ifelse(fin, max(-z, min(z, l)), typemin(T)))
+                kj = max(kj, _drain_penalty(z, l, zmin))
             end
             v = max(v, vj, zero(T))
+            κdrain = max(κdrain, kj)
         end
     end
-    return v
+    return v, κdrain
 end
 
 # Violated-set storage. `Matrix{Bool}` permits vectorized column views.
@@ -865,7 +881,9 @@ function _warn_unconverged(fname::Symbol, stats, maxouter::Int)
     stats.converged && return nothing
     v = isempty(stats.kkt) ? oftype(stats.vwarn, NaN) : stats.kkt[end]
     v > stats.vwarn || return nothing
-    @warn "$fname: the multiplier iteration ended after $(stats.nouter) of maxouter=$maxouter updates with KKT residual $v (tolerance $(stats.vtol)); the result covers `A` but may not minimize the objective. Increase `maxouter` or `κ`."
+    advice = stats.nouter < maxouter ? "The residual stopped contracting before the update limit, so a larger `maxouter` will not help; try a larger `κ`." :
+                                       "Increase `maxouter` or `κ`."
+    @warn "$fname: the multiplier iteration ended after $(stats.nouter) of maxouter=$maxouter updates with KKT residual $v (tolerance $(stats.vtol)); the result covers `A` but may not minimize the objective. $advice"
     return nothing
 end
 
@@ -1298,7 +1316,12 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     # residuals are logarithmic.
     vtol = 1000 * eps(T)
     vwarn = max(sqrt(eps(T)), T(1e-6))
-    κcap = T(use_lsqr ? 1e5 : 1e8)
+    # Precision bounds the usable penalty: the cap is `1e5` (LSQR) or `1e8`
+    # (exact solves) in `Float64` and grows as `1/sqrt(eps(T))`.
+    κcap = T(use_lsqr ? 1e5 : 1e8) * sqrt(T(eps(Float64)) / eps(T))
+    # Slack below the inner solver's resolution is indistinguishable from an
+    # active entry.
+    zdrain = sqrt(eps(T))
     κcur = T(κ)
     exits = Symbol[]
     drops = T[]
@@ -1340,22 +1363,28 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
         push!(exits, exit)
         push!(drops, drop)
         push!(κtrace, κcur)
-        v = _update_multipliers!(λ, x, κcur, supp, symmetric)
+        v, κdrain = _update_multipliers!(λ, x, κcur, zdrain, supp, symmetric)
         push!(viols, v)
         if v <= vtol
             converged = true
             break
         end
+        κnext = v > vprev / 10 ? 10 * κcur : κcur
         if 10 * v > 9 * vprev
-            # Stop after three passes at the inner solver's accuracy floor.
-            nstall += 1
-            nstall >= 3 && break
+            if κdrain > κcur && κcur < κcap
+                # A positive multiplier on an entry with slack holds the
+                # residual fixed until it reaches zero: finish it in one update.
+                κnext = max(κnext, κdrain)
+                nstall = 0
+            else
+                # Stop after three passes at the inner solver's accuracy floor.
+                nstall += 1
+                nstall >= 3 && break
+            end
         else
             nstall = 0
         end
-        if v > vprev / 10 && κcur < κcap
-            κcur = min(10 * κcur, κcap)
-        end
+        κcur = min(κnext, κcap)
         vprev = v
     end
     # Hard covers receive a final uniform feasibility shift.

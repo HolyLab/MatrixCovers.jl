@@ -6,6 +6,7 @@ using SparseArrays
 using Unitful       # triggers MatrixCoversUnitfulExt extension
 using LinearAlgebra
 using OffsetArrays
+using DoubleFloats: Double64
 using Statistics: median
 using Random: MersenneTwister, randperm
 using StableRNGs: StableRNG
