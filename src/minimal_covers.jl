@@ -26,8 +26,8 @@ method selects the one with the smallest `AbsLog{2}` objective.
 
 The native solver accepts `κ` (initial augmented-Lagrangian penalty, default
 `1e2`), `maxouter` (multiplier updates, default `32`; `0` returns the
-unconstrained fit), `maxiter` (Newton steps per update), `fillbudget` (see
-below), and `linsolve`:
+unconstrained fit), `maxiter` (Newton steps per update), `fillbudget` and
+`flopbudget` (see below), and `linsolve`:
 
 - `:dense` factorizes dense normal equations at O(n³) per Newton step.
 - `:woodbury` handles nearly dense `Float64` support as a sparse correction. It
@@ -41,8 +41,13 @@ The solver increases `κ` when the KKT residual contracts slowly, and when a
 positive multiplier remains on an entry with slack.
 
 For `Float64`, `:lsqr` uses a Cholesky preconditioner when its predicted storage
-does not exceed `fillbudget` bytes (default `2^30`). Otherwise it uses a diagonal
-preconditioner.
+does not exceed `fillbudget` bytes (default `2^30`) and its predicted numeric-
+factorization flop count does not exceed `flopbudget` (default `8e3`) times the
+number of stored entries in `A`'s support, where a symmetric off-diagonal entry
+counts twice, as `nnz` counts it for a fully stored matrix. Otherwise it uses a
+diagonal preconditioner. `fillbudget=Inf` and `flopbudget=Inf` together always
+select the Cholesky preconditioner; `fillbudget=0` or `flopbudget=0` always
+select the diagonal one.
 
 If the solver warns that the result may not minimize the objective, follow the
 advice in the warning: increase `maxouter` when the update limit was reached,
@@ -78,9 +83,9 @@ method selects the one with the smallest `AbsLog{2}` objective.
 
 # Extended help
 
-The native solver accepts the same `κ`, `maxouter`, `maxiter`, `fillbudget`, and
-`linsolve` keywords as [`symcover_min`](@ref). For `:woodbury`, an `m × n`
-matrix may omit at most
+The native solver accepts the same `κ`, `maxouter`, `maxiter`, `fillbudget`,
+`flopbudget`, and `linsolve` keywords as [`symcover_min`](@ref). For
+`:woodbury`, an `m × n` matrix may omit at most
 `min(m,n) ÷ 4` entries per row or column and `4 * max(m,n)` entries in total.
 `:dense` costs O((m+n)³) per Newton step; sparse matrices default to `:lsqr`.
 
@@ -957,10 +962,17 @@ _precond_ridge(dmax::T) where {T} = (dmax > 0 ? dmax : oneunit(T)) * sqrt(eps(T)
 # consumption but increasing the number of iterations for convergence.
 const LSQR_FILL_BUDGET = 1 << 30
 
-# Return the symbolic factorization of `M` and its predicted number of values.
+# Largest predicted numeric-factorization flop count per stored entry of the
+# support for which the LSQR Cholesky preconditioner is used. Above it,
+# repeated refactorization of the preconditioner costs more than the extra
+# LSQR iterations of diagonal preconditioning.
+const LSQR_FLOP_BUDGET = 8.0e3
+
+# Return the symbolic factorization of `M`, its predicted number of values,
+# and its predicted numeric-factorization flop count.
 function _precond_analysis(M::SparseMatrixCSC{Float64,Int})
     F = analyze!(SparseCholesky(), M)
-    return F, factor_entries(F)
+    return F, factor_entries(F), factor_flops(F)
 end
 
 # Storage for the dense normal-equation factorization of the `:dense` path.
@@ -972,11 +984,13 @@ _dense_factor_type(::Type{T}) where {T} = LinearAlgebra.LU{T,Matrix{T},Vector{In
 # log scales and a statistics tuple: inner solve and iteration counts, the
 # per-update exits, drops, KKT residuals (`kkt`) and penalty weights (`κs`), the
 # convergence flag with its tolerances, the `linsolve` and `precond` choices, the
-# Cholesky preconditioner's predicted entry count `fill_entries` (`0` without a
-# factor), and its number of numeric factorizations `nrefactor`.
+# Cholesky preconditioner's predicted entry count `fill_entries` and flop count
+# `factor_flops` (`0` and `0.0` without a factor), and its number of numeric
+# factorizations `nrefactor`.
 function _abslog2_auglag(sys::SupportSystem{T}, x0;
                                κ::Real, maxouter::Int, maxiter::Int, linsolve::Symbol, boost::Bool,
-                               fillbudget::Real=LSQR_FILL_BUDGET) where {T}
+                               fillbudget::Real=LSQR_FILL_BUDGET,
+                               flopbudget::Real=LSQR_FLOP_BUDGET) where {T}
     κ > 1 || throw(ArgumentError("κ must exceed 1; got $κ"))
     maxouter >= 0 || throw(ArgumentError("maxouter must be nonnegative; got $maxouter"))
     N = sys.N
@@ -1044,10 +1058,21 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     pg = zeros(T, use_precond ? N : 0)   # `Rᵀ√W y` before the preconditioner is applied
     mdiag = zeros(T, use_precond ? N : 0)   # weighted degrees, the preconditioner's diagonal
     # The normal-matrix pattern is constant, so one symbolic analysis serves all
-    # stages. Use its diagonal if the predicted Cholesky factor exceeds the budget.
+    # stages. Use its diagonal if the predicted Cholesky factor exceeds the fill
+    # or flop budget.
     Msp = _precond_pattern(T, supp, v0, use_precond ? N : 0, mult)
-    MF, fill_entries = use_precond ? _precond_analysis(Msp) : (nothing, 0)
-    use_factor = use_precond && sizeof(T) * fill_entries <= fillbudget
+    MF, fill_entries, flops = use_precond ? _precond_analysis(Msp) : (nothing, 0, 0.0)
+    # Number of stored entries of the user's support, counted as `nnz` counts
+    # the input matrix: a symmetric off-diagonal entry is stored in both
+    # triangles and so counts twice, and every other stored entry counts once.
+    nstored = 0
+    if use_precond
+        for (p, q) in supp.edges
+            nstored += mult(p, q)
+        end
+    end
+    use_factor = use_precond && sizeof(T) * fill_entries <= fillbudget &&
+                 (flopbudget == Inf || flops <= flopbudget * nstored)
     # Positions of the entries each factored solve overwrites: the diagonal, and
     # both copies of each off-diagonal support entry.
     dpos = use_factor ? [_nzindex(Msp, p, p) for p in 1:N] : Int[]
@@ -1406,7 +1431,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                converged, vtol, vwarn,
                linsolve=(use_lsqr ? :lsqr : use_woodbury ? :woodbury : :dense),
                precond=(!use_precond ? :none : use_factor ? :factor : :diagonal),
-               nrefactor=nrefactor[], fill_entries)
+               nrefactor=nrefactor[], fill_entries, factor_flops=flops)
 end
 
 # Worker for `symcover_min(::AbsLog{2})`, returning `(a, stats)`. A supplied
@@ -1414,6 +1439,7 @@ end
 function _symcover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
                                maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
                                boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET,
+                               flopbudget::Real=LSQR_FLOP_BUDGET,
                                fname=:symcover_min)
     linsolve in (:auto, :dense, :lsqr, :woodbury) ||
         throw(ArgumentError("linsolve must be :auto, :dense, :lsqr, or :woodbury; got :$linsolve"))
@@ -1426,7 +1452,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter:
     # Solver tolerances require at least Float64 resolution.
     if eps(T) > eps(Float64)
         a64, stats = _symcover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
-                                           κ, maxouter, maxiter, linsolve, start, boost, fillbudget, fname)
+                                           κ, maxouter, maxiter, linsolve, start, boost, fillbudget, flopbudget, fname)
         # Narrowing rounds to nearest and so can round a product below its entry.
         a = T.(a64)
         boost && _certify_cover!(a, A, fname)
@@ -1513,7 +1539,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter:
                            zeros(T, n))
     x0 = start === nothing ? nothing :
          T[hassupp[ip] ? log(T(start[i])) : zero(T) for (ip, i) in enumerate(ax)]
-    α, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve, boost, fillbudget)
+    α, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve, boost, fillbudget, flopbudget)
     _warn_unconverged(fname, stats, maxouter)
     # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     a = similar(Array{T}, ax)
@@ -1527,7 +1553,8 @@ end
 # Worker for `cover_min(::AbsLog{2})`, returning `(a, b, stats)`.
 function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
                             maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
-                            boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET)
+                            boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET,
+                            flopbudget::Real=LSQR_FLOP_BUDGET)
     linsolve in (:auto, :dense, :lsqr, :woodbury) ||
         throw(ArgumentError("linsolve must be :auto, :dense, :lsqr, or :woodbury; got :$linsolve"))
     axr = axes(A, 1)
@@ -1537,7 +1564,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     # Solver tolerances require at least Float64 resolution.
     if eps(T) > eps(Float64)
         a64, b64, stats = _cover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
-                                             κ, maxouter, maxiter, linsolve, start, boost, fillbudget)
+                                             κ, maxouter, maxiter, linsolve, start, boost, fillbudget, flopbudget)
         # Narrowing rounds to nearest and so can round a product below its entry.
         a, b = T.(a64), T.(b64)
         boost && _certify_cover!(a, b, A, :cover_min)
@@ -1653,7 +1680,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
         end
         s0
     end
-    x, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve, boost, fillbudget)
+    x, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve, boost, fillbudget, flopbudget)
     _warn_unconverged(:cover_min, stats, maxouter)
     # Apply the balance convention independently to each support component.
     rowcomp, colcomp, ncomp, _, _ = _support_components(A)

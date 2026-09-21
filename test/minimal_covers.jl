@@ -376,7 +376,9 @@ end
     # reports its predicted fill; the diagonal regime never factorizes.
     @test sf.nrefactor >= 1
     @test sf.fill_entries > 0
+    @test sf.factor_flops > 0
     @test sd.nrefactor == 0
+    @test sd.factor_flops > 0   # analyzed for the fill check even though the diagonal path is taken
     @test af ≈ ad rtol=1e-6
     @test iscover(af, af, A) && iscover(ad, ad, A)
     @test cover_objective(AbsLog{2}(), af, af, A) ≈ cover_objective(AbsLog{2}(), ad, ad, A) rtol=1e-8
@@ -396,6 +398,69 @@ end
     @test MatrixCovers._symcover_min_abslog2(A; linsolve=:dense)[2].precond === :none
     Abig = BigFloat.([4.0 1.0 0.5; 1.0 3.0 1.0; 0.5 1.0 2.5])
     @test MatrixCovers._symcover_min_abslog2(Abig; linsolve=:lsqr)[2].precond === :none
+end
+
+"""
+    lognormal_sparse_sym(rng, n, σ; p=5/n)
+
+Symmetric `n×n` `SparseMatrixCSC` with lognormal entry magnitudes (log-standard-deviation
+`σ`). The strict-lower-triangle pattern is drawn with density `p`, giving ~5 stored
+off-diagonal entries per row after symmetrization; the diagonal is filled separately and is
+always nonzero. Built from a lower-triangular factor `L` as `L + L' + D`, so the off-diagonal
+magnitudes are exactly abs-symmetric as required by `symcover`/`symcover_min`.
+"""
+function lognormal_sparse_sym(rng, n, σ; p=5/n)
+    L = tril(sprand(rng, n, n, p), -1)
+    nz = nonzeros(L)
+    for k in eachindex(nz)
+        nz[k] = exp(σ * randn(rng))
+    end
+    D = spdiagm(0 => exp.(σ .* randn(rng, n)))
+    return L + L' + D
+end
+
+# Symmetric `n×n` `SparseMatrixCSC` banded to half-bandwidth `hw`, with lognormal
+# entry magnitudes and an always-nonzero diagonal.
+function banded_sparse_sym(rng, n, hw, σ)
+    I = Int[]; J = Int[]; V = Float64[]
+    for j in 1:n, i in max(1, j - hw):j-1
+        push!(I, i); push!(J, j); push!(V, exp(σ * randn(rng)))
+    end
+    L = sparse(I, J, V, n, n)
+    D = spdiagm(0 => exp.(σ .* randn(rng, n)))
+    return L + L' + D
+end
+
+# The rule that chooses between the factor and diagonal preconditioners weighs
+# predicted refactorization cost, not just storage: a banded matrix has cheap
+# fill-in and stays on the factor path even at large `n`, while a matrix with
+# the same density but random sparsity fills in enough to cost more to
+# refactorize than the diagonal path's extra LSQR iterations.
+@testset "MMC :lsqr preconditioner cost rule" begin
+    rngb = StableRNG(31)
+    Aband = banded_sparse_sym(rngb, 2000, 3, 1.0)
+    _, sband = MatrixCovers._symcover_min_abslog2(Aband; linsolve=:lsqr)
+    @test sband.precond === :factor
+
+    rngr = StableRNG(37)
+    Arand = lognormal_sparse_sym(rngr, 4000, 1.0; p=6/4000)
+    ad, sd = MatrixCovers._symcover_min_abslog2(Arand; linsolve=:lsqr)
+    @test sd.precond === :diagonal
+    af, sf = MatrixCovers._symcover_min_abslog2(Arand; linsolve=:lsqr, flopbudget=Inf)
+    @test sf.precond === :factor
+    @test ad ≈ af rtol=1e-6
+    @test cover_objective(AbsLog{2}(), ad, ad, Arand) ≈
+          cover_objective(AbsLog{2}(), af, af, Arand) rtol=1e-6
+
+    # The in-solver ratio of predicted flops to stored support entries matches
+    # `factor_flops / nnz(A)` of the input for a symmetric matrix with both
+    # triangles stored: a flop budget just above that ratio selects the factor
+    # path, and just below it selects the diagonal path.
+    ratio = sf.factor_flops / nnz(Arand)
+    @test MatrixCovers._symcover_min_abslog2(Arand; linsolve=:lsqr, flopbudget=1.01 * ratio)[2].precond === :factor
+    @test MatrixCovers._symcover_min_abslog2(Arand; linsolve=:lsqr, flopbudget=0.99 * ratio)[2].precond === :diagonal
+
+    @test MatrixCovers._symcover_min_abslog2(Arand; linsolve=:lsqr, flopbudget=0)[2].precond === :diagonal
 end
 
 # LSQR continuation starts from the heuristic cover.

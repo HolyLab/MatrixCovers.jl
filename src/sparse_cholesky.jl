@@ -158,6 +158,13 @@ function factor_entries(F::SparseCholesky)
     return sum(Int, counts)
 end
 
+# Predicted flop count of the numeric factorization `analyze!` forecasts, for a
+# performance budget.
+function factor_flops(F::SparseCholesky)
+    F.L == C_NULL && throw(ArgumentError("`analyze!` must run before `factor_flops`"))
+    return F.common.fl
+end
+
 # `X = op \ B` for the system `sys` (`CHOLMOD_A`, `CHOLMOD_L`, `CHOLMOD_Lt`,
 # `CHOLMOD_P`, or `CHOLMOD_Pt`). `X` and `B` may be the same array.
 function solve!(X::StridedVecOrMat{Float64}, F::SparseCholesky, sys::Integer, B::StridedVecOrMat{Float64})
