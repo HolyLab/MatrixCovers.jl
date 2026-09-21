@@ -621,6 +621,38 @@ end
 
 _drain_penalty(z::T, l::T, zmin::T) where {T} = ifelse(z > zmin, oneunit(T) + l / (2z), oneunit(T))
 
+# Zero the multiplier of every entry with slack `z > zmin` and return how many
+# were positive. Complementary slackness requires these multipliers to vanish.
+function _zero_slack_multipliers!(λ, x, zmin, supp::EdgeList{T}, symmetric::Bool) where {T}
+    edges, cvals = supp.edges, supp.cvals
+    nzeroed = 0
+    for (e, (p, q)) in enumerate(edges)
+        if x[p] + x[q] - cvals[e] > zmin && λ[e] > 0
+            λ[e] = zero(T)
+            nzeroed += 1
+        end
+    end
+    return nzeroed
+end
+
+function _zero_slack_multipliers!(λ, x, zmin, supp::Grid{T}, symmetric::Bool) where {T}
+    C = supp.C
+    m, n = size(C)
+    nzeroed = 0
+    for j in 1:n
+        xj = symmetric ? x[j] : x[m+j]
+        # The symmetric layout stores the upper triangle.
+        for i in 1:(symmetric ? j : m)
+            # Entries outside the support keep a zero multiplier.
+            if x[i] + xj - C[i, j] > zmin && λ[i, j] > 0
+                λ[i, j] = zero(T)
+                nzeroed += 1
+            end
+        end
+    end
+    return nzeroed
+end
+
 function _update_multipliers!(λ, x, κ, zmin, supp::Grid{T}, symmetric::Bool) where {T}
     C = supp.C
     m, n = size(C)
@@ -985,8 +1017,9 @@ _dense_factor_type(::Type{T}) where {T} = LinearAlgebra.LU{T,Matrix{T},Vector{In
 # per-update exits, drops, KKT residuals (`kkt`) and penalty weights (`κs`), the
 # convergence flag with its tolerances, the `linsolve` and `precond` choices, the
 # Cholesky preconditioner's predicted entry count `fill_entries` and flop count
-# `factor_flops` (`0` and `0.0` without a factor), and its number of numeric
-# factorizations `nrefactor`.
+# `factor_flops` (`0` and `0.0` without a factor), its number of numeric
+# factorizations `nrefactor`, and the number `nzeroed` of positive multipliers
+# zeroed directly on entries with slack while the penalty sat at its cap.
 function _abslog2_auglag(sys::SupportSystem{T}, x0;
                                κ::Real, maxouter::Int, maxiter::Int, linsolve::Symbol, boost::Bool,
                                fillbudget::Real=LSQR_FILL_BUDGET,
@@ -1361,6 +1394,9 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     converged = maxouter == 0
     vprev = T(Inf)
     nstall = 0
+    vbest = T(Inf)   # residual that the next tenfold contraction is measured from
+    nzeroing = 0     # direct zeroings of slack multipliers since `vbest` was set
+    nzeroed = 0
     for _ in 1:maxouter
         sscale = inv(2 * κcur)
         bscale = inv(2 * (κcur - oneunit(T)))
@@ -1401,11 +1437,22 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
             break
         end
         κnext = v > vprev / 10 ? 10 * κcur : κcur
+        if 10 * v <= vbest
+            vbest = v
+            nzeroing = 0
+        end
         if 10 * v > 9 * vprev
             if κdrain > κcur && κcur < κcap
                 # A positive multiplier on an entry with slack holds the
                 # residual fixed until it reaches zero: finish it in one update.
                 κnext = max(κnext, κdrain)
+                nstall = 0
+            elseif κdrain > κcur && nzeroing < 3
+                # At the cap the penalty cannot finish the drain, so zero those
+                # multipliers directly. A zeroed multiplier can regrow; three
+                # zeroings without a tenfold contraction end the attempt.
+                nzeroed += _zero_slack_multipliers!(λ, x, zdrain, supp, symmetric)
+                nzeroing += 1
                 nstall = 0
             else
                 # Stop after three passes at the inner solver's accuracy floor.
@@ -1431,7 +1478,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                converged, vtol, vwarn,
                linsolve=(use_lsqr ? :lsqr : use_woodbury ? :woodbury : :dense),
                precond=(!use_precond ? :none : use_factor ? :factor : :diagonal),
-               nrefactor=nrefactor[], fill_entries, factor_flops=flops)
+               nrefactor=nrefactor[], fill_entries, factor_flops=flops, nzeroed)
 end
 
 # Worker for `symcover_min(::AbsLog{2})`, returning `(a, stats)`. A supplied
