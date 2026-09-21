@@ -792,6 +792,42 @@ end
     end
 end
 
+@testset "MMC :lsqr drains slack multipliers at the penalty cap" begin
+    # Draining these multipliers needs a penalty above the `:lsqr` cap of 1e5.
+    # With the penalty held at the cap they are zeroed directly; left to drain by
+    # `2(κ-1)z` per update they hold the KKT residual at 2.6e-6.
+    A = banded_sparse_sym(StableRNG(5), 10_000, 3, 1.0)
+    for fillbudget in (MatrixCovers.LSQR_FILL_BUDGET, 0)
+        a, s = @test_nowarn MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, fillbudget)
+        @test s.precond === (fillbudget == 0 ? :diagonal : :factor)
+        @test s.nzeroed > 0
+        @test maximum(s.κs) == 1e5
+        @test s.kkt[end] < 1e-9
+        @test cover_objective(AbsLog{2}(), a, A) ≈ 161350.449205 rtol=1e-9
+        @test iscover(a, A)
+    end
+
+    # Dense supports: only positive multipliers on entries with slack are zeroed.
+    # `-Inf` marks entries outside the support.
+    C = [0.0 1.0 -Inf; 1.0 0.5 2.0; -Inf 2.0 0.0]
+    x = [1.0, 0.25, 1.0]   # slack: (1,1) 2, (1,2) 0.25, (2,2) 0, (2,3) -0.75, (3,3) 2
+    # The symmetric layout uses the upper triangle and leaves the rest alone.
+    λ = [1.0 2.0 0.0; 9.0 3.0 4.0; 9.0 9.0 0.0]
+    @test MatrixCovers._zero_slack_multipliers!(λ, x, 1e-8, MatrixCovers.Grid(C), true) == 2
+    @test λ == [0.0 0.0 0.0; 9.0 3.0 4.0; 9.0 9.0 0.0]
+    λ = [1.0 2.0 0.0; 2.0 3.0 4.0; 0.0 4.0 0.0]
+    @test MatrixCovers._zero_slack_multipliers!(λ, [x; x], 1e-8, MatrixCovers.Grid(C), false) == 3
+    @test λ == [0.0 0.0 0.0; 0.0 3.0 4.0; 0.0 4.0 0.0]
+    # Slack at or below the threshold keeps its multiplier.
+    λ = [1.0 2.0 0.0; 2.0 3.0 4.0; 0.0 4.0 0.0]
+    @test MatrixCovers._zero_slack_multipliers!(λ, x, 2.0, MatrixCovers.Grid(C), true) == 0
+
+    # A problem whose multipliers drain below the cap zeroes none.
+    H = [4.0 1.0; 1.0 9.0]
+    _, sh = MatrixCovers._symcover_min_abslog2(H; linsolve=:lsqr)
+    @test sh.nzeroed == 0
+end
+
 @testset "MMC multiplier update is exact on an analytic problem" begin
     # A = [1 e; e 1]: the (1,2) constraint is active with multiplier λ* = 2, and
     # the violation contracts by exactly 2/(κ+1) per multiplier update.
