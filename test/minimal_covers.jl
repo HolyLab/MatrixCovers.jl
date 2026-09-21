@@ -689,6 +689,39 @@ end
     @test_throws "κ must exceed 1" MatrixCovers._symcover_min_abslog2(A; κ=1.0)
 end
 
+@testset "MMC drains multipliers of entries with small slack" begin
+    # The (1,2) block is nearly rank one, H₁₁H₂₂/H₁₂² ≈ 1 + 6.4e-4, so entry
+    # (1,2) has slack 3.2e-4 at the minimizer. Its multiplier drains by only
+    # `2(κ-1)z` per update, holding the KKT residual near 1.6e-4 meanwhile.
+    H = [8.567765848595938e18   1.678712474552239e20   1.2739305494462144e11  4.834432693545447e10
+         1.678712474552239e20   3.2912739530914445e21  2.446339938313649e12   9.791207851386554e11
+         1.2739305494462144e11  2.446339938313649e12   2.8559219495320074e18  1.7997017727682363e18
+         4.834432693545447e10   9.791207851386554e11   1.7997017727682363e18  1.5610962633900933e18]
+    obj(h, M) = sum(abs2, log.(h .* h' ./ M))
+    d = 1 ./ sqrt.(diag(H))
+    for M in (H, d .* H .* d'), linsolve in (:woodbury, :dense, :lsqr)
+        h, s = @test_nowarn MatrixCovers._symcover_min_abslog2(M; linsolve)
+        @test s.converged
+        @test obj(h, M) ≈ 2537.034821 rtol=1e-9
+        # Both diagonal constraints of the block are active; (1,2) is not.
+        @test h[1]^2 ≈ M[1, 1] rtol=1e-10
+        @test h[2]^2 ≈ M[2, 2] rtol=1e-10
+        @test log(h[1] * h[2] / M[1, 2]) ≈ log(M[1, 1] * M[2, 2] / M[1, 2]^2) / 2 rtol=1e-6
+    end
+
+    # The penalty cap grows with precision, so a wider type converges to its
+    # own tolerance instead of stopping at the `Float64` cap.
+    for linsolve in (:dense, :lsqr)
+        h, s = @test_nowarn MatrixCovers._symcover_min_abslog2(Double64.(H); linsolve)
+        @test eltype(h) === Double64
+        @test s.converged
+        @test s.kkt[end] <= 1000 * eps(Double64)
+        @test s.κs[end] > 1e8
+        @test h[1]^2 ≈ H[1, 1] rtol=1e-25
+        @test h[2]^2 ≈ H[2, 2] rtol=1e-25
+    end
+end
+
 @testset "MMC multiplier update is exact on an analytic problem" begin
     # A = [1 e; e 1]: the (1,2) constraint is active with multiplier λ* = 2, and
     # the violation contracts by exactly 2/(κ+1) per multiplier update.
