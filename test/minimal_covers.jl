@@ -807,6 +807,21 @@ end
         @test iscover(a, A)
     end
 
+    # Dense supports: only positive multipliers on entries with slack are zeroed.
+    # `-Inf` marks entries outside the support.
+    C = [0.0 1.0 -Inf; 1.0 0.5 2.0; -Inf 2.0 0.0]
+    x = [1.0, 0.25, 1.0]   # slack: (1,1) 2, (1,2) 0.25, (2,2) 0, (2,3) -0.75, (3,3) 2
+    # The symmetric layout uses the upper triangle and leaves the rest alone.
+    λ = [1.0 2.0 0.0; 9.0 3.0 4.0; 9.0 9.0 0.0]
+    @test MatrixCovers._zero_slack_multipliers!(λ, x, 1e-8, MatrixCovers.Grid(C), true) == 2
+    @test λ == [0.0 0.0 0.0; 9.0 3.0 4.0; 9.0 9.0 0.0]
+    λ = [1.0 2.0 0.0; 2.0 3.0 4.0; 0.0 4.0 0.0]
+    @test MatrixCovers._zero_slack_multipliers!(λ, [x; x], 1e-8, MatrixCovers.Grid(C), false) == 3
+    @test λ == [0.0 0.0 0.0; 0.0 3.0 4.0; 0.0 4.0 0.0]
+    # Slack at or below the threshold keeps its multiplier.
+    λ = [1.0 2.0 0.0; 2.0 3.0 4.0; 0.0 4.0 0.0]
+    @test MatrixCovers._zero_slack_multipliers!(λ, x, 2.0, MatrixCovers.Grid(C), true) == 0
+
     # A problem whose multipliers drain below the cap zeroes none.
     H = [4.0 1.0; 1.0 9.0]
     _, sh = MatrixCovers._symcover_min_abslog2(H; linsolve=:lsqr)
