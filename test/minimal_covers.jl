@@ -372,6 +372,11 @@ end
     ad, sd = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, fillbudget=0)
     @test sf.precond === :factor
     @test sd.precond === :diagonal
+    # The factored regime (re)factorizes the preconditioner at least once and
+    # reports its predicted fill; the diagonal regime never factorizes.
+    @test sf.nrefactor >= 1
+    @test sf.fill_entries > 0
+    @test sd.nrefactor == 0
     @test af ≈ ad rtol=1e-6
     @test iscover(af, af, A) && iscover(ad, ad, A)
     @test cover_objective(AbsLog{2}(), af, af, A) ≈ cover_objective(AbsLog{2}(), ad, ad, A) rtol=1e-8

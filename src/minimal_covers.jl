@@ -38,12 +38,11 @@ below), and `linsolve`:
   fills at most a quarter of the grid, and `:dense` otherwise.
 
 The solver increases `κ` when the KKT residual contracts slowly, and when a
-positive multiplier remains on an entry with slack. Statistics
-include the penalty weights (`κs`) and KKT residuals (`kkt`).
+positive multiplier remains on an entry with slack.
 
 For `Float64`, `:lsqr` uses a Cholesky preconditioner when its predicted storage
 does not exceed `fillbudget` bytes (default `2^30`). Otherwise it uses a diagonal
-preconditioner. The returned statistics identify the choice as `precond`.
+preconditioner.
 
 If the solver warns that the result may not minimize the objective, follow the
 advice in the warning: increase `maxouter` when the update limit was reached,
@@ -969,7 +968,12 @@ _dense_factor_type(::Type{Float64}) = LinearAlgebra.BunchKaufman{Float64,Matrix{
 _dense_factor_type(::Type{T}) where {T} = LinearAlgebra.LU{T,Matrix{T},Vector{Int}}
 
 # `AbsLog{2}` augmented-Lagrangian iteration. `boost=true` applies a final
-# feasibility shift; the support layout selects the inner solver.
+# feasibility shift; the support layout selects the inner solver. Returns the
+# log scales and a statistics tuple: inner solve and iteration counts, the
+# per-update exits, drops, KKT residuals (`kkt`) and penalty weights (`κs`), the
+# convergence flag with its tolerances, the `linsolve` and `precond` choices, the
+# Cholesky preconditioner's predicted entry count `fill_entries` (`0` without a
+# factor), and its number of numeric factorizations `nrefactor`.
 function _abslog2_auglag(sys::SupportSystem{T}, x0;
                                κ::Real, maxouter::Int, maxiter::Int, linsolve::Symbol, boost::Bool,
                                fillbudget::Real=LSQR_FILL_BUDGET) where {T}
@@ -1069,6 +1073,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     nlsqr = Ref(0)
     ncg = Ref(0)
     nchol = Ref(0)
+    nrefactor = Ref(0)
     solve_weighted = function (x, κ)
         nsolves[] += 1
         if supp isa Grid
@@ -1176,6 +1181,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                         nzv[dpos[p]] = mdiag[p] + ρ
                     end
                     factorize!(MF, Msp)
+                    nrefactor[] += 1
                     prevκ[] = κl
                     copyto!(prevpat, vpat)
                 end
@@ -1399,7 +1405,8 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                drops=Tuple(drops), kkt=Tuple(viols), κs=Tuple(κtrace),
                converged, vtol, vwarn,
                linsolve=(use_lsqr ? :lsqr : use_woodbury ? :woodbury : :dense),
-               precond=(!use_precond ? :none : use_factor ? :factor : :diagonal))
+               precond=(!use_precond ? :none : use_factor ? :factor : :diagonal),
+               nrefactor=nrefactor[], fill_entries)
 end
 
 # Worker for `symcover_min(::AbsLog{2})`, returning `(a, stats)`. A supplied
