@@ -113,7 +113,7 @@ function initialize_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatr
         unconstrained_min!(AbsLog{2}(), a, b, A)
     elseif strategy === :covariant
         _reject_kwargs(strategy, kwargs)
-        covariant_start!(a, b, flat_support(A, float(promote_type(eltype(a), eltype(b)))))
+        covariant_start!(a, b, flat_support(A, float(promote_type(eltype(a), eltype(b)))); fname=:initialize_cover)
     elseif strategy === :leaveout || strategy === :diagfeasible
         throw(ArgumentError("strategy=:$strategy has no asymmetric formulation; expected one of :hardcover, :geomean, :covariant"))
     else

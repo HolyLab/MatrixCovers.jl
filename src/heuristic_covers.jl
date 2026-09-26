@@ -187,28 +187,30 @@ function cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs.
 end
 
 function _cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; maxiter::Int=3,
-                 cgiter::Int=4, start::Symbol=:covariant)
+                 cgiter::Int=4, start::Symbol=:covariant, fname::Symbol=:cover)
     cgiter >= 0 || throw(ArgumentError("cgiter must be nonnegative, got $cgiter"))
     _check_cover_start(start)
     T = float(promote_type(eltype(a), eltype(b)))
+    # The geometric-mean start propagates scales only locally.
+    hint = fname === :cover && start === :covariant ? "; `start=:geomean` may also avoid it" : ""
     if _use_dense_grid(A, T)
-        _cover_dense!(a, b, A, T, maxiter, cgiter, start)
+        _cover_dense!(a, b, A, T, maxiter, cgiter, start, fname, hint)
     else
         sup = flat_support(A, T)
         if start === :covariant
-            covariant_start!(a, b, sup)
+            covariant_start!(a, b, sup; fname, hint)
         else
             unconstrained_min!(AbsLog{2}(), a, b, sup)
         end
         # On complete support both starts already solve the normal equations.
-        _complete_support(sup, length(a), length(b)) || cg_refine_start!(a, b, sup, cgiter)
+        _complete_support(sup, length(a), length(b)) || cg_refine_start!(a, b, sup, cgiter; fname, hint)
         boost_feasible!(a, b, sup)
         tighten_cover!(a, b, sup; maxiter)
         # Apply the package's balance convention, then restore coverage lost to rounding.
         _balance_cover!(a, b, A)
         inflate_feasible!(a, b, sup)
     end
-    return _certify_cover!(a, b, A, :cover)
+    return _certify_cover!(a, b, A, fname)
 end
 
 # Adjoint/Transpose wrappers for cover!.
@@ -679,8 +681,11 @@ end
 _complete_support(sup::FlatSupport, m::Int, n::Int) = length(sup.lv) == m * n
 
 # `sup` must match the axes of `a` and `b`. Unsupported scales are zero;
-# supported scales are bounded below by floatmin(T).
-function covariant_start!(a::AbstractVector, b::AbstractVector, sup::FlatSupport)
+# supported scales are bounded below by floatmin(T). `fname` names the caller in
+# the error thrown when the scales exceed the exponent range of `T`; `hint` is
+# appended to it.
+function covariant_start!(a::AbstractVector, b::AbstractVector, sup::FlatSupport;
+                          fname::Symbol=:cover, hint::String="")
     T = float(promote_type(eltype(a), eltype(b)))
     is, js, lv = sup.is, sup.js, sup.lv
     axa, axb = eachindex(a), eachindex(b)
@@ -721,6 +726,7 @@ function covariant_start!(a::AbstractVector, b::AbstractVector, sup::FlatSupport
     α = Vector{T}(undef, m)
     β = Vector{T}(undef, n)
     _covariant_start!(α, β, na, nb, foreach_entries, foreach_neighbor)
+    _check_representable(α, p -> na[p] > 0, β, q -> nb[q] > 0, T, fname; gauge=true, hint)
     for (p, i) in enumerate(axa)
         a[i] = iszero(na[p]) ? zero(T) : max(exp(α[p]), floatmin(T))
     end
@@ -804,7 +810,8 @@ function _cg_refine!(lα::AbstractVector{T}, lβ::AbstractVector{T}, foreach_ent
 end
 
 # Apply log-space refinement to `a`, `b`, preserving zeros and clamping underflow.
-function cg_refine_start!(a::AbstractVector, b::AbstractVector, sup::FlatSupport, maxiter::Int)
+function cg_refine_start!(a::AbstractVector, b::AbstractVector, sup::FlatSupport, maxiter::Int;
+                          fname::Symbol=:cover, hint::String="")
     maxiter > 0 || return a, b
     T = float(promote_type(eltype(a), eltype(b)))
     lα = map(x -> log(T(x)), a)
@@ -816,6 +823,7 @@ function cg_refine_start!(a::AbstractVector, b::AbstractVector, sup::FlatSupport
         end
     end
     _cg_refine!(lα, lβ, foreach_entries, maxiter)
+    _check_representable(lα, i -> !iszero(a[i]), lβ, j -> !iszero(b[j]), T, fname; gauge=true, hint)
     for i in eachindex(a)
         iszero(a[i]) || (a[i] = max(exp(lα[i]), floatmin(T)))
     end

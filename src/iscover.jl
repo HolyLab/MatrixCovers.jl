@@ -104,9 +104,54 @@ end
 # by. A vanishing or non-finite product cannot be lifted onto a positive entry.
 function _shortfall(p, v, i, j, fname::Symbol)
     r = v / p
-    isfinite(r) ||
-        throw(ArgumentError("$fname requires a positive, finite cover product on every supported entry, got $(string(p)) at ($(string(i)), $(string(j)))"))
-    return r
+    isfinite(r) && return r
+    isfinite(v) ||
+        throw(ArgumentError("$fname requires finite entries, got abs(A[$(string(i)), $(string(j))]) = $(string(v))"))
+    throw(ArgumentError("$fname requires a positive, finite cover product on every supported entry, got $(string(p)) at ($(string(i)), $(string(j))); this usually means the cover factors exceed the exponent range of their floating-point type, and converting `A` to a type with a wider range, such as `BigFloat`, may help"))
+end
+
+# Throw an informative error when supported log-scale factors cannot be
+# exponentiated in `T`. `lα[k]` is supported when `hasα(k)`; `lβ === nothing`
+# checks a symmetric cover. With `gauge=true` the factors may still be
+# shifted by `(t, -t)` before they are exponentiated, so the test is whether
+# some shift fits both into range; otherwise the values must fit as given.
+# `hint` is appended to the error message.
+function _check_representable(lα::AbstractVector, hasα, lβ, hasβ, ::Type{T}, fname::Symbol;
+                              gauge::Bool, hint::String="") where {T}
+    lo, hi = log(floatmin(T)), log(floatmax(T))
+    loα, hiα = _supported_extrema(lα, hasα)
+    loβ, hiβ = lβ === nothing ? (loα, hiα) : _supported_extrema(lβ, hasβ)
+    # NaN log scales are a solver failure, not a range limitation.
+    any(isnan, (loα, hiα, loβ, hiβ)) && return nothing
+    ok = if gauge
+        max(lo - loα, hiβ - hi) <= min(hi - hiα, loβ - lo)
+    else
+        lo <= loα && hiα <= hi && lo <= loβ && hiβ <= hi
+    end
+    ok && return nothing
+    dec(x) = string(round(x / log(T(10)); digits=1))
+    # Row and column spans are what must fit when a common rescaling is still free.
+    range = if gauge
+        "the row factors span $(dec(hiα - loα)) and the column factors $(dec(hiβ - loβ)) decades, but $(string(T)) spans $(dec(hi - lo))"
+    elseif lβ === nothing
+        "the factors range from 10^$(dec(loα)) to 10^$(dec(hiα)), but $(string(T)) spans 10^$(dec(lo)) to 10^$(dec(hi))"
+    else
+        "the row factors range from 10^$(dec(loα)) to 10^$(dec(hiα)) and the column factors from 10^$(dec(loβ)) to 10^$(dec(hiβ)), but $(string(T)) spans 10^$(dec(lo)) to 10^$(dec(hi))"
+    end
+    throw(ArgumentError("$fname: the scale factors computed for `A` are not representable in $(string(T)): $range. Cover factors of nonsymmetric band matrices can vary geometrically along the band (see `cover_min`). Converting `A` to a type with a wider exponent range, such as `BigFloat`, avoids the overflow$hint."))
+end
+
+function _supported_extrema(lx::AbstractVector, has)
+    T = eltype(lx)
+    l, h = T(Inf), T(-Inf)
+    for k in eachindex(lx)
+        has(k) || continue
+        x = lx[k]
+        isnan(x) && return (x, x)
+        l = min(l, x)
+        h = max(h, x)
+    end
+    return l, h
 end
 
 # Round each factor's share of the required inflation upward.
