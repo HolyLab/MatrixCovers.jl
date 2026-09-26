@@ -125,6 +125,18 @@ end
     end
 end
 
+@testset "AbsLinear{2} refinement stopping on a plateau throws" begin
+    # A start with one scale far too large puts every ratio in that row/column near 0, where
+    # the (1-r)^2 objective is flat; Ipopt reports the start region as solved.
+    ϕ = AbsLinear{2}()
+    A = ones(3, 3)
+    msg = r"Ipopt stopped on a plateau: every supported entry in (row|column) 3"
+    @test_throws msg soft_cover!(ϕ, ones(3), [1.0, 1.0, 1e40], A)
+    @test_throws msg soft_symcover!(ϕ, [1.0, 1.0, 1e40], A)
+    @test_throws msg cover_min!(ϕ, ones(3), [1.0, 1.0, 1e40], A)
+    @test_throws msg symcover_min!(ϕ, [1.0, 1.0, 1e40], A)
+end
+
 @testset "symcover_min!/cover_min! refiners (JuMP/HiGHS/Ipopt)" begin
     A = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
     Aasym = [1.0 2.0 3.0; 4.0 5.0 6.0]
