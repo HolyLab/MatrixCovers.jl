@@ -103,6 +103,40 @@ end
     @test cover_objective(AbsLinear{1}(), a1, A) ≈ 2.0 atol=1e-8
 end
 
+@testset "AbsLinear{2} soft refinement converges from dispersed starts" begin
+    # Refinements from widely dispersed starts must reach a local minimum, not stop on the
+    # flat part of the (1-r)^2 objective: sorted objectives either agree to 1e-8 (the same
+    # minimum) or differ by more than 1e-3 (distinct minima; `Agen` has two).
+    ϕ = AbsLinear{2}()
+    rng = StableRNG(7)
+    L = randn(rng, 5, 5)
+    Asym = exp.((L .+ L') ./ 2)
+    Agen = exp.(randn(rng, 5, 5))
+    rng = StableRNG(1)
+    for (A, sym) in ((Asym, true), (Agen, false))
+        es = sort(map(1:12) do _
+            a = exp.(3 .* randn(rng, 5))
+            b = exp.(3 .* randn(rng, 5))
+            sym ? cover_objective(ϕ, soft_symcover!(ϕ, a, A), A) :
+                  cover_objective(ϕ, soft_cover!(ϕ, a, b, A)..., A)
+        end)
+        gaps = diff(es) ./ es[begin:end-1]
+        @test all(g -> g < 1e-8 || g > 1e-3, gaps)
+    end
+end
+
+@testset "AbsLinear{2} refinement stopping on a plateau throws" begin
+    # A start with one scale far too large puts every ratio in that row/column near 0, where
+    # the (1-r)^2 objective is flat; Ipopt reports the start region as solved.
+    ϕ = AbsLinear{2}()
+    A = ones(3, 3)
+    msg = r"Ipopt stopped on a plateau: every supported entry in (row|column) 3"
+    @test_throws msg soft_cover!(ϕ, ones(3), [1.0, 1.0, 1e40], A)
+    @test_throws msg soft_symcover!(ϕ, [1.0, 1.0, 1e40], A)
+    @test_throws msg cover_min!(ϕ, ones(3), [1.0, 1.0, 1e40], A)
+    @test_throws msg symcover_min!(ϕ, [1.0, 1.0, 1e40], A)
+end
+
 @testset "symcover_min!/cover_min! refiners (JuMP/HiGHS/Ipopt)" begin
     A = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
     Aasym = [1.0 2.0 3.0; 4.0 5.0 6.0]

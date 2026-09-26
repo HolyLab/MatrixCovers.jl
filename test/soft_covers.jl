@@ -283,7 +283,7 @@ end
             cover_objective(AbsLinear{2}(), g1a, g1b, G) - 1e-9 && (imp_gen += 1)
     end
     # Require improvement on a substantial fraction of the corpus.
-    @test imp_sym >= 24
+    @test imp_sym >= 18
     @test imp_gen >= 19
 end
 

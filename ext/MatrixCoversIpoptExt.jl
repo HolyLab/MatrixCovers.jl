@@ -15,11 +15,44 @@ check_solved(model, fname) =
     MatrixCovers.check_solved(JuMP.termination_status(model), "Ipopt", fname)
 
 # Suppress both solver output and Ipopt's startup banner.
-function _ipopt_model()
+#
+# `unscaled=true` is for the AbsLinear{2} models. Their (1-r)^2 objective is nearly flat far
+# from the optimum; Ipopt's default gradient-based scaling, computed at a start there, makes
+# refinements stop up to a few percent above the local minimum they approach. Unscaled, they
+# converge to it. The AbsLinear{1} models, which bound each |1-r| by a slack variable, keep
+# the default scaling.
+function _ipopt_model(; unscaled::Bool=false)
     model = JuMP.Model(Ipopt.Optimizer)
     JuMP.set_silent(model)
     JuMP.set_attribute(model, "sb", "yes")
+    unscaled && JuMP.set_attribute(model, "nlp_scaling_method", "none")
     return model
+end
+
+# At a stationary point of an AbsLinear{2} model with finite scales, every supported row and
+# column has an entry with ratio r = |A[i,j]|/(a[i]*b[j]) ≥ 1: the derivative of Σ(1-r)^2
+# with respect to log(a[i]) is Σⱼ 2r(1-r), which is positive when every r in row i lies in
+# (0, 1). As all r of a row or column approach 0 this derivative vanishes, and Ipopt can
+# report a point where those scales diverge as solved. Throw if some supported row or column
+# has no ratio of at least 1/2. Edge `e` joins row `ri[e]` and column `ci[e]` with log-ratio
+# `elog[e] - lα[ri[e]] - lβ[ci[e]]`; `pr`, `pc` map positions to indices of `A`.
+function check_not_plateau(fname, ri, ci, elog, lα, lβ, pr, pc)
+    rowmax = fill(-Inf, length(lα))
+    colmax = fill(-Inf, length(lβ))
+    for e in eachindex(ri, ci, elog)
+        lr = elog[e] - lα[ri[e]] - lβ[ci[e]]
+        isnan(lr) && error("$fname: Ipopt returned NaN scales")
+        rowmax[ri[e]] = max(rowmax[ri[e]], lr)
+        colmax[ci[e]] = max(colmax[ci[e]], lr)
+    end
+    for (dim, lmax, p) in (("row", rowmax, pr), ("column", colmax, pc))
+        k = findfirst(x -> -Inf < x < -log(2), lmax)
+        k === nothing && continue
+        error("$fname: Ipopt stopped on a plateau: every supported entry in $dim $(p[k]) of `A` \
+               is less than half its cover (largest ratio 10^$(round(lmax[k] / log(10); digits=1))), and the scales \
+               diverge there. A different start may avoid it.")
+    end
+    return nothing
 end
 
 # Fix α → α + c, β → β - c independently on each support component to
@@ -59,7 +92,7 @@ function MatrixCovers.symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
     supported = _degrees(fi, n) .> 0
     ti, tj, tlog, tw = _triangle(fi, fj, flog)
 
-    model = _ipopt_model()
+    model = _ipopt_model(; unscaled=true)
     start0 = [supported[k] && !iszero(a[pr[k]]) ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
     @objective(model, Min,
@@ -69,8 +102,10 @@ function MatrixCovers.symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
     end
     JuMP.optimize!(model)
     check_solved(model, "symcover_min!")
+    lα = JuMP.value.(α)
+    check_not_plateau("symcover_min!", fi, fj, flog, lα, lα, pr, pr)
     for (i, k) in pairs(pr)
-        a[k] = supported[i] ? exp(JuMP.value(α[i])) : zero(T)
+        a[k] = supported[i] ? exp(lα[i]) : zero(T)
     end
     return a
 end
@@ -122,7 +157,7 @@ function MatrixCovers.cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractV
     nza = _degrees(ei, m)
     nzb = _degrees(ej, n)
 
-    model = _ipopt_model()
+    model = _ipopt_model(; unscaled=true)
     α0 = [nza[i] > 0 ? log(T(a[pr[i]])) : zero(T) for i in 1:m]
     β0 = [nzb[j] > 0 ? log(T(b[pc[j]])) : zero(T) for j in 1:n]
     @variable(model, α[i=1:m], start = α0[i])
@@ -135,11 +170,13 @@ function MatrixCovers.cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractV
     _pin_gauge!(model, α, β, A, nza, nzb)
     JuMP.optimize!(model)
     check_solved(model, "cover_min!")
+    lα, lβ = JuMP.value.(α), JuMP.value.(β)
+    check_not_plateau("cover_min!", ei, ej, elog, lα, lβ, pr, pc)
     for (i, k) in pairs(pr)
-        a[k] = nza[i] > 0 ? exp(JuMP.value(α[i])) : zero(T)
+        a[k] = nza[i] > 0 ? exp(lα[i]) : zero(T)
     end
     for (j, k) in pairs(pc)
-        b[k] = nzb[j] > 0 ? exp(JuMP.value(β[j])) : zero(T)
+        b[k] = nzb[j] > 0 ? exp(lβ[j]) : zero(T)
     end
     MatrixCovers._balance_cover!(a, b, A)
     return MatrixCovers.inflate_feasible!(a, b, A)
@@ -198,15 +235,17 @@ function MatrixCovers.soft_symcover!(::AbsLinear{2}, a::AbstractVector, A)
     ti, tj, tlog, tw = _triangle(fi, fj, flog)
     n_zeros = n^2 - length(fi)   # a zero entry contributes (1-0)^2 = 1 regardless of α
 
-    model = _ipopt_model()
+    model = _ipopt_model(; unscaled=true)
     start0 = [supported[k] ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
     @objective(model, Min,
         sum(tw[k] * (1 - exp(tlog[k] - α[ti[k]] - α[tj[k]]))^2 for k in eachindex(ti)) + n_zeros)
     JuMP.optimize!(model)
     check_solved(model, "soft_symcover!")
+    lα = JuMP.value.(α)
+    check_not_plateau("soft_symcover!", fi, fj, flog, lα, lα, pr, pr)
     for (i, k) in pairs(pr)
-        a[k] = supported[i] ? exp(JuMP.value(α[i])) : zero(T)
+        a[k] = supported[i] ? exp(lα[i]) : zero(T)
     end
     return a
 end
@@ -256,7 +295,7 @@ function MatrixCovers.soft_cover!(::AbsLinear{2}, a::AbstractVector, b::Abstract
     nzb = _degrees(ej, n)
     n_zeros = m * n - length(ei)
 
-    model = _ipopt_model()
+    model = _ipopt_model(; unscaled=true)
     α0 = [nza[i] > 0 ? log(T(a[pr[i]])) : zero(T) for i in 1:m]
     β0 = [nzb[j] > 0 ? log(T(b[pc[j]])) : zero(T) for j in 1:n]
     @variable(model, α[i=1:m], start = α0[i])
@@ -266,11 +305,13 @@ function MatrixCovers.soft_cover!(::AbsLinear{2}, a::AbstractVector, b::Abstract
     _pin_gauge!(model, α, β, A, nza, nzb)
     JuMP.optimize!(model)
     check_solved(model, "soft_cover!")
+    lα, lβ = JuMP.value.(α), JuMP.value.(β)
+    check_not_plateau("soft_cover!", ei, ej, elog, lα, lβ, pr, pc)
     for (i, k) in pairs(pr)
-        a[k] = nza[i] > 0 ? exp(JuMP.value(α[i])) : zero(T)
+        a[k] = nza[i] > 0 ? exp(lα[i]) : zero(T)
     end
     for (j, k) in pairs(pc)
-        b[k] = nzb[j] > 0 ? exp(JuMP.value(β[j])) : zero(T)
+        b[k] = nzb[j] > 0 ? exp(lβ[j]) : zero(T)
     end
     return MatrixCovers._balance_cover!(a, b, A)
 end
