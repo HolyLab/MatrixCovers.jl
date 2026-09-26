@@ -15,10 +15,17 @@ check_solved(model, fname) =
     MatrixCovers.check_solved(JuMP.termination_status(model), "Ipopt", fname)
 
 # Suppress both solver output and Ipopt's startup banner.
-function _ipopt_model()
+#
+# `unscaled=true` is for the AbsLinear{2} models. Their (1-r)^2 objective is nearly flat far
+# from the optimum; Ipopt's default gradient-based scaling, computed at a start there, makes
+# refinements stop up to a few percent above the local minimum they approach. Unscaled, they
+# converge to it. The AbsLinear{1} models, which bound each |1-r| by a slack variable, keep
+# the default scaling.
+function _ipopt_model(; unscaled::Bool=false)
     model = JuMP.Model(Ipopt.Optimizer)
     JuMP.set_silent(model)
     JuMP.set_attribute(model, "sb", "yes")
+    unscaled && JuMP.set_attribute(model, "nlp_scaling_method", "none")
     return model
 end
 
@@ -59,7 +66,7 @@ function MatrixCovers.symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
     supported = _degrees(fi, n) .> 0
     ti, tj, tlog, tw = _triangle(fi, fj, flog)
 
-    model = _ipopt_model()
+    model = _ipopt_model(; unscaled=true)
     start0 = [supported[k] && !iszero(a[pr[k]]) ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
     @objective(model, Min,
@@ -122,7 +129,7 @@ function MatrixCovers.cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractV
     nza = _degrees(ei, m)
     nzb = _degrees(ej, n)
 
-    model = _ipopt_model()
+    model = _ipopt_model(; unscaled=true)
     α0 = [nza[i] > 0 ? log(T(a[pr[i]])) : zero(T) for i in 1:m]
     β0 = [nzb[j] > 0 ? log(T(b[pc[j]])) : zero(T) for j in 1:n]
     @variable(model, α[i=1:m], start = α0[i])
@@ -198,7 +205,7 @@ function MatrixCovers.soft_symcover!(::AbsLinear{2}, a::AbstractVector, A)
     ti, tj, tlog, tw = _triangle(fi, fj, flog)
     n_zeros = n^2 - length(fi)   # a zero entry contributes (1-0)^2 = 1 regardless of α
 
-    model = _ipopt_model()
+    model = _ipopt_model(; unscaled=true)
     start0 = [supported[k] ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
     @objective(model, Min,
@@ -256,7 +263,7 @@ function MatrixCovers.soft_cover!(::AbsLinear{2}, a::AbstractVector, b::Abstract
     nzb = _degrees(ej, n)
     n_zeros = m * n - length(ei)
 
-    model = _ipopt_model()
+    model = _ipopt_model(; unscaled=true)
     α0 = [nza[i] > 0 ? log(T(a[pr[i]])) : zero(T) for i in 1:m]
     β0 = [nzb[j] > 0 ? log(T(b[pc[j]])) : zero(T) for j in 1:n]
     @variable(model, α[i=1:m], start = α0[i])
