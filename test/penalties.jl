@@ -23,6 +23,33 @@
     @test cover_objective(AbsLinear{2}(), a0, A0) ≈ 0.0 + 1.0 + 1.0 + 1/16   # (0,1), (1,0) off-diag zeros
 end
 
+@testset "PowerMean" begin
+    φ(p, r) = (r^p - 1 - p * log(r)) / p
+    for p in (1, 2, 3.5, 0.5), r in (1e-3, 0.3, 1.0, 1.7, 40.0)
+        @test PowerMean{p}()(r) ≈ φ(p, r) rtol=1e-12 atol=1e-15
+    end
+    # Accurate near r = 1, where the formula cancels to O(log(r)^2).
+    @test PowerMean{2}()(1 + 1e-9) ≈ 1e-18 rtol=1e-6
+    @test PowerMean{2}()(1.0) == 0
+    # Zero is the structural-zero convention; an uncovered entry is infinite.
+    @test PowerMean{2}()(0.0) === 0.0
+    @test PowerMean{2}()(Inf) === Inf
+    @test PowerMean{2}()(Float32(0.5)) isa Float32
+    @test_throws "requires a real exponent p > 0" PowerMean{0}()
+    @test_throws "requires a real exponent p > 0" PowerMean{-1.0}()
+    @test_throws "requires a real exponent p > 0" PowerMean{:two}()
+
+    # Zero entries contribute nothing: the objective is the sum over the support.
+    A = [4.0 0.0 1.5; 0.0 0.0 2.0; 1.5 3.0 0.0]
+    a, b = [2.0, 0.5, 1.0], [1.5, 3.0, 0.7]
+    for p in (1, 2)
+        E = cover_objective(PowerMean{p}(), a, b, A)
+        @test isfinite(E)
+        @test E ≈ sum(φ(p, abs(A[i, j]) / (a[i] * b[j])) for i in 1:3, j in 1:3 if A[i, j] != 0)
+        @test cover_objective(PowerMean{p}(), a, b, sparse(A)) ≈ E
+    end
+end
+
 # A matrix readable only through the traversal hook: `getindex` throws, so any
 # full-grid scan fails outright.
 struct SupportOnlyMatrix{T} <: AbstractMatrix{T}
@@ -47,7 +74,7 @@ end
         dense[i, j] = v
     end
     a, b = [2.0, 1.0, 0.5], [1.5, 0.5, 3.0, 1.0]
-    for ϕ in PENALTIES
+    for ϕ in SOFT_PENALTIES
         # Agreement with the dense reference pins the zero-entry accounting: the
         # entries the hook skips still carry `ϕ(0)`, which `AbsLinear` makes nonzero.
         @test cover_objective(ϕ, a, b, M) ≈ cover_objective(ϕ, a, b, dense)
@@ -76,7 +103,7 @@ end
     # Offset axes are honored, not merely tolerated: the score is unchanged.
     Ao = OffsetArray(A, -1:0, 2:3)
     ao, bo = OffsetArray([2.0, 1.0], -1:0), OffsetArray([1.0, 3.0], 2:3)
-    for ϕ in PENALTIES
+    for ϕ in SOFT_PENALTIES
         @test cover_objective(ϕ, ao, bo, Ao) ≈ cover_objective(ϕ, [2.0, 1.0], [1.0, 3.0], A)
     end
 end
@@ -86,7 +113,7 @@ end
     # give identical results, and the accumulator stays real.
     Ac = [1.0+2.0im 0.5-1.0im; 0.3+0.1im 3.0+0.0im]
     a, b = [2.0, 1.0], [1.5, 0.5]
-    for ϕ in PENALTIES
+    for ϕ in SOFT_PENALTIES
         v = cover_objective(ϕ, a, b, Ac)
         @test v isa Real
         @test v == cover_objective(ϕ, a, b, abs.(Ac))

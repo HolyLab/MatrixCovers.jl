@@ -177,7 +177,10 @@
             @test all(unit.(v) == UA for v in cover(ϕ, A))
             @test all(unit.(v) == UA for v in cover_min(ϕ, A))
         end
-        for ϕ in (AbsLinear{1}(), AbsLinear{2}())
+        for ϕ in (PowerMean{1}(), PowerMean{2}())
+            @test unit.(soft_symcover(ϕ, A)) == UA
+        end
+        for ϕ in (AbsLinear{1}(), AbsLinear{2}(), PowerMean{1}(), PowerMean{2}())
             @test all(unit.(v) == UA for v in soft_cover(ϕ, A))
             @test unit.(soft_symcover_min(ϕ, A)) == UA
             @test all(unit.(v) == UA for v in soft_cover_min(ϕ, A))
@@ -253,6 +256,14 @@
 
         a, b = initialize_cover(A)
         @test soft_cover_min!(AbsLog{2}(), a, b, A) == (a, b)
+        @test unit.(a) == unit.(b) == UA
+
+        a = initialize_symcover(A)
+        @test soft_symcover_min!(PowerMean{1}(), a, A) === a
+        @test unit.(a) == UA
+
+        a, b = initialize_cover(A)
+        @test soft_cover_min!(PowerMean{1}(), a, b, A) == (a, b)
         @test unit.(a) == unit.(b) == UA
 
         # A start in a dimensionally equivalent spelling is converted, not rejected.

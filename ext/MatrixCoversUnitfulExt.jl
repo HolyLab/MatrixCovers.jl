@@ -2,7 +2,7 @@ module MatrixCoversUnitfulExt
 
 using LinearAlgebra: LinearAlgebra, Hermitian, Symmetric
 using MatrixCovers
-using MatrixCovers: AbsLog, AbsLinear
+using MatrixCovers: AbsLog, AbsLinear, PowerMean
 using SparseArrays: SparseMatrixCSC
 using Unitful: Unitful, FreeUnits, Quantity, Unit, unit, ustrip
 
@@ -314,5 +314,13 @@ for P in PENALTIES
         MC.soft_cover_min!(ϕ::$P, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover_min!, a, b, A, ϕ; kwargs...)
     end
 end
+
+# `PowerMean` is soft-only and parametric in its exponent.
+MC.soft_symcover(ϕ::PowerMean, A::QMatrix; kwargs...) = sym(MC.soft_symcover, A, ϕ; kwargs...)
+MC.soft_cover(ϕ::PowerMean, A::QMatrix; kwargs...) = asym(MC.soft_cover, A, ϕ; kwargs...)
+MC.soft_symcover_min(ϕ::PowerMean, A::QMatrix; kwargs...) = sym(MC.soft_symcover_min, A, ϕ; kwargs...)
+MC.soft_symcover_min!(ϕ::PowerMean, a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_symcover_min!, a, A, ϕ; kwargs...)
+MC.soft_cover_min(ϕ::PowerMean, A::QMatrix; kwargs...) = asym(MC.soft_cover_min, A, ϕ; kwargs...)
+MC.soft_cover_min!(ϕ::PowerMean, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover_min!, a, b, A, ϕ; kwargs...)
 
 end  # module MatrixCoversUnitfulExt
