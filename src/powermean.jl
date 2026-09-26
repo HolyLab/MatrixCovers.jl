@@ -82,15 +82,15 @@ end
 
 function _soft_cover_powermean!(::PowerMean{p}, a::AbstractVector, b::AbstractVector,
                                 A::AbstractMatrix, fname::Symbol;
-                                maxiter::Integer=POWERMEAN_MAXITER, tol::Union{Real,Nothing}=nothing) where p
+                                tol::Union{Real,Nothing}=nothing, kwargs...) where p
     _prepare_soft_cover_start!(a, b, A, fname)
     T = _powermean_type(eltype(a), eltype(b), real(eltype(A)))
     rtol = _powermean_tol(T, tol)
     R, C = _log_support(_row_support(A, T)), _log_support(_col_support(A, T))
     α = map(x -> x > 0 ? log(T(x)) : zero(T), a)
     β = map(x -> x > 0 ? log(T(x)) : zero(T), b)
-    converged, niter, imb = _powermean_sinkhorn!(α, β, R, C, T(p), maxiter, rtol)
-    converged || _warn_powermean_unconverged(fname, niter, maxiter, imb, rtol)
+    stats = _powermean_solve!(α, β, R, C, T(p), rtol; kwargs...)
+    _warn_powermean_unconverged(fname, stats, :sweeps)
     for i in eachindex(a, α)
         a[i] = isempty(_slots(R, i)) ? zero(eltype(a)) : exp(α[i])
     end
@@ -110,14 +110,14 @@ function _soft_symcover_powermean(ϕ::PowerMean, A::AbstractMatrix, fname::Symbo
 end
 
 function _soft_symcover_powermean!(::PowerMean{p}, a::AbstractVector, A::AbstractMatrix, fname::Symbol;
-                                   maxiter::Integer=POWERMEAN_MAXITER, tol::Union{Real,Nothing}=nothing) where p
+                                   tol::Union{Real,Nothing}=nothing, kwargs...) where p
     _prepare_soft_symcover_start!(a, A, fname)
     T = _powermean_type(eltype(a), real(eltype(A)))
     rtol = _powermean_tol(T, tol)
     S = _log_support(_sym_support(A, T))
     α = map(x -> x > 0 ? log(T(x)) : zero(T), a)
-    converged, niter, imb = _powermean_jacobi!(α, similar(α), S, T(p), maxiter, rtol)
-    converged || _warn_powermean_unconverged(fname, niter, maxiter, imb, rtol)
+    stats = _powermean_symsolve!(α, S, T(p), rtol; kwargs...)
+    _warn_powermean_unconverged(fname, stats, :updates)
     _balance_bipartite_sym!(α, S)
     for i in eachindex(a, α)
         a[i] = isempty(_slots(S, i)) ? zero(eltype(a)) : exp(α[i])
@@ -146,9 +146,101 @@ function _abs_symmetric_exact(A::StridedMatrix)
     return true
 end
 
-function _warn_powermean_unconverged(fname::Symbol, niter::Integer, maxiter::Integer, imb, tol)
-    @warn "$fname: the power-mean iteration ended after $niter of maxiter=$maxiter sweeps with imbalance $imb (tolerance $tol); the result may not minimize the objective. Increase `maxiter`, or `tol` if the imbalance is at the roundoff level of the entries' logarithms."
+function _warn_powermean_unconverged(fname::Symbol, stats, unit::Symbol)
+    stats.converged && return nothing
+    (; nsweeps, maxiter, imbalance, tol) = stats
+    if stats.newton
+        @warn "$fname: the power-mean iteration ended after $nsweeps $unit and $(stats.nnewton) of maxnewton=$(stats.maxnewton) Newton steps with imbalance $imbalance (tolerance $tol); the result may not minimize the objective. Increase `maxnewton`, or `tol` if the imbalance is at the roundoff level of the entries' logarithms."
+    else
+        @warn "$fname: the power-mean iteration ended after $nsweeps of maxiter=$maxiter $unit with imbalance $imbalance (tolerance $tol); the result may not minimize the objective. Increase `maxiter`, or `tol` if the imbalance is at the roundoff level of the entries' logarithms."
+    end
     return nothing
+end
+
+# ============================================================
+# Solvers: sweeps, then Newton when the sweeps are slow
+# ============================================================
+
+# The sweeps hand over to Newton when their observed rate predicts more than
+# `POWERMEAN_NEWTON_PASSES` further passes over the support to reach the
+# tolerance, or after `POWERMEAN_NEWTON_MAXPASSES` passes. An asymmetric sweep is
+# two passes (rows, then columns); a symmetric update is one.
+const POWERMEAN_NEWTON_PASSES = 200
+const POWERMEAN_NEWTON_MAXPASSES = 400
+const POWERMEAN_MAXNEWTON = 100
+
+# Asymmetric solve on row- and column-grouped `log|A|`. Returns the statistics
+# the drivers report: convergence, the sweep and Newton-step counts, the passes
+# over the support made by Newton, its factorizations and linear solver, and the
+# final imbalance.
+function _powermean_solve!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}, p::T, tol::T;
+                           maxiter::Integer=POWERMEAN_MAXITER, newton::Bool=true,
+                           maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto) where {T}
+    _check_powermean_linsolve(linsolve)
+    nsw = newton ? min(maxiter, POWERMEAN_NEWTON_MAXPASSES ÷ 2) : maxiter
+    budget = newton ? POWERMEAN_NEWTON_PASSES ÷ 2 : typemax(Int)
+    converged, nsweeps, imbalance = _powermean_sinkhorn!(α, β, R, C, p, nsw, tol, budget)
+    nt = (; converged, nsweeps, maxiter, newton=false, nnewton=0, maxnewton, npasses=0,
+          nfactor=0, linsolve=:none, imbalance, tol)
+    (converged || !newton) && return nt
+    sys = _powermean_system(R, eachindex(β))
+    x = _stack(α, β)
+    converged, nnewton, npasses, nfactor, imbalance, ls = _powermean_newton!(x, sys, p, maxnewton, tol, linsolve)
+    _unstack!(α, β, x)
+    return (; nt..., converged, newton=true, nnewton, npasses, nfactor, linsolve=ls, imbalance)
+end
+
+# Symmetric solve on the symmetric row-grouped `log|A|`; statistics as above,
+# with `nsweeps` counting updates.
+function _powermean_symsolve!(α, S::GroupedSupport{T}, p::T, tol::T;
+                              maxiter::Integer=POWERMEAN_MAXITER, newton::Bool=true,
+                              maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto) where {T}
+    _check_powermean_linsolve(linsolve)
+    nup = newton ? min(maxiter, POWERMEAN_NEWTON_MAXPASSES) : maxiter
+    budget = newton ? POWERMEAN_NEWTON_PASSES : typemax(Int)
+    converged, nsweeps, imbalance = _powermean_jacobi!(α, similar(α), S, p, nup, tol, budget)
+    nt = (; converged, nsweeps, maxiter, newton=false, nnewton=0, maxnewton, npasses=0,
+          nfactor=0, linsolve=:none, imbalance, tol)
+    (converged || !newton) && return nt
+    sys = _powermean_symsystem(S)
+    off = first(S.ax) - 1
+    x = Vector{T}(undef, length(S.ax))
+    for g in S.ax
+        x[g-off] = α[g]
+    end
+    converged, nnewton, npasses, nfactor, imbalance, ls = _powermean_newton!(x, sys, p, maxnewton, tol, linsolve)
+    for g in S.ax
+        α[g] = x[g-off]
+    end
+    return (; nt..., converged, newton=true, nnewton, npasses, nfactor, linsolve=ls, imbalance)
+end
+
+_check_powermean_linsolve(linsolve::Symbol) =
+    linsolve in (:auto, :dense, :cholesky, :cg) ||
+        throw(ArgumentError("linsolve must be :auto, :dense, :cholesky, or :cg; got :$linsolve"))
+
+# Row log scales in positions `1:m`, column log scales in `m+1:m+n`.
+function _stack(α, β)
+    x = Vector{promote_type(eltype(α), eltype(β))}(undef, length(α) + length(β))
+    k = 0
+    for i in eachindex(α)
+        x[k+=1] = α[i]
+    end
+    for j in eachindex(β)
+        x[k+=1] = β[j]
+    end
+    return x
+end
+
+function _unstack!(α, β, x)
+    k = 0
+    for i in eachindex(α)
+        α[i] = x[k+=1]
+    end
+    for j in eachindex(β)
+        β[j] = x[k+=1]
+    end
+    return α, β
 end
 
 # ============================================================
@@ -242,8 +334,17 @@ end
 # judged by the smallest imbalance within each window; after several consecutive
 # windows without progress `ω - 1` is halved, down to plain sweeps and a fresh
 # estimate.
+#
+# With `budget`, the iteration also returns early, unconverged, once the rate
+# estimates predict that more than `budget` further sweeps are needed: from the
+# plain estimate, at the rate of the relaxed iteration it implies, and at the end
+# of each relaxed window, at the observed rate.
+_powermean_sinkhorn!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}, p::T,
+                     maxiter::Integer, tol::T) where {T} =
+    _powermean_sinkhorn!(α, β, R, C, p, maxiter, tol, typemax(Int))
+
 function _powermean_sinkhorn!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}, p::T,
-                              maxiter::Integer, tol::T) where {T}
+                              maxiter::Integer, tol::T, budget::Integer) where {T}
     ωmax = T(POWERMEAN_OMEGA_MAX)
     ω = one(T)
     nplain = 0                  # consecutive plain sweeps in the current estimate
@@ -252,7 +353,9 @@ function _powermean_sinkhorn!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}
     rwin = T(Inf)               # smallest imbalance of the current window
     nwin = 0                    # sweeps in the current window
     nstall = 0                  # consecutive windows without progress
-    for k in 1:maxiter
+    k = 0
+    while k < maxiter
+        k += 1
         r = max(_powermean_halfsweep!(α, β, R, p, ω), _powermean_halfsweep!(β, α, C, p, ω))
         if r <= tol
             imb = max(_powermean_imbalance(α, β, R, p), _powermean_imbalance(β, α, C, p))
@@ -265,6 +368,7 @@ function _powermean_sinkhorn!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}
                 if zero(T) < ρ < one(T)
                     ω = min(ωmax, 2 / (1 + sqrt(1 - ρ)))
                     rbest, rwin, nwin, nstall = r, T(Inf), 0, 0
+                    _powermean_nsweeps(r, tol, _sor_rate(ρ, ω)) > budget && break
                 end
             end
             r2, r1 = r1, r
@@ -292,10 +396,24 @@ function _powermean_sinkhorn!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}
             end
             rbest = min(rbest, rwin)
             rwin, nwin = T(Inf), 0
+            λ < 1 && _powermean_nsweeps(rbest, tol, λ) > budget && break
         end
     end
     imb = max(_powermean_imbalance(α, β, R, p), _powermean_imbalance(β, α, C, p))
-    return imb <= tol, maxiter, imb
+    return imb <= tol, k, imb
+end
+
+# Sweeps needed to reduce the imbalance from `r` to `tol` at rate `λ` per sweep.
+_powermean_nsweeps(r, tol, λ) = λ < 1 ? log(r / tol) / -log(λ) : oftype(λ, Inf)
+
+# Asymptotic rate per sweep of the overrelaxed 2-cyclic iteration with factor `ω`
+# when the plain rate is `μ2`: `ω - 1` at or above the optimal factor, and
+# otherwise the square of the larger root of the SOR eigenvalue relation.
+function _sor_rate(μ2, ω)
+    ωμ = ω * sqrt(μ2)
+    disc = ωμ^2 - 4 * (ω - 1)
+    disc <= 0 && return ω - 1
+    return ((ωμ + sqrt(disc)) / 2)^2
 end
 
 # Damped simultaneous updates `α ← (α + F(α))/2` of the symmetric log scales, with
@@ -308,7 +426,18 @@ end
 #
 # `maxiter` counts updates. Returns `(converged, nupdates, imbalance)`, the
 # imbalance being that of the returned `α`.
-function _powermean_jacobi!(α, F, S::GroupedSupport{T}, p::T, maxiter::Integer, tol::T) where {T}
+#
+# With `budget`, the iteration also returns early, unconverged, once the rate
+# observed over the last `POWERMEAN_RATE_WINDOW` updates predicts that more than
+# `budget` further updates are needed.
+_powermean_jacobi!(α, F, S::GroupedSupport{T}, p::T, maxiter::Integer, tol::T) where {T} =
+    _powermean_jacobi!(α, F, S, p, maxiter, tol, typemax(Int))
+
+const POWERMEAN_RATE_WINDOW = 8
+
+function _powermean_jacobi!(α, F, S::GroupedSupport{T}, p::T, maxiter::Integer, tol::T,
+                            budget::Integer) where {T}
+    hist = fill(T(Inf), POWERMEAN_RATE_WINDOW)   # imbalances of the last updates, cyclically
     k = 0
     while true
         imb = zero(T)
@@ -320,6 +449,10 @@ function _powermean_jacobi!(α, F, S::GroupedSupport{T}, p::T, maxiter::Integer,
         end
         imb <= tol && return true, k, imb
         k == maxiter && return false, k, imb
+        h = mod1(k + 1, POWERMEAN_RATE_WINDOW)
+        λ = (imb / hist[h])^(one(T) / POWERMEAN_RATE_WINDOW)
+        hist[h] = imb
+        λ < 1 && _powermean_nsweeps(imb, tol, λ) > budget && return false, k, imb
         for g in S.ax
             isempty(_slots(S, g)) || (α[g] = (α[g] + F[g]) / 2)
         end

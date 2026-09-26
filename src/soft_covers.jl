@@ -15,12 +15,14 @@ Supported penalties and their keywords are:
 
 - `PowerMean{p}()` (default): the convex minimum, computed by damped
   simultaneous power-mean updates `a[k] ← sqrt(a[k] * M_p(|A[k,j]|/a[j]))`, where
-  `M_p` is the `p`-power mean over the nonzeros of row `k`. Every update decreases
-  the objective. The iteration stops when, in every nonzero row, the mean of
-  `r^p` over the ratios `r = |A[k,j]|/(a[k]*a[j])` of the nonzero entries is
-  within `tol` of one, or after `maxiter` updates (default `10_000`) with a
-  warning. It computes in at least `Float64`, and `tol` defaults to `4096*eps`
-  of that type.
+  `M_p` is the `p`-power mean over the nonzeros of row `k`, followed when they
+  are slow by Newton steps with backtracking on the objective. Every update
+  decreases the objective. The iteration stops when, in every nonzero row, the mean of `r^p`
+  over the ratios `r = |A[k,j]|/(a[k]*a[j])` of the nonzero entries is within
+  `tol` of one. It computes in at least `Float64`, and `tol` defaults to
+  `4096*eps` of that type, and a warning reports an iteration that ends without
+  reaching it. The keywords `maxiter`, `newton`, `maxnewton`, and `linsolve` are
+  described in the extended help.
 - `AbsLog{2}()`: the convex minimum, computed by one linear solve.
 - `AbsLog{1}()`: weighted-median coordinate descent to a fixed point, which need
   not be a local minimum (`maxiter=20`).
@@ -57,6 +59,28 @@ julia> round.(soft_symcover([0 1; 1 0]); digits=4)
  1.0
  1.0
 ```
+
+# Extended help
+
+## `PowerMean` keywords
+
+- `maxiter` (default `10_000`): the largest number of power-mean updates.
+- `newton` (default `true`): whether Newton steps finish the solve. The updates
+  hand over to Newton when the rate of decrease of the imbalance over recent
+  updates predicts more than 200 further updates, and after at most
+  `min(maxiter, 400)` updates. With `newton=false` the updates continue until
+  convergence or `maxiter`.
+- `maxnewton` (default `100`): the largest number of Newton steps. Each step
+  solves the Newton equations and backtracks on the objective.
+- `linsolve` (default `:auto`): the solver for the Newton equations. `:dense`
+  factorizes the dense Hessian; `:cholesky` factorizes the sparse Hessian with
+  CHOLMOD (`Float64` only); `:cg` uses conjugate gradients with a diagonal
+  preconditioner, at one pass over the support per iteration, for problems too
+  large to factor. `:auto` chooses `:dense` for support that fills at least a
+  quarter of the grid and otherwise `:cholesky`, each when its predicted flop
+  count is at most `8e3` per stored entry (and, for `:cholesky`, its predicted
+  storage at most `2^30` bytes), and `:cg` when neither fits. Poorly
+  conditioned problems can need many conjugate-gradient iterations.
 """
 soft_symcover(A::AbstractMatrix; kwargs...) = soft_symcover(PowerMean{2}(), A; kwargs...)
 
@@ -104,8 +128,9 @@ Refine one symmetric soft-cover start in place. The no-ϕ form uses
 `a` must be finite and positive on supported rows. It need not cover `A`, and
 unsupported scales are set to zero.
 
-`maxiter` bounds the descent sweeps. `PowerMean` also accepts `tol`, as in
-[`soft_symcover`](@ref); its result does not depend on the start.
+`maxiter` bounds the descent sweeps. `PowerMean` also accepts `tol`, `newton`,
+`maxnewton`, and `linsolve`, as in [`soft_symcover`](@ref); its result does not
+depend on the start.
 
 See also: [`soft_symcover`](@ref), [`soft_symcover_min!`](@ref), [`initialize_symcover`](@ref), [`soft_cover!`](@ref).
 """
@@ -150,13 +175,18 @@ Supported penalties and their keywords are:
 - `PowerMean{p}()` (default): the convex minimum, computed by alternating
   power-mean updates of the row and column scales (Sinkhorn scaling of
   `abs.(A).^p` to row sums `n_i` and column sums `m_j`, the nonzero counts),
-  with adaptive overrelaxation. The iteration stops when, in every nonzero row
-  and column, the mean of `r^p` over the ratios `r` of the nonzero entries is
-  within `tol` of one, or after `maxiter` sweeps (default `10_000`) with a
-  warning. It computes in at least `Float64`, and `tol` defaults to `4096*eps`
-  of that type. Convergence is slow when the support is poorly connected, for
-  example on a banded matrix with a dominant diagonal. When `abs.(A)` is exactly
-  symmetric, the minimizer has `b == a` under the balance convention, and
+  with adaptive overrelaxation, followed when the sweeps are slow by Newton
+  steps with backtracking on the objective. The iteration stops when, in every
+  nonzero row and column, the mean of `r^p` over the ratios `r` of the nonzero
+  entries is within `tol` of one. It computes in at least `Float64`, and `tol`
+  defaults to `4096*eps` of that type; a warning reports an iteration that ends
+  without reaching it. `maxiter` (default `10_000`) bounds the sweeps, each an
+  update of all rows and then all columns. The sweeps hand over to Newton when
+  their rate predicts more than 100 further sweeps, and after at most
+  `min(maxiter, 200)` sweeps. `newton`, `maxnewton`, and `linsolve` have the
+  meanings given in the extended help of [`soft_symcover`](@ref). When
+  `abs.(A)` is exactly symmetric, the minimizer has `b == a` under the balance
+  convention, and
   `soft_cover` and `soft_cover_min` instead compute `a` by the algorithm of
   [`soft_symcover`](@ref) (with the same keywords; `maxiter` then counts its
   updates) and return `(a, copy(a))`. The in-place [`soft_cover!`](@ref) always

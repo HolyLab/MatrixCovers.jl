@@ -130,7 +130,8 @@ their `_min` counterparts minimize the selected objective. For soft covers:
 
 - [`soft_symcover`](@ref) and [`soft_cover`](@ref) are native. `PowerMean` uses
   power-mean scaling iterations (damped simultaneous updates for the symmetric
-  problem, overrelaxed alternating updates for the asymmetric one); `AbsLinear`
+  problem, overrelaxed alternating updates for the asymmetric one), followed by
+  damped Newton steps when those iterations converge slowly; `AbsLinear`
   uses coordinate descent and multistart. For nonconvex or nonsmooth penalties
   they may stop at a fixed point that is not a local minimum.
 - [`soft_symcover_min`](@ref) and [`soft_cover_min`](@ref) find a local minimum.

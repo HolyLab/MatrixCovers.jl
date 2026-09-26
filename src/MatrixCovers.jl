@@ -2,10 +2,10 @@ module MatrixCovers
 
 using LinearAlgebra: LinearAlgebra, Adjoint, Bidiagonal, Diagonal, Hermitian,
                      SymTridiagonal, Symmetric, Transpose, Tridiagonal, bunchkaufman!,
-                     dot, lu!, mul!, norm
+                     dot, ldiv!, lu!, mul!, norm
 using PrecompileTools: PrecompileTools, @compile_workload
 using Random: Random, AbstractRNG, MersenneTwister
-using SparseArrays: SparseArrays, SparseMatrixCSC, nnz, nonzeros, nzrange, rowvals, spzeros
+using SparseArrays: SparseArrays, SparseMatrixCSC, nnz, nonzeros, nzrange, rowvals, sparse, spzeros
 
 export AbsLog, AbsLinear, PowerMean
 export cover_objective, iscover
@@ -33,6 +33,7 @@ include("soft_covers.jl")
 include("powermean.jl")        # the PowerMean soft covers, the soft-cover default
 include("sparse_cholesky.jl")  # CHOLMOD factorizations for the minimal-cover solvers
 include("minimal_covers.jl")
+include("powermean_newton.jl") # Newton refinement of the PowerMean soft covers
 include("sparse_support.jl")  # sparse traversal and the sparse solver defaults
 
 

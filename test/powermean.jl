@@ -103,7 +103,7 @@ end
         a0 = initialize_symcover(A; strategy=:geomean, feasible=:none)
         E = Float64[]
         for k in 0:12
-            ak = @test_logs (:warn, r"soft_symcover!: the power-mean iteration ended after") match_mode=:any soft_symcover!(PowerMean{2}(), copy(a0), A; maxiter=k)
+            ak = @test_logs (:warn, r"soft_symcover!: the power-mean iteration ended after") match_mode=:any soft_symcover!(PowerMean{2}(), copy(a0), A; maxiter=k, newton=false)
             push!(E, cover_objective(PowerMean{2}(), ak, A))
         end
         @test all(<(0), diff(E))
@@ -113,9 +113,14 @@ end
     @testset "non-convergence warns" begin
         rng = StableRNG(3)
         A = exp.(3 .* randn(rng, 30, 30))
-        @test_logs (:warn, r"^soft_cover: the power-mean iteration ended after 3 of maxiter=3 sweeps") soft_cover(A; maxiter=3)
-        @test_logs (:warn, r"^soft_cover_min: .*Increase `maxiter`") soft_cover_min(A; maxiter=3)
-        @test_logs (:warn, r"^soft_symcover: the power-mean iteration") soft_symcover(A + A'; maxiter=2)
+        @test_logs (:warn, r"^soft_cover: the power-mean iteration ended after 3 of maxiter=3 sweeps") soft_cover(A; maxiter=3, newton=false)
+        @test_logs (:warn, r"^soft_cover_min: .*Increase `maxiter`") soft_cover_min(A; maxiter=3, newton=false)
+        @test_logs (:warn, r"^soft_symcover: the power-mean iteration ended after 2 of maxiter=2 updates") soft_symcover(A + A'; maxiter=2, newton=false)
+        # With the Newton stage, a short sweep limit still converges.
+        a, b = @test_logs soft_cover(A; maxiter=3)
+        @test pm_imbalance(2, a, b, A) < 1e-11
+        @test_logs (:warn, r"^soft_cover: the power-mean iteration ended after 3 sweeps and 1 of maxnewton=1 Newton steps .*Increase `maxnewton`") soft_cover(A; maxiter=3, maxnewton=1)
+        @test_logs (:warn, r"^soft_symcover: .* 2 updates and 0 of maxnewton=0 Newton steps") soft_symcover(A + A'; maxiter=2, maxnewton=0)
         # A looser tolerance is honored.
         a, b = @test_logs soft_cover(A; tol=1e-4)
         @test 1e-11 < pm_imbalance(2, a, b, A) <= 1e-4
@@ -235,6 +240,103 @@ end
         @test_throws DimensionMismatch soft_symcover!(PowerMean{2}(), ones(3), S)
         @test_throws DimensionMismatch soft_cover!(PowerMean{2}(), ones(5), ones(4), A)
         @test_throws "soft_symcover requires a square matrix" soft_symcover(A)
+    end
+
+    @testset "Newton refinement" begin
+        rng = StableRNG(7)
+        pm_lognormal_sym(n, σ) = (L = σ .* randn(rng, n, n); exp.((L .+ L') ./ 2))
+        # Sparse with a full diagonal, entries log-uniform over six decades.
+        function pm_sparse6(n; sym)
+            L = sym ? tril(sprand(rng, n, n, 0.02), -1) : sprand(rng, n, n, 0.02)
+            nonzeros(L) .= 10 .^ (6 .* rand(rng, nnz(L)))
+            D = spdiagm(0 => 10 .^ (6 .* rand(rng, n)))
+            return sym ? L + L' + D : L + D
+        end
+        hard_sym = [pm_lognormal_sym(6, 5.0) for _ in 1:40]
+        hard_gen = [exp.(5 .* randn(rng, 6, 6)) for _ in 1:40]
+        sp_sym = [pm_sparse6(100; sym=true) for _ in 1:3]
+        sp_gen = [pm_sparse6(100; sym=false) for _ in 1:3]
+        # The sweeps alone are slow on some of these.
+        nslow = count(hard_sym) do S
+            Slog = MatrixCovers._log_support(MatrixCovers._sym_support(S, Float64))
+            a0 = initialize_symcover(S; strategy=:geomean, feasible=:none)
+            !MatrixCovers._powermean_jacobi!(log.(a0), similar(a0), Slog, 2.0, 1000, 1e-10)[1]
+        end
+        @test nslow > 0
+        for S in [hard_sym; sp_sym]
+            n = size(S, 1)
+            a = @test_logs soft_symcover(S)
+            @test pm_imbalance(2, a, a, S) < 1e-11
+            # The alternating solver with Newton, on symmetric input.
+            x, y = @test_logs soft_cover!(PowerMean{2}(), ones(n), ones(n), S)
+            @test pm_imbalance(2, x, y, S) < 1e-11
+            # The objective is nearly flat here, so an imbalance of `tol` leaves
+            # the products determined only to about `tol` over its curvature.
+            supp = findall(!iszero, S)
+            @test (x .* y')[supp] ≈ (a .* a')[supp] rtol=1e-8
+            @test cover_objective(PowerMean{2}(), x, y, S) ≈ cover_objective(PowerMean{2}(), a, S) rtol=1e-12
+        end
+        # With `tol=0` the solve continues to roundoff, where some steps change the
+        # objective by less than it can resolve and are judged by the imbalance.
+        for S in hard_sym
+            a = @test_logs (:warn, r"tolerance 0\.0") soft_symcover(S; tol=0.0)
+            @test a ≈ soft_symcover(S) rtol=1e-11
+        end
+        for A in [hard_gen; sp_gen]
+            a, b = @test_logs soft_cover(A)
+            @test pm_imbalance(2, a, b, A) < 1e-11
+            @test isbalanced(a, b, A)
+        end
+        # Larger `p` on sparse support with wide dynamic range.
+        for _ in 1:3
+            B = sprand(rng, 60, 60, 0.08) + I
+            nonzeros(B) .= exp.(3 .* randn(rng, nnz(B)))
+            a, b = @test_logs soft_cover(PowerMean{3}(), B)
+            @test pm_imbalance(3, a, b, B) < 1e-11
+        end
+
+        # Newton from a truncated sweep matches the sweeps on easy problems.
+        A = pm_testmatrix(rng, 30, 20; σ=2.0, z=0.3)
+        S = A[1:20, :] + A[1:20, :]'
+        a, b = soft_cover(A; newton=false)
+        for linsolve in (:auto, :dense, :cholesky, :cg)
+            x, y = @test_logs soft_cover(A; maxiter=2, linsolve)
+            @test x .* y' ≈ a .* b' rtol=1e-11
+            @test isbalanced(x, y, A)
+            @test soft_symcover(S; maxiter=2, linsolve) ≈ soft_symcover(S; newton=false) rtol=1e-11
+        end
+        Asp = sparse(A)
+        @test soft_cover(Asp; maxiter=2)[1] .* soft_cover(Asp; maxiter=2)[2]' ≈ a .* b' rtol=1e-11
+        # Bipartite symmetric support: Newton fixes the gauge and the balance holds.
+        Sb = [0 3.0 0; 3.0 0 5.0; 0 5.0 0]
+        s = @test_logs soft_symcover(Sb; maxiter=0)
+        @test s ≈ soft_symcover(Sb; newton=false) rtol=1e-12
+        # Generic indexing and element types through the Newton stage.
+        Ao = OffsetArray(A, -3:26, 4:23)
+        ao, bo = soft_cover(Ao; maxiter=2)
+        @test axes(ao, 1) == axes(Ao, 1) && axes(bo, 1) == axes(Ao, 2)
+        @test collect(ao) .* collect(bo)' ≈ a .* b' rtol=1e-11
+        @test soft_cover(view(A, :, :); maxiter=2)[1] ≈ soft_cover(A; maxiter=2)[1] rtol=1e-12
+        So = OffsetArray(S, 0:19, 0:19)
+        so = soft_symcover(So; maxiter=2)
+        @test axes(so, 1) == 0:19
+        @test collect(so) ≈ soft_symcover(S) rtol=1e-11
+        x32, y32 = soft_cover(Float32.(A); maxiter=2)
+        @test x32 isa Vector{Float32} && y32 isa Vector{Float32}
+        @test x32 .* y32' ≈ a .* b' rtol=10eps(Float32)
+        sbig = soft_symcover(big.(S); maxiter=2)
+        @test sbig isa Vector{BigFloat}
+        @test sbig ≈ soft_symcover(S) rtol=1e-11
+
+        # Solver statistics expose the combined cost.
+        R = MatrixCovers._log_support(MatrixCovers._row_support(sp_gen[1], Float64))
+        C = MatrixCovers._log_support(MatrixCovers._col_support(sp_gen[1], Float64))
+        st = MatrixCovers._powermean_solve!(zeros(100), zeros(100), R, C, 2.0, 4096 * eps())
+        @test st.converged && st.newton && st.linsolve === :cholesky
+        @test 2 * st.nsweeps + st.npasses < 400
+
+        @test_throws "linsolve must be :auto, :dense, :cholesky, or :cg" soft_cover(A; linsolve=:lsqr)
+        @test_throws "linsolve=:cholesky requires Float64" soft_symcover(big.(S); maxiter=2, linsolve=:cholesky)
     end
 
     @testset "symmetric input to soft_cover" begin
