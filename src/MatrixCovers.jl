@@ -1,8 +1,8 @@
 module MatrixCovers
 
-using LinearAlgebra: LinearAlgebra, Adjoint, Bidiagonal, Diagonal, Hermitian,
+using LinearAlgebra: LinearAlgebra, Adjoint, Bidiagonal, Cholesky, Diagonal, Hermitian,
                      SymTridiagonal, Symmetric, Transpose, Tridiagonal, bunchkaufman!,
-                     dot, ldiv!, lu!, mul!, norm
+                     dot, ldiv!, lmul!, lu!, mul!, norm
 using PrecompileTools: PrecompileTools, @compile_workload
 using Random: Random, AbstractRNG, MersenneTwister
 using SparseArrays: SparseArrays, SparseMatrixCSC, nnz, nonzeros, nzrange, rowvals, sparse, spzeros
@@ -26,7 +26,7 @@ include("iscover.jl")
 include("fastlog.jl")
 include("heuristic_covers.jl")
 include("dense_heuristic.jl")  # full-grid kernels for the heuristic covers
-include("gram_covers.jl")    # symmetric covers of A'*W*A from an asymmetric cover of A
+include("gram_covers.jl")    # symmetric covers of A'*W*A, and the cover of A for a fixed row scale
 include("initializers.jl")   # the start menu; consumed by both solver families below
 include("soft_covers.jl")
 include("powermean.jl")        # the PowerMean soft covers, the soft-cover default
