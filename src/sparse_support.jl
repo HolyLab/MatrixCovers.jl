@@ -72,6 +72,33 @@ function require_abs_symmetric(A::SparseMatrixCSC, fname)
     return nothing
 end
 
+# Exact symmetry of magnitudes: the nonzero pattern of each column must match that
+# of the transpose, and then the magnitudes. Stored zeros are skipped.
+function _abs_symmetric_exact(A::SparseMatrixCSC)
+    size(A, 1) == size(A, 2) || return false
+    At = copy(transpose(A))
+    rv, nzs = rowvals(A), nonzeros(A)
+    rvt, nzt = rowvals(At), nonzeros(At)
+    for j in axes(A, 2)
+        r, rt = nzrange(A, j), nzrange(At, j)
+        k, kt = first(r), first(rt)
+        while true
+            while k <= last(r) && iszero(nzs[k])
+                k += 1
+            end
+            while kt <= last(rt) && iszero(nzt[kt])
+                kt += 1
+            end
+            (k > last(r) || kt > last(rt)) && break
+            (rv[k] == rvt[kt] && abs(nzs[k]) == abs(nzt[kt])) || return false
+            k += 1
+            kt += 1
+        end
+        (k > last(r) && kt > last(rt)) || return false
+    end
+    return true
+end
+
 # Emitted pairs are canonical (row <= col) regardless of uplo: for uplo='L'
 # the stored (i, j) with i >= j is reported as (j, i). Complex `Hermitian` is
 # admitted alongside the real case because only `abs` of a stored value is ever

@@ -66,8 +66,16 @@ soft_symcover_min!(ϕ::PowerMean, a::AbstractVector, A::AbstractMatrix; kwargs..
 # Drivers
 # ============================================================
 
+# Input with symmetric magnitudes goes to the symmetric algorithm: the asymmetric
+# minimizer then has `a[i]*b[j] == a[j]*b[i]` on the support, and the balance
+# convention selects `b == a`. The test is exact, since a nearly symmetric matrix
+# has a genuinely asymmetric minimizer.
 # The `:covariant` start makes a truncated iteration scale-covariant as well.
 function _soft_cover_powermean(ϕ::PowerMean, A::AbstractMatrix, fname::Symbol; kwargs...)
+    if _abs_symmetric_exact(A)
+        a = _soft_symcover_powermean(ϕ, A, fname; kwargs...)
+        return a, copy(a)
+    end
     a, b = initialize_cover(A; strategy=:covariant, feasible=:none)
     return _soft_cover_powermean!(ϕ, a, b, A, fname; kwargs...)
 end
@@ -115,6 +123,27 @@ function _soft_symcover_powermean!(::PowerMean{p}, a::AbstractVector, A::Abstrac
         a[i] = isempty(_slots(S, i)) ? zero(eltype(a)) : exp(α[i])
     end
     return a
+end
+
+# Whether `axes(A, 1) == axes(A, 2)` and `abs(A[i,j]) == abs(A[j,i])` for all `i, j`.
+_abs_symmetric_exact(::Union{Symmetric,Hermitian,Diagonal,SymTridiagonal}) = true
+
+function _abs_symmetric_exact(A::AbstractMatrix)
+    axes(A, 1) == axes(A, 2) || return false
+    sym = Ref(true)
+    foreach_support(A) do i, j, v
+        sym[] &= abs(A[j, i]) == v
+    end
+    return sym[]
+end
+
+function _abs_symmetric_exact(A::StridedMatrix)
+    ax = axes(A, 1)
+    axes(A, 2) == ax || return false
+    for j in ax, i in first(ax):j-1
+        abs(A[i, j]) == abs(A[j, i]) || return false
+    end
+    return true
 end
 
 function _warn_powermean_unconverged(fname::Symbol, niter::Integer, maxiter::Integer, imb, tol)

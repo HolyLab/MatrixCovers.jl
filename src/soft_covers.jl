@@ -155,8 +155,12 @@ Supported penalties and their keywords are:
   within `tol` of one, or after `maxiter` sweeps (default `10_000`) with a
   warning. It computes in at least `Float64`, and `tol` defaults to `4096*eps`
   of that type. Convergence is slow when the support is poorly connected, for
-  example on a banded matrix with a dominant diagonal; for symmetric matrices,
-  [`soft_symcover`](@ref) handles that case efficiently.
+  example on a banded matrix with a dominant diagonal. When `abs.(A)` is exactly
+  symmetric, the minimizer has `b == a` under the balance convention, and
+  `soft_cover` and `soft_cover_min` instead compute `a` by the algorithm of
+  [`soft_symcover`](@ref) (with the same keywords; `maxiter` then counts its
+  updates) and return `(a, copy(a))`. The in-place [`soft_cover!`](@ref) always
+  uses the alternating iteration.
 - `AbsLog{2}()`: the convex minimum, computed by one linear solve.
 - `AbsLog{1}()`: alternating weighted-median updates to a fixed point, which
   need not be a local minimum (`maxiter=20`).

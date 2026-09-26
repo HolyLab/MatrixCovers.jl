@@ -237,6 +237,60 @@ end
         @test_throws "soft_symcover requires a square matrix" soft_symcover(A)
     end
 
+    @testset "symmetric input to soft_cover" begin
+        rng = StableRNG(41)
+        X = pm_testmatrix(rng, 20, 20; σ=3.0, z=0.4)
+        S = X + X'
+        S0 = S - Diagonal(diag(S))              # zero diagonal
+        for M in (S, S0, sparse(S), sparse(S0), Symmetric(sparse(triu(S))), -S)
+            a, b = soft_cover(M)
+            @test a == b == soft_symcover(M)
+            @test soft_cover_min(M) == (a, b)
+            @test isbalanced(a, b, M)
+            # The alternating iteration reaches the same minimizer.
+            x, y = soft_cover!(PowerMean{2}(), ones(20), ones(20), M)
+            supp = findall(!iszero, Matrix(M))
+            @test (a .* b')[supp] ≈ (x .* y')[supp] rtol=1e-11
+        end
+        # Diagonally dominant chain: few symmetric updates.
+        T = SymTridiagonal(fill(10.0, 100), ones(99))
+        for M in (T, Matrix(T), sparse(T))
+            a, b = @test_logs soft_cover(M)
+            @test a == b
+            @test pm_imbalance(2, a, b, M) < 1e-11
+        end
+        a0 = initialize_symcover(T; strategy=:geomean, feasible=:none)
+        Slog = MatrixCovers._log_support(MatrixCovers._sym_support(T, Float64))
+        nupd = MatrixCovers._powermean_jacobi!(log.(a0), similar(a0), Slog, 2.0, 10_000, 4096 * eps())[2]
+        @test nupd < 50
+        # One entry a ULP off symmetric is solved as the asymmetric problem it is.
+        Sn = copy(S)
+        Sn[1, 2] = nextfloat(Sn[1, 2])
+        a, b = soft_cover(Sn)
+        @test a != b
+        @test pm_imbalance(2, a, b, Sn) < 1e-11
+        # Axes and element types follow the input.
+        So = OffsetArray(S, -1:18, -1:18)
+        ao, bo = soft_cover(So)
+        @test axes(ao, 1) == axes(bo, 1) == -1:18
+        @test collect(ao) == soft_symcover(S)
+        a32, b32 = soft_cover(Float32.(S))
+        @test a32 isa Vector{Float32} && b32 isa Vector{Float32} && a32 == b32
+        # Rectangular and offset-mismatched axes are never symmetric.
+        @test !MatrixCovers._abs_symmetric_exact(S[:, 1:19])
+        @test !MatrixCovers._abs_symmetric_exact(OffsetArray(S, 0:19, 1:20))
+        @test !MatrixCovers._abs_symmetric_exact(sparse(S[1:19, :]))
+        # Stored zeros are not part of the pattern: `Z[2, 3]` is stored as zero and
+        # `Z[3, 2]` is not stored.
+        Z = sparse([1, 2, 3, 1, 3, 2], [1, 2, 3, 3, 1, 3], [2.0, 3.0, 4.0, 1.0, -1.0, 0.0])
+        @test nnz(Z) == 6
+        @test MatrixCovers._abs_symmetric_exact(Z)
+        a, b = soft_cover(Z)
+        @test a == b
+        Z[3, 2] = 1.0
+        @test !MatrixCovers._abs_symmetric_exact(Z)
+    end
+
     @testset "default dispatch" begin
         A = [1.0 2.0 3.0; 6.0 5.0 4.0]
         S = [4.0 1.0; 1.0 2.0]
