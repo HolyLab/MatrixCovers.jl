@@ -617,13 +617,10 @@ end
     Aasym = [1.0 2.0 3.0; 4.0 5.0 6.0]
     @test cover_min(Aasym) == cover_min(AbsLog{2}(), Aasym)
 
-    # soft_symcover_min(A) defaults to AbsLinear{2}, matching soft_symcover(A);
-    # requires JuMP+Ipopt.
-    @test soft_symcover_min(A) == soft_symcover_min(AbsLinear{2}(), A)
-
-    # soft_cover_min(A) also defaults to AbsLinear{2}, matching soft_cover(A);
-    # requires JuMP+Ipopt.
-    @test soft_cover_min(Aasym) == soft_cover_min(AbsLinear{2}(), Aasym)
+    # soft_symcover_min(A) and soft_cover_min(A) default to PowerMean{2}, matching
+    # soft_symcover(A)/soft_cover(A). Solved natively.
+    @test soft_symcover_min(A) == soft_symcover_min(PowerMean{2}(), A) == soft_symcover(A)
+    @test soft_cover_min(Aasym) == soft_cover_min(PowerMean{2}(), Aasym) == soft_cover(Aasym)
 end
 
 @testset "symcover_min!/cover_min! native AbsLog{2}" begin

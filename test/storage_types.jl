@@ -209,7 +209,7 @@ end
     @test symcover_min(AbsLog{2}(), sparse(symdenses[1])) isa Vector{Float64}
     # Every soft_symcover penalty returns a dense Vector on sparse-backed input.
     let Ssp = sparse(symdenses[1])
-        for ϕ in PENALTIES
+        for ϕ in SOFT_PENALTIES
             @test soft_symcover(ϕ, Ssp) isa Vector{Float64}
             @test soft_symcover(ϕ, Symmetric(Ssp)) isa Vector{Float64}
         end

@@ -373,18 +373,18 @@ end
     out = read(`$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script`, String)
     @test occursin("loading JuMP", out)
 
-    # The no-ϕ wrapper should preserve the inner missing-extension hint.
-    script_noϕ = """
+    # A driver should preserve the inner missing-extension hint.
+    script_driver = """
     using MatrixCovers
     A = [4.0 1.0; 1.0 4.0]
     try
-        soft_symcover_min(A)
+        soft_symcover_min(AbsLinear{2}(), A)
     catch e
         print(sprint(showerror, e))
     end
     """
-    out_noϕ = read(`$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script_noϕ`, String)
-    @test occursin("loading JuMP", out_noϕ)
+    out_driver = read(`$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script_driver`, String)
+    @test occursin("loading JuMP", out_driver)
 
     # Distinguish an unimplemented penalty from a missing extension.
     e3 = try

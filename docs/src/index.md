@@ -79,14 +79,19 @@ A **penalty function** `ϕ` combines those ratios into a scalar objective
 \sum_{i,j} \phi\!\left(\frac{|A_{ij}|}{a_i\, b_j}\right),
 ```
 
-Two penalty families are provided:
+Three penalty families are provided:
 
 - [`AbsLog`](@ref)`{p}`: `ϕ(r) = |log r|^p`, with `ϕ(0) = 0`. It is convex in
   log space and is the default for hard covers.
-- [`AbsLinear`](@ref)`{p}`: `ϕ(r) = |1-r|^p`. It is nonconvex, finite at zero,
-  and is the default for soft covers.
+- [`PowerMean`](@ref)`{p}`: `ϕ(r) = (r^p - 1 - p log r)/p`, with `ϕ(0) = 0`. It
+  is strictly convex in log space and is the default for soft covers. Its
+  minimizer makes the mean of `r^p` over the nonzero entries of every row and
+  column equal to one.
+- [`AbsLinear`](@ref)`{p}`: `ϕ(r) = |1-r|^p`. It is nonconvex and finite at
+  zero, so an entry that shrinks to zero drops out of the soft cover
+  continuously.
 
-[`cover_objective`](@ref) evaluates either penalty for a given cover:
+[`cover_objective`](@ref) evaluates any penalty for a given cover:
 
 ```jldoctest quality; filter = r"(\d+\.\d{6})\d+" => s"\1"
 julia> using MatrixCovers
@@ -115,22 +120,26 @@ Pass a penalty as the first solver argument to override the default.
 | [`cover`](@ref) | no | hard (`r ≤ 1`) | heuristic | — |
 | [`symcover_min`](@ref) | yes | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
 | [`cover_min`](@ref) | no | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
-| [`soft_symcover`](@ref) | yes | soft (penalized) | `AbsLinear{2}` (or `AbsLog`, `AbsLinear{1}`) | native for `AbsLog`; else — |
-| [`soft_cover`](@ref) | no | soft (penalized) | `AbsLinear{2}` (or `AbsLog`, `AbsLinear{1}`) | native for `AbsLog`; else — |
-| [`soft_symcover_min`](@ref) | yes | soft (penalized) | `AbsLog{2}`, `AbsLinear` | native for `AbsLog{2}`; else JuMP |
-| [`soft_cover_min`](@ref) | no | soft (penalized) | `AbsLog{2}`, `AbsLinear` | native for `AbsLog{2}`; else JuMP |
+| [`soft_symcover`](@ref) | yes | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog`, `AbsLinear`) | — |
+| [`soft_cover`](@ref) | no | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog`, `AbsLinear`) | — |
+| [`soft_symcover_min`](@ref) | yes | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog{2}`, `AbsLinear`) | native for `PowerMean`, `AbsLog{2}`; else JuMP |
+| [`soft_cover_min`](@ref) | no | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog{2}`, `AbsLinear`) | native for `PowerMean`, `AbsLog{2}`; else JuMP |
 
 For hard covers, [`symcover`](@ref) and [`cover`](@ref) are fast heuristics;
 their `_min` counterparts minimize the selected objective. For soft covers:
 
-- [`soft_symcover`](@ref) and [`soft_cover`](@ref) use native coordinate descent
-  and multistart. For nonconvex or nonsmooth penalties they may stop at a fixed
-  point that is not a local minimum.
+- [`soft_symcover`](@ref) and [`soft_cover`](@ref) are native. `PowerMean` uses
+  power-mean scaling iterations (damped simultaneous updates for the symmetric
+  problem, overrelaxed alternating updates for the asymmetric one), followed by
+  damped Newton steps when those iterations converge slowly; `AbsLinear`
+  uses coordinate descent and multistart. For nonconvex or nonsmooth penalties
+  they may stop at a fixed point that is not a local minimum.
 - [`soft_symcover_min`](@ref) and [`soft_cover_min`](@ref) find a local minimum.
-  `AbsLog{2}` is native; `AbsLinear` requires JuMP and Ipopt; `AbsLog{1}` is not
-  implemented.
+  `PowerMean` and `AbsLog{2}` are native; `AbsLinear` requires JuMP and Ipopt;
+  `AbsLog{1}` is not implemented.
 
-Under `AbsLog{2}`, the objective is convex, so both soft tiers reach the same minimum.
+Under `PowerMean` and `AbsLog{2}`, the objective is convex, so both soft tiers
+reach the same minimum.
 The heuristics cost ``O(mn)``; native iterative solvers cost roughly ``O(mn)``
 per iteration.
 
@@ -247,8 +256,8 @@ julia> round.(a * b'; digits=6)
  6.0  5.0  7.5
 ```
 
-[`soft_symcover_min`](@ref) and [`soft_cover_min`](@ref) solve `AbsLog{2}`
-natively and use JuMP with Ipopt for `AbsLinear`. They do not accept
+[`soft_symcover_min`](@ref) and [`soft_cover_min`](@ref) solve `PowerMean` and
+`AbsLog{2}` natively and use JuMP with Ipopt for `AbsLinear`. They do not accept
 `AbsLog{1}`; use [`soft_symcover`](@ref) or [`soft_cover`](@ref) instead.
 
 ### Uniqueness
@@ -262,8 +271,11 @@ not their products.
 
 `AbsLog{2}` has a unique minimizer except when the support pattern leaves a
 scaling freedom, as in `[0 1; 1 0]`, where every `a` with `a[1]*a[2] = 1` is
-optimal. If `AbsLog{1}()` has multiple minima, the implementation chooses the one
-with the smallest `AbsLog{2}` objective. `AbsLinear` may have several local minima.
+optimal. `PowerMean` has unique products `a[i]*b[j]` on the support, and a
+symmetric matrix has a symmetric minimizer; where a symmetric support leaves a
+scaling freedom, the two sides of the bipartition are balanced as above. If
+`AbsLog{1}()` has multiple minima, the implementation chooses the one with the
+smallest `AbsLog{2}` objective. `AbsLinear` may have several local minima.
 
 ### Starting points: initialize and refine
 
@@ -280,7 +292,8 @@ selection:
   optimize a supplied point. Hard refiners require a cover; soft refiners do not.
 - **Solvers** [`symcover_min`](@ref), [`cover_min`](@ref),
   [`soft_symcover`](@ref), [`soft_cover`](@ref), [`soft_symcover_min`](@ref), and
-  [`soft_cover_min`](@ref) refine several starts and return the best objective.
+  [`soft_cover_min`](@ref) refine several starts and return the best objective
+  (for the convex penalties, one start suffices).
 
 Plain forms choose their starts; `!` forms refine the supplied start, except
 [`symcover!`](@ref) and [`cover!`](@ref), which are in-place heuristics.
@@ -313,7 +326,8 @@ julia> round.(a0; digits=6)
  5.0
 ```
 
-For convex `AbsLog` penalties, the start does not change the result.
+For the convex `AbsLog` and `PowerMean` penalties, the start does not change the
+result.
 
 ## Consuming one factor alone: gauges and Gram covers
 

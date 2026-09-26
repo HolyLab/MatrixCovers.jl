@@ -5,8 +5,8 @@
 """
     AbstractCoverPenalty <: Function
 
-Supertype of cover penalties. Built-in subtypes are [`AbsLog`](@ref) and
-[`AbsLinear`](@ref).
+Supertype of cover penalties. Built-in subtypes are [`AbsLog`](@ref),
+[`AbsLinear`](@ref), and [`PowerMean`](@ref).
 
 [`cover_objective`](@ref) applies the penalty to
 `r = |A[i,j]|/(a[i]*b[j])` and sums over `A`.
@@ -21,7 +21,15 @@ The method must accept `r = 0` and `r = typemax(...)`. Penalties are usually
 singleton structs.
 
 [`cover_objective`](@ref) works for any subtype, but solvers support only
-specific built-in penalties: `AbsLog{2}` natively and `AbsLinear` through JuMP.
+specific built-in penalties:
+
+- hard covers ([`symcover_min`](@ref), [`cover_min`](@ref)): `AbsLog{2}`
+  natively, `AbsLog{1}` and `AbsLinear` through JuMP;
+- soft covers ([`soft_symcover`](@ref), [`soft_cover`](@ref)): `PowerMean`,
+  `AbsLog`, and `AbsLinear` natively;
+- soft minimizers ([`soft_symcover_min`](@ref), [`soft_cover_min`](@ref)):
+  `PowerMean` and `AbsLog{2}` natively, `AbsLinear` through JuMP.
+
 Passing a custom subtype to a solver raises a `MethodError`.
 """
 abstract type AbstractCoverPenalty<:Function end
@@ -53,8 +61,49 @@ minima.
 """
 struct AbsLinear{p} <: AbstractCoverPenalty end
 
+"""
+    PowerMean{p}
+
+Penalty type for
+
+    φ(r) = (r^p - 1 - p*log(r)) / p  if r > 0
+           0                         if r = 0
+
+with `p > 0`. As for [`AbsLog`](@ref), the `r=0` convention keeps zero entries
+finite, so structural zeros of `A` contribute nothing.
+
+The objective is strictly convex in the log scales, so the soft cover it defines
+has unique products `a[i]*b[j]` on the support of `A`, and a symmetric `A` has a
+symmetric minimizer. At the minimum, the `p`-power mean of the ratios
+`r = |A[i,j]|/(a[i]*b[j])` over the nonzero entries of each row and each column
+equals one: `∑_j r[i,j]^p = n_i` and `∑_i r[i,j]^p = m_j`, where `n_i` and `m_j`
+count the nonzeros of row `i` and column `j`. Consequently no ratio exceeds
+`min(n_i, m_j)^(1/p)`.
+
+`PowerMean{2}` is the default penalty for soft covers. For entries modeled as
+independent normal variables with standard deviations `a[i]*b[j]`, it gives the
+maximum-likelihood scales.
+
+See also: [`soft_cover`](@ref), [`soft_symcover`](@ref).
+"""
+struct PowerMean{p} <: AbstractCoverPenalty
+    function PowerMean{p}() where p
+        (p isa Real && p > 0) ||
+            throw(ArgumentError("PowerMean{p} requires a real exponent p > 0, got p = $(repr(p))"))
+        return new{p}()
+    end
+end
+
 (::AbsLog{p})(r::Real) where p = iszero(r) ? zero(float(r)) : abs(log(r))^p
 (::AbsLinear{p})(r::Real) where p = abs(oneunit(r) - r)^p
+# `expm1(t) - t` avoids the cancellation in `r^p - 1 - t` near `r = 1`.
+function (::PowerMean{p})(r::Real) where p
+    rf = float(r)
+    iszero(rf) && return zero(rf)
+    isinf(rf) && return rf
+    t = p * log(rf)
+    return (expm1(t) - t) / p
+end
 
 # ============================================================
 # cover_objective
@@ -90,7 +139,7 @@ Both forms use full-grid weighting: symmetric off-diagonal pairs contribute
 twice and diagonal entries once.
 
 Zero entries of `A` are handled according to `ϕ`:
-- `AbsLog{p}`: zero entries contribute 0 (φ(0) = 0 by convention).
+- `AbsLog{p}`, `PowerMean{p}`: zero entries contribute 0 (φ(0) = 0 by convention).
 - `AbsLinear{p}`: zero entries contribute 1 (φ(0) = |1-0|^p = 1).
 
 `eachindex(a)` must match `axes(A, 1)` and `eachindex(b)` must match `axes(A, 2)`.
@@ -98,7 +147,7 @@ Zero entries of `A` are handled according to `ϕ`:
 `A` is read through [`foreach_support`](@ref).
 
 See also:
-- Penalty types (options for `ϕ`): [`AbsLog`](@ref), [`AbsLinear`](@ref).
+- Penalty types (options for `ϕ`): [`AbsLog`](@ref), [`AbsLinear`](@ref), [`PowerMean`](@ref).
 - Solvers: [`symcover`](@ref), [`cover`](@ref), [`soft_symcover`](@ref), [`soft_cover`](@ref).
 """
 function cover_objective(ϕ, a, b, A)
@@ -119,8 +168,8 @@ function cover_objective(ϕ, a, b, A)
     end
     # Every entry outside the support has `r = 0` whatever its scales, including a
     # zero entry over a zero scale, which constrains nothing. They therefore share
-    # one penalty value, and only their count is needed: zero for `AbsLog`, but a
-    # nonzero constant for `AbsLinear`, which is continuous at `r = 0`.
+    # one penalty value, and only their count is needed: zero for `AbsLog` and
+    # `PowerMean`, but a nonzero constant for `AbsLinear`, which is continuous at `r = 0`.
     # The guard prevents `0 * Inf` for penalties that are infinite at zero.
     nzero = length(a) * length(b) - nsupport[]
     return iszero(nzero) ? s[] : s[] + nzero * T(ϕ(zero(T)))

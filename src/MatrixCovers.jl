@@ -2,12 +2,12 @@ module MatrixCovers
 
 using LinearAlgebra: LinearAlgebra, Adjoint, Bidiagonal, Diagonal, Hermitian,
                      SymTridiagonal, Symmetric, Transpose, Tridiagonal, bunchkaufman!,
-                     dot, lu!, mul!, norm
+                     dot, ldiv!, lu!, mul!, norm
 using PrecompileTools: PrecompileTools, @compile_workload
 using Random: Random, AbstractRNG, MersenneTwister
-using SparseArrays: SparseArrays, SparseMatrixCSC, nnz, nonzeros, nzrange, rowvals, spzeros
+using SparseArrays: SparseArrays, SparseMatrixCSC, nnz, nonzeros, nzrange, rowvals, sparse, spzeros
 
-export AbsLog, AbsLinear
+export AbsLog, AbsLinear, PowerMean
 export cover_objective, iscover
 export cover, cover!, symcover, symcover!
 export gramcover, gramcover!
@@ -30,8 +30,10 @@ include("dense_heuristic.jl")  # full-grid kernels for the heuristic covers
 include("gram_covers.jl")    # symmetric covers of A'*W*A from an asymmetric cover of A
 include("initializers.jl")   # the start menu; consumed by both solver families below
 include("soft_covers.jl")
+include("powermean.jl")        # the PowerMean soft covers, the soft-cover default
 include("sparse_cholesky.jl")  # CHOLMOD factorizations for the minimal-cover solvers
 include("minimal_covers.jl")
+include("powermean_newton.jl") # Newton refinement of the PowerMean soft covers
 include("sparse_support.jl")  # sparse traversal and the sparse solver defaults
 
 
@@ -56,7 +58,7 @@ function __init__()
         end
         if exc.f === soft_symcover_min || exc.f === soft_symcover_min! ||
            exc.f === soft_cover_min || exc.f === soft_cover_min!
-            printstyled(io, "\nAbsLog{2} is solved natively; AbsLinear penalties require loading JuMP plus Ipopt. AbsLog{1} is not yet supported."; color=:yellow)
+            printstyled(io, "\nPowerMean and AbsLog{2} are solved natively; AbsLinear penalties require loading JuMP plus Ipopt. AbsLog{1} is not yet supported."; color=:yellow)
             return true
         end
     end

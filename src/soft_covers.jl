@@ -5,46 +5,84 @@
 # ============================================================
 
 """
-    a = soft_symcover(ϕ, A; maxiter=32, starts=5, σ=2.0, rng=MersenneTwister(0))
-    a = soft_symcover(A; maxiter=32, starts=5, σ=2.0, rng=MersenneTwister(0))
+    a = soft_symcover(ϕ, A; kwargs...)
+    a = soft_symcover(A; kwargs...)
 
 Approximately minimize `∑ ϕ(|A[i,j]|/(a[i]*a[j]))` for symmetric `A`, without a
-hard coverage constraint.
+hard coverage constraint. The default penalty is `PowerMean{2}()`.
 
-Supported penalties are:
+Supported penalties and their keywords are:
 
+- `PowerMean{p}()` (default): the convex minimum, computed by damped
+  simultaneous power-mean updates `a[k] ← sqrt(a[k] * M_p(|A[k,j]|/a[j]))`, where
+  `M_p` is the `p`-power mean over the nonzeros of row `k`, followed when they
+  are slow by Newton steps with backtracking on the objective. Every update
+  decreases the objective. The iteration stops when, in every nonzero row, the mean of `r^p`
+  over the ratios `r = |A[k,j]|/(a[k]*a[j])` of the nonzero entries is within
+  `tol` of one. It computes in at least `Float64`, and `tol` defaults to
+  `4096*eps` of that type, and a warning reports an iteration that ends without
+  reaching it. The keywords `maxiter`, `newton`, `maxnewton`, and `linsolve` are
+  described in the extended help.
 - `AbsLog{2}()`: the convex minimum, computed by one linear solve.
 - `AbsLog{1}()`: weighted-median coordinate descent to a fixed point, which need
-  not be a local minimum.
-- `AbsLinear{2}()` (default): multistart coordinate descent.
+  not be a local minimum (`maxiter=20`).
+- `AbsLinear{2}()`: multistart coordinate descent (`maxiter=32`, `starts=5`,
+  `σ=2.0`, `rng=MersenneTwister(0)`). `starts` controls the number of starting
+  points and `σ` the spread of log-normal perturbations. Pass `rng` for
+  reproducibility. `sigma` is an alias for `σ`.
 - `AbsLinear{1}()`: weighted-median descent initialized from the `AbsLinear{2}`
   result.
 
-For `AbsLinear`, `starts` controls the number of starting points and `σ` the
-spread of log-normal perturbations. Pass `rng` for reproducibility. `sigma` is
-an alias for `σ`.
+Unsupported rows receive zero scale. When a connected component of the support
+is bipartite with no diagonal entry, the products on the support do not
+determine the scales; `PowerMean` then applies the balance convention of
+[`cover_min`](@ref) between the two sides of the bipartition.
 
-See also: [`symcover`](@ref), [`cover_objective`](@ref), [`soft_symcover_min`](@ref).
+See also: [`symcover`](@ref), [`cover_objective`](@ref), [`soft_symcover_min`](@ref), [`PowerMean`](@ref).
 
 # Examples
 
-Round the multistart result when comparing it with exact values.
-
 ```jldoctest
-julia> A = [4 -1; -1 0];
+julia> A = [4 -1; -1 1];
 
-julia> round.(soft_symcover(A); digits=4)
-2-element Vector{Float64}:
+julia> a = soft_symcover(A);
+
+julia> R = abs.(A) ./ (a .* a');
+
+julia> round.(sum(R .^ 2; dims=2); digits=8)   # each row's mean square ratio is one
+2×1 Matrix{Float64}:
  2.0
- 0.5
+ 2.0
 
 julia> round.(soft_symcover([0 1; 1 0]); digits=4)
 2-element Vector{Float64}:
  1.0
  1.0
 ```
+
+# Extended help
+
+## `PowerMean` keywords
+
+- `maxiter` (default `10_000`): the largest number of power-mean updates.
+- `newton` (default `true`): whether Newton steps finish the solve. The updates
+  hand over to Newton when the rate of decrease of the imbalance over recent
+  updates predicts more than 200 further updates, and after at most
+  `min(maxiter, 400)` updates. With `newton=false` the updates continue until
+  convergence or `maxiter`.
+- `maxnewton` (default `100`): the largest number of Newton steps. Each step
+  solves the Newton equations and backtracks on the objective.
+- `linsolve` (default `:auto`): the solver for the Newton equations. `:dense`
+  factorizes the dense Hessian; `:cholesky` factorizes the sparse Hessian with
+  CHOLMOD (`Float64` only); `:cg` uses conjugate gradients with a diagonal
+  preconditioner, at one pass over the support per iteration, for problems too
+  large to factor. `:auto` chooses `:dense` for support that fills at least a
+  quarter of the grid and otherwise `:cholesky`, each when its predicted flop
+  count is at most `8e3` per stored entry (and, for `:cholesky`, its predicted
+  storage at most `2^30` bytes), and `:cg` when neither fits. Poorly
+  conditioned problems can need many conjugate-gradient iterations.
 """
-soft_symcover(A::AbstractMatrix; kwargs...) = soft_symcover(AbsLinear{2}(), A; kwargs...)
+soft_symcover(A::AbstractMatrix; kwargs...) = soft_symcover(PowerMean{2}(), A; kwargs...)
 
 # The soft AbsLog{2} objective is convex with one minimizer, so the heuristic and the
 # minimizer coincide: both are this solve.
@@ -58,8 +96,8 @@ function soft_symcover(::AbsLog{1}, A::AbstractMatrix; maxiter::Int=20)
 end
 
 # Sole owner of the starts/σ/rng defaults for the AbsLinear{2} soft-cover family;
-# every other method in that family (the no-ϕ wrapper, the AbsLinear{1} method)
-# forwards them via `kwargs...` rather than restating the default.
+# the AbsLinear{1} method forwards them via `kwargs...` rather than restating the
+# default.
 function soft_symcover(::AbsLinear{2}, A::AbstractMatrix; maxiter::Int=32, starts::Int=5,
                        σ::Union{Real,Nothing}=nothing, sigma::Union{Real,Nothing}=nothing,
                        rng::AbstractRNG=MersenneTwister(_MULTISTART_SEED))
@@ -84,19 +122,21 @@ end
     a = soft_symcover!(a, A; maxiter=...)
 
 Refine one symmetric soft-cover start in place. The no-ϕ form uses
-`AbsLinear{2}()`. Build a start with [`initialize_symcover`](@ref) and
+`PowerMean{2}()`. Build a start with [`initialize_symcover`](@ref) and
 `feasible=:none`.
 
 `a` must be finite and positive on supported rows. It need not cover `A`, and
 unsupported scales are set to zero.
 
-`maxiter` bounds the descent sweeps.
+`maxiter` bounds the descent sweeps. `PowerMean` also accepts `tol`, `newton`,
+`maxnewton`, and `linsolve`, as in [`soft_symcover`](@ref); its result does not
+depend on the start.
 
 See also: [`soft_symcover`](@ref), [`soft_symcover_min!`](@ref), [`initialize_symcover`](@ref), [`soft_cover!`](@ref).
 """
 function soft_symcover! end
 soft_symcover!(a::AbstractVector, A::AbstractMatrix; kwargs...) =
-    soft_symcover!(AbsLinear{2}(), a, A; kwargs...)
+    soft_symcover!(PowerMean{2}(), a, A; kwargs...)
 
 function soft_symcover!(::AbsLog{2}, a::AbstractVector, A::AbstractMatrix; kwargs...)
     _prepare_soft_symcover_start!(a, A, :soft_symcover!)
@@ -123,29 +163,48 @@ function soft_symcover!(::AbsLinear{1}, a::AbstractVector, A::AbstractMatrix; ma
 end
 
 """
-    a, b = soft_cover(ϕ, A; maxiter=200, starts=4, σ=2.0, rng=MersenneTwister(0))
-    a, b = soft_cover(A; maxiter=200, starts=4, σ=2.0, rng=MersenneTwister(0))
+    a, b = soft_cover(ϕ, A; kwargs...)
+    a, b = soft_cover(A; kwargs...)
 
 Approximately minimize `∑ ϕ(|A[i,j]|/(a[i]*b[j]))` without a hard coverage
-constraint. This is the asymmetric form of [`soft_symcover`](@ref).
+constraint. This is the asymmetric form of [`soft_symcover`](@ref). The default
+penalty is `PowerMean{2}()`.
 
-Supported penalties are:
+Supported penalties and their keywords are:
 
+- `PowerMean{p}()` (default): the convex minimum, computed by alternating
+  power-mean updates of the row and column scales (Sinkhorn scaling of
+  `abs.(A).^p` to row sums `n_i` and column sums `m_j`, the nonzero counts),
+  with adaptive overrelaxation, followed when the sweeps are slow by Newton
+  steps with backtracking on the objective. The iteration stops when, in every
+  nonzero row and column, the mean of `r^p` over the ratios `r` of the nonzero
+  entries is within `tol` of one. It computes in at least `Float64`, and `tol`
+  defaults to `4096*eps` of that type; a warning reports an iteration that ends
+  without reaching it. `maxiter` (default `10_000`) bounds the sweeps, each an
+  update of all rows and then all columns. The sweeps hand over to Newton when
+  their rate predicts more than 100 further sweeps, and after at most
+  `min(maxiter, 200)` sweeps. `newton`, `maxnewton`, and `linsolve` have the
+  meanings given in the extended help of [`soft_symcover`](@ref). When
+  `abs.(A)` is exactly symmetric, the minimizer has `b == a` under the balance
+  convention, and
+  `soft_cover` and `soft_cover_min` instead compute `a` by the algorithm of
+  [`soft_symcover`](@ref) (with the same keywords; `maxiter` then counts its
+  updates) and return `(a, copy(a))`. The in-place [`soft_cover!`](@ref) always
+  uses the alternating iteration.
 - `AbsLog{2}()`: the convex minimum, computed by one linear solve.
 - `AbsLog{1}()`: alternating weighted-median updates to a fixed point, which
-  need not be a local minimum.
-- `AbsLinear{2}()` (default): alternating least squares.
+  need not be a local minimum (`maxiter=20`).
+- `AbsLinear{2}()`: multistart alternating least squares (`maxiter=200`,
+  `starts=4`, `σ=2.0`, `rng=MersenneTwister(0)`). `starts` controls the number
+  of starting points and `σ` the spread of perturbations. Pass `rng` for
+  reproducibility. `sigma` is an alias for `σ`.
 - `AbsLinear{1}()`: alternating weighted-median updates initialized from the
   `AbsLinear{2}` result.
 
 Unsupported rows and columns receive zero scale. The factors use the balance
 convention of [`cover_min`](@ref).
 
-For `AbsLinear`, `starts` controls the number of starting points and `σ` the
-spread of perturbations. Pass `rng` for reproducibility. `sigma` is an alias for
-`σ`.
-
-See also: [`cover`](@ref), [`soft_symcover`](@ref), [`cover_objective`](@ref).
+See also: [`cover`](@ref), [`soft_symcover`](@ref), [`cover_objective`](@ref), [`PowerMean`](@ref).
 
 # Examples
 
@@ -156,11 +215,11 @@ julia> a, b = soft_cover(A);
 
 julia> a * b'
 2×3 Matrix{Float64}:
- 1.93288  1.97239  2.50673
- 4.97144  5.07307  6.44741
+ 1.73729  1.93617  2.37048
+ 4.64478  5.17648  6.33766
 ```
 """
-soft_cover(A::AbstractMatrix; kwargs...) = soft_cover(AbsLinear{2}(), A; kwargs...)
+soft_cover(A::AbstractMatrix; kwargs...) = soft_cover(PowerMean{2}(), A; kwargs...)
 
 # The soft AbsLog{2} objective is convex with one minimizer, so the heuristic and the
 # minimizer coincide: both are this solve.
@@ -173,8 +232,8 @@ function soft_cover(::AbsLog{1}, A::AbstractMatrix; maxiter::Int=20)
 end
 
 # Sole owner of the starts/σ/rng defaults for the AbsLinear{2} soft-cover family;
-# every other method in that family (the no-ϕ wrapper, the AbsLinear{1} method)
-# forwards them via `kwargs...` rather than restating the default.
+# the AbsLinear{1} method forwards them via `kwargs...` rather than restating the
+# default.
 function soft_cover(ϕ::AbsLinear{2}, A::AbstractMatrix; maxiter::Int=200, starts::Int=4,
                     σ::Union{Real,Nothing}=nothing, sigma::Union{Real,Nothing}=nothing,
                     rng::AbstractRNG=MersenneTwister(_MULTISTART_SEED))
@@ -195,16 +254,18 @@ end
 Refine the starting point `(a, b)` into a soft cover of `A` in place. Scales must
 be finite and positive on supported rows and columns; unsupported scales are
 zeroed. The start need not cover `A`. Build one with [`initialize_cover`](@ref)
-and `feasible=:none`. The no-ϕ form uses `AbsLinear{2}()`.
+and `feasible=:none`. The no-ϕ form uses `PowerMean{2}()`.
 
 The result uses the balance convention of [`cover_min`](@ref), so equivalent
-rescalings `(c*a, b/c)` give the same result.
+rescalings `(c*a, b/c)` give the same result. Keywords match
+[`soft_cover`](@ref) for the chosen penalty; under `PowerMean` the result does
+not depend on the start.
 
 See also: [`soft_cover`](@ref), [`soft_cover_min!`](@ref), [`initialize_cover`](@ref), [`soft_symcover!`](@ref).
 """
 function soft_cover! end
 soft_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
-    soft_cover!(AbsLinear{2}(), a, b, A; kwargs...)
+    soft_cover!(PowerMean{2}(), a, b, A; kwargs...)
 
 function soft_cover!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
     _prepare_soft_cover_start!(a, b, A, :soft_cover!)
@@ -237,9 +298,11 @@ end
     a = soft_symcover_min(A)
 
 Return a local minimum of `∑ ϕ(|A[i,j]|/(a[i]*a[j]))` without coverage
-constraints. The no-ϕ form uses `AbsLinear{2}()`.
+constraints. The no-ϕ form uses `PowerMean{2}()`.
 
 Supported ϕ values and required extensions:
+- `PowerMean{p}()`: solved natively. The objective is convex, so this is the
+  computation of [`soft_symcover`](@ref), with the same keywords.
 - `AbsLog{2}()`: solved natively as linear least squares; `linsolve` has the same
   meaning as in [`symcover_min`](@ref).
 - `AbsLinear{1}()`, `AbsLinear{2}()`: require JuMP and Ipopt. Each strategy in
@@ -249,7 +312,7 @@ Supported ϕ values and required extensions:
 See also: [`soft_symcover_min!`](@ref), [`soft_symcover`](@ref), [`symcover_min`](@ref).
 """
 function soft_symcover_min end
-soft_symcover_min(A::AbstractMatrix; kwargs...) = soft_symcover_min(AbsLinear{2}(), A; kwargs...)
+soft_symcover_min(A::AbstractMatrix; kwargs...) = soft_symcover_min(PowerMean{2}(), A; kwargs...)
 
 function soft_symcover_min(::AbsLog{2}, A::AbstractMatrix; kwargs...)
     ax = axes(A, 1)
@@ -278,7 +341,7 @@ end
     a = soft_symcover_min!(a, A)
 
 Refine `a` into a local minimum of the symmetric soft-cover objective, in place.
-The no-ϕ form uses `AbsLinear{2}()`.
+The no-ϕ form uses `PowerMean{2}()`, for which this is [`soft_symcover!`](@ref).
 
 `a` must be positive on supported rows; unsupported scales are zeroed. It need
 not cover `A`. Use `feasible=:none` with [`initialize_symcover`](@ref).
@@ -289,7 +352,7 @@ See also: [`initialize_symcover`](@ref), [`soft_symcover_min`](@ref), [`symcover
 """
 function soft_symcover_min! end
 soft_symcover_min!(a::AbstractVector, A::AbstractMatrix; kwargs...) =
-    soft_symcover_min!(AbsLinear{2}(), a, A; kwargs...)
+    soft_symcover_min!(PowerMean{2}(), a, A; kwargs...)
 
 function soft_symcover_min!(::AbsLog{2}, a::AbstractVector, A::AbstractMatrix; kwargs...)
     _prepare_soft_symcover_start!(a, A)
@@ -324,10 +387,12 @@ end
     a, b = soft_cover_min(A)
 
 Return a local minimum of `∑ ϕ(|A[i,j]|/(a[i]*b[j]))` without coverage
-constraints. The no-ϕ form uses `AbsLinear{2}()`. Factors use the balance
+constraints. The no-ϕ form uses `PowerMean{2}()`. Factors use the balance
 convention of [`cover_min`](@ref).
 
 Supported ϕ values and required extensions:
+- `PowerMean{p}()`: solved natively. The objective is convex, so this is the
+  computation of [`soft_cover`](@ref), with the same keywords.
 - `AbsLog{2}()`: solved natively.
 - `AbsLinear{1}()`, `AbsLinear{2}()`: require JuMP and Ipopt. Each strategy in
   `strategies` is refined, and the best local minimum is returned.
@@ -336,7 +401,7 @@ Supported ϕ values and required extensions:
 See also: [`soft_cover_min!`](@ref), [`soft_symcover_min`](@ref), [`soft_cover`](@ref).
 """
 function soft_cover_min end
-soft_cover_min(A::AbstractMatrix; kwargs...) = soft_cover_min(AbsLinear{2}(), A; kwargs...)
+soft_cover_min(A::AbstractMatrix; kwargs...) = soft_cover_min(PowerMean{2}(), A; kwargs...)
 
 function soft_cover_min(::AbsLog{2}, A::AbstractMatrix; kwargs...)
     a, b, _ = _soft_cover_min_abslog2(A; kwargs...)
@@ -359,7 +424,7 @@ end
     a, b = soft_cover_min!(a, b, A)
 
 Refine `(a, b)` into a local minimum of the asymmetric soft-cover objective, in
-place. The no-ϕ form uses `AbsLinear{2}()`.
+place. The no-ϕ form uses `PowerMean{2}()`, for which this is [`soft_cover!`](@ref).
 
 `a` and `b` must be positive on supported rows and columns; unsupported scales
 are zeroed. The start need not cover `A`. Build one with `feasible=:none`.
@@ -371,7 +436,7 @@ See also: [`initialize_cover`](@ref), [`soft_cover_min`](@ref), [`soft_symcover_
 """
 function soft_cover_min! end
 soft_cover_min!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
-    soft_cover_min!(AbsLinear{2}(), a, b, A; kwargs...)
+    soft_cover_min!(PowerMean{2}(), a, b, A; kwargs...)
 
 function soft_cover_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
     _prepare_soft_cover_start!(a, b, A)

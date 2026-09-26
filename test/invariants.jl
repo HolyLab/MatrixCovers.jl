@@ -19,6 +19,9 @@ const SYM_NOTIONS = (
     (name = "soft_symcover_min(AbsLog{2})",    f = A -> soft_symcover_min(AbsLog{2}(), A),    hard = false, rtol = 1e-5),
     (name = "soft_symcover_min(AbsLinear{1})", f = A -> soft_symcover_min(AbsLinear{1}(), A), hard = false, rtol = 1e-5),
     (name = "soft_symcover_min(AbsLinear{2})", f = A -> soft_symcover_min(AbsLinear{2}(), A), hard = false, rtol = 1e-5),
+    (name = "soft_symcover(PowerMean{2})",     f = A -> soft_symcover(PowerMean{2}(), A),     hard = false, rtol = 1e-12),
+    (name = "soft_symcover(PowerMean{1})",     f = A -> soft_symcover(PowerMean{1}(), A),     hard = false, rtol = 1e-12),
+    (name = "soft_symcover_min(PowerMean{2})", f = A -> soft_symcover_min(PowerMean{2}(), A), hard = false, rtol = 1e-12),
 )
 
 const GEN_NOTIONS = (
@@ -32,6 +35,9 @@ const GEN_NOTIONS = (
     (name = "soft_cover_min(AbsLog{2})",      f = A -> soft_cover_min(AbsLog{2}(), A),    hard = false, rtol = 1e-9),
     (name = "soft_cover_min(AbsLinear{1})",   f = A -> soft_cover_min(AbsLinear{1}(), A), hard = false, rtol = 1e-5),
     (name = "soft_cover_min(AbsLinear{2})",   f = A -> soft_cover_min(AbsLinear{2}(), A), hard = false, rtol = 1e-5),
+    (name = "soft_cover(PowerMean{2})",       f = A -> soft_cover(PowerMean{2}(), A),     hard = false, rtol = 1e-12),
+    (name = "soft_cover(PowerMean{3})",       f = A -> soft_cover(PowerMean{3}(), A),     hard = false, rtol = 1e-12),
+    (name = "soft_cover_min(PowerMean{2})",   f = A -> soft_cover_min(PowerMean{2}(), A), hard = false, rtol = 1e-12),
 )
 
 @testset "cross-notion invariants" begin

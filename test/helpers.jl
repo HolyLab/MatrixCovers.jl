@@ -3,6 +3,9 @@
 # The four penalty instances, for loops over properties that must hold for every ϕ.
 const PENALTIES = (AbsLog{1}(), AbsLog{2}(), AbsLinear{1}(), AbsLinear{2}())
 
+# Penalties with native soft-cover solvers, for properties of the soft-cover family.
+const SOFT_PENALTIES = (PENALTIES..., PowerMean{1}(), PowerMean{2}(), PowerMean{3.5}())
+
 """
     isbalanced(a, b, A)
 
