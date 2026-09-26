@@ -264,15 +264,13 @@ MC.initialize_cover!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.i
 
 # Soft covers and the `*_min` family preserve core penalty dispatch.
 MC.soft_symcover(A::QMatrix; kwargs...) = sym(MC.soft_symcover, A; kwargs...)
+MC.soft_symcover!(a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_symcover!, a, A; kwargs...)
 MC.soft_cover(A::QMatrix; kwargs...) = asym(MC.soft_cover, A; kwargs...)
+MC.soft_cover!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover!, a, b, A; kwargs...)
 MC.symcover_min(A::QMatrix; kwargs...) = sym(MC.symcover_min, A; kwargs...)
 MC.symcover_min!(a::QVector, A::QMatrix; kwargs...) = symstart!(MC.symcover_min!, a, A; kwargs...)
 MC.cover_min(A::QMatrix; kwargs...) = asym(MC.cover_min, A; kwargs...)
 MC.cover_min!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.cover_min!, a, b, A; kwargs...)
-MC.soft_symcover_min(A::QMatrix; kwargs...) = sym(MC.soft_symcover_min, A; kwargs...)
-MC.soft_symcover_min!(a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_symcover_min!, a, A; kwargs...)
-MC.soft_cover_min(A::QMatrix; kwargs...) = asym(MC.soft_cover_min, A; kwargs...)
-MC.soft_cover_min!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover_min!, a, b, A; kwargs...)
 
 # Disambiguate sparse unitful matrices without losing sparse storage.
 const QSparse = SparseMatrixCSC{<:Quantity}
@@ -286,11 +284,11 @@ MC.symcover_min(ϕ::AbsLog{2}, A::QSparseSym; kwargs...) =
 MC.cover_min(ϕ::AbsLog{2}, A::QSparse; kwargs...) =
     asym(MC.cover_min, A, ϕ; kwargs...)
 
-MC.soft_symcover_min(ϕ::AbsLog{2}, A::QSparseSym; kwargs...) =
-    sym(MC.soft_symcover_min, A, ϕ; kwargs...)
+MC.soft_symcover(ϕ::AbsLog{2}, A::QSparseSym; kwargs...) =
+    sym(MC.soft_symcover, A, ϕ; kwargs...)
 
-MC.soft_cover_min(ϕ::AbsLog{2}, A::QSparse; kwargs...) =
-    asym(MC.soft_cover_min, A, ϕ; kwargs...)
+MC.soft_cover(ϕ::AbsLog{2}, A::QSparse; kwargs...) =
+    asym(MC.soft_cover, A, ϕ; kwargs...)
 
 MC.symcover_min!(ϕ::AbsLog{2}, a::QVector, A::QSparseSym; kwargs...) =
     symstart!(MC.symcover_min!, a, A, ϕ; kwargs...)
@@ -301,26 +299,21 @@ MC.cover_min!(ϕ::AbsLog{2}, a::QVector, b::QVector, A::QSparse; kwargs...) =
 for P in PENALTIES
     @eval begin
         MC.soft_symcover(ϕ::$P, A::QMatrix; kwargs...) = sym(MC.soft_symcover, A, ϕ; kwargs...)
+        MC.soft_symcover!(ϕ::$P, a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_symcover!, a, A, ϕ; kwargs...)
         MC.soft_cover(ϕ::$P, A::QMatrix; kwargs...) = asym(MC.soft_cover, A, ϕ; kwargs...)
+        MC.soft_cover!(ϕ::$P, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover!, a, b, A, ϕ; kwargs...)
 
         MC.symcover_min(ϕ::$P, A::QMatrix; kwargs...) = sym(MC.symcover_min, A, ϕ; kwargs...)
         MC.symcover_min!(ϕ::$P, a::QVector, A::QMatrix; kwargs...) = symstart!(MC.symcover_min!, a, A, ϕ; kwargs...)
         MC.cover_min(ϕ::$P, A::QMatrix; kwargs...) = asym(MC.cover_min, A, ϕ; kwargs...)
         MC.cover_min!(ϕ::$P, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.cover_min!, a, b, A, ϕ; kwargs...)
-
-        MC.soft_symcover_min(ϕ::$P, A::QMatrix; kwargs...) = sym(MC.soft_symcover_min, A, ϕ; kwargs...)
-        MC.soft_symcover_min!(ϕ::$P, a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_symcover_min!, a, A, ϕ; kwargs...)
-        MC.soft_cover_min(ϕ::$P, A::QMatrix; kwargs...) = asym(MC.soft_cover_min, A, ϕ; kwargs...)
-        MC.soft_cover_min!(ϕ::$P, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover_min!, a, b, A, ϕ; kwargs...)
     end
 end
 
 # `PowerMean` is soft-only and parametric in its exponent.
 MC.soft_symcover(ϕ::PowerMean, A::QMatrix; kwargs...) = sym(MC.soft_symcover, A, ϕ; kwargs...)
+MC.soft_symcover!(ϕ::PowerMean, a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_symcover!, a, A, ϕ; kwargs...)
 MC.soft_cover(ϕ::PowerMean, A::QMatrix; kwargs...) = asym(MC.soft_cover, A, ϕ; kwargs...)
-MC.soft_symcover_min(ϕ::PowerMean, A::QMatrix; kwargs...) = sym(MC.soft_symcover_min, A, ϕ; kwargs...)
-MC.soft_symcover_min!(ϕ::PowerMean, a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_symcover_min!, a, A, ϕ; kwargs...)
-MC.soft_cover_min(ϕ::PowerMean, A::QMatrix; kwargs...) = asym(MC.soft_cover_min, A, ϕ; kwargs...)
-MC.soft_cover_min!(ϕ::PowerMean, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover_min!, a, b, A, ϕ; kwargs...)
+MC.soft_cover!(ϕ::PowerMean, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover!, a, b, A, ϕ; kwargs...)
 
 end  # module MatrixCoversUnitfulExt

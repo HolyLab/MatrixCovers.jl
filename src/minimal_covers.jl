@@ -1773,7 +1773,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     lα = [hasrow[ip] ? x[ip] + s[rowcomp[ip]] : zero(T) for ip in 1:m]
     lβ = [hascol[jp] ? x[m+jp] - s[colcomp[jp]] : zero(T) for jp in 1:n]
     _check_representable(lα, ip -> hasrow[ip], lβ, jp -> hascol[jp], T,
-                         boost ? :cover_min : :soft_cover_min; gauge=false)
+                         boost ? :cover_min : :soft_cover; gauge=false)
     # Dense scale vectors matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     a = similar(Array{T}, axr)
     b = similar(Array{T}, axc)
@@ -1789,9 +1789,9 @@ end
 
 # Soft `AbsLog{2}` covers are the unweighted initial solve with no feasibility
 # shift. Convexity makes the constrained iteration and multistart unnecessary.
-_soft_symcover_min_abslog2(A::AbstractMatrix; kwargs...) =
-    _symcover_min_abslog2(A; maxouter=0, boost=false, fname=:soft_symcover_min, kwargs...)
-_soft_cover_min_abslog2(A::AbstractMatrix; kwargs...) =
+_soft_symcover_abslog2(A::AbstractMatrix; kwargs...) =
+    _symcover_min_abslog2(A; maxouter=0, boost=false, fname=:soft_symcover, kwargs...)
+_soft_cover_abslog2(A::AbstractMatrix; kwargs...) =
     _cover_min_abslog2(A; maxouter=0, boost=false, kwargs...)
 
 # JuMP reference used to test the native symmetric solver.

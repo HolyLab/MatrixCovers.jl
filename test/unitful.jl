@@ -96,9 +96,9 @@
         @test unit.(symcover_min(AbsLog{2}(), S)) == fill(u"m^-1", 3)
         @test unit.(symcover_min(AbsLog{2}(), Symmetric(S))) == fill(u"m^-1", 3)
         @test all(unit.(v) == fill(u"m^-1", 3) for v in cover_min(AbsLog{2}(), S))
-        @test unit.(soft_symcover_min(AbsLog{2}(), S)) == fill(u"m^-1", 3)
-        @test unit.(soft_symcover_min(AbsLog{2}(), Symmetric(S))) == fill(u"m^-1", 3)
-        @test all(unit.(v) == fill(u"m^-1", 3) for v in soft_cover_min(AbsLog{2}(), S))
+        @test unit.(soft_symcover(AbsLog{2}(), S)) == fill(u"m^-1", 3)
+        @test unit.(soft_symcover(AbsLog{2}(), Symmetric(S))) == fill(u"m^-1", 3)
+        @test all(unit.(v) == fill(u"m^-1", 3) for v in soft_cover(AbsLog{2}(), S))
         a = initialize_symcover(S)
         @test unit.(symcover_min!(AbsLog{2}(), a, S)) == fill(u"m^-1", 3)
         @test unit.(symcover_min!(AbsLog{2}(), a, Symmetric(S))) == fill(u"m^-1", 3)
@@ -161,12 +161,12 @@
     end
 
     @testset "the whole family" begin
-        for f in (symcover, initialize_symcover, soft_symcover, symcover_min, soft_symcover_min)
+        for f in (symcover, initialize_symcover, soft_symcover, symcover_min)
             a = f(A)
             @test unit.(a) == UA
             @test eltype(ustrip.(a)) <: AbstractFloat
         end
-        for f in (cover, initialize_cover, soft_cover, cover_min, soft_cover_min)
+        for f in (cover, initialize_cover, soft_cover, cover_min)
             a, b = f(A)
             @test unit.(a) == unit.(b) == UA
         end
@@ -175,19 +175,13 @@
             @test unit.(soft_symcover(ϕ, A)) == UA
             @test unit.(symcover_min(ϕ, A)) == UA
             @test all(unit.(v) == UA for v in cover(ϕ, A))
+            @test all(unit.(v) == UA for v in soft_cover(ϕ, A))
             @test all(unit.(v) == UA for v in cover_min(ϕ, A))
         end
         for ϕ in (PowerMean{1}(), PowerMean{2}())
             @test unit.(soft_symcover(ϕ, A)) == UA
-        end
-        for ϕ in (AbsLinear{1}(), AbsLinear{2}(), PowerMean{1}(), PowerMean{2}())
             @test all(unit.(v) == UA for v in soft_cover(ϕ, A))
-            @test unit.(soft_symcover_min(ϕ, A)) == UA
-            @test all(unit.(v) == UA for v in soft_cover_min(ϕ, A))
         end
-        # `soft_cover_min` also takes the log-domain penalty, which has an
-        # analytic minimum.
-        @test all(unit.(v) == UA for v in soft_cover_min(AbsLog{2}(), A))
     end
 
     @testset "mutating forms" begin
@@ -243,27 +237,27 @@
         @test unit.(a) == unit.(b) == UA
 
         a = initialize_symcover(A)
-        @test soft_symcover_min!(a, A) === a
+        @test soft_symcover!(a, A) === a
         @test unit.(a) == UA
 
         a, b = initialize_cover(A)
-        @test soft_cover_min!(a, b, A) == (a, b)
+        @test soft_cover!(a, b, A) == (a, b)
         @test unit.(a) == unit.(b) == UA
 
         a = initialize_symcover(A)
-        @test soft_symcover_min!(AbsLinear{2}(), a, A) === a
+        @test soft_symcover!(AbsLinear{2}(), a, A) === a
         @test unit.(a) == UA
 
         a, b = initialize_cover(A)
-        @test soft_cover_min!(AbsLog{2}(), a, b, A) == (a, b)
+        @test soft_cover!(AbsLog{2}(), a, b, A) == (a, b)
         @test unit.(a) == unit.(b) == UA
 
         a = initialize_symcover(A)
-        @test soft_symcover_min!(PowerMean{1}(), a, A) === a
+        @test soft_symcover!(PowerMean{1}(), a, A) === a
         @test unit.(a) == UA
 
         a, b = initialize_cover(A)
-        @test soft_cover_min!(PowerMean{1}(), a, b, A) == (a, b)
+        @test soft_cover!(PowerMean{1}(), a, b, A) == (a, b)
         @test unit.(a) == unit.(b) == UA
 
         # A start in a dimensionally equivalent spelling is converted, not rejected.

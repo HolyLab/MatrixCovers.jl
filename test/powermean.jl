@@ -82,7 +82,6 @@ end
                 x, y = soft_cover(ϕ, M)
                 supp = findall(!iszero, S)
                 @test (x .* y')[supp] ≈ (a .* a')[supp] rtol=1e-10
-                @test soft_symcover_min(ϕ, M) == a
             end
         end
         for p in (3, 3.5, 8)
@@ -114,7 +113,7 @@ end
         rng = StableRNG(3)
         A = exp.(3 .* randn(rng, 30, 30))
         @test_logs (:warn, r"^soft_cover: the power-mean iteration ended after 3 of maxiter=3 sweeps") soft_cover(A; maxiter=3, newton=false)
-        @test_logs (:warn, r"^soft_cover_min: .*Increase `maxiter`") soft_cover_min(A; maxiter=3, newton=false)
+        @test_logs (:warn, r"^soft_cover!: .*Increase `maxiter`") soft_cover!(ones(30), ones(30), A; maxiter=3, newton=false)
         @test_logs (:warn, r"^soft_symcover: the power-mean iteration ended after 2 of maxiter=2 updates") soft_symcover(A + A'; maxiter=2, newton=false)
         # With the Newton stage, a short sweep limit still converges.
         a, b = @test_logs soft_cover(A; maxiter=3)
@@ -347,7 +346,6 @@ end
         for M in (S, S0, sparse(S), sparse(S0), Symmetric(sparse(triu(S))), -S)
             a, b = soft_cover(M)
             @test a == b == soft_symcover(M)
-            @test soft_cover_min(M) == (a, b)
             @test isbalanced(a, b, M)
             # The alternating iteration reaches the same minimizer.
             x, y = soft_cover!(PowerMean{2}(), ones(20), ones(20), M)
@@ -396,14 +394,11 @@ end
     @testset "default dispatch" begin
         A = [1.0 2.0 3.0; 6.0 5.0 4.0]
         S = [4.0 1.0; 1.0 2.0]
-        @test soft_cover(A) == soft_cover(PowerMean{2}(), A) == soft_cover_min(A)
-        @test soft_symcover(S) == soft_symcover(PowerMean{2}(), S) == soft_symcover_min(S)
+        @test soft_cover(A) == soft_cover(PowerMean{2}(), A)
+        @test soft_symcover(S) == soft_symcover(PowerMean{2}(), S)
         a, b = soft_cover(A)
-        for refine! in (soft_cover!, soft_cover_min!)
-            x, y = refine!(ones(2), ones(3), A)
-            @test x .* y' ≈ a .* b' rtol=1e-12
-        end
+        x, y = soft_cover!(ones(2), ones(3), A)
+        @test x .* y' ≈ a .* b' rtol=1e-12
         @test soft_symcover!(ones(2), S) ≈ soft_symcover(S) rtol=1e-12
-        @test soft_symcover_min!(ones(2), S) ≈ soft_symcover(S) rtol=1e-12
     end
 end

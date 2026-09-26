@@ -186,15 +186,15 @@ function cover_min!(ϕ::AbsLog{2}, a::AbstractVector, b::AbstractVector,
     return a, b
 end
 
-# Soft minimizers use the same sparse default.
-function soft_symcover_min(ϕ::AbsLog{2},
+# Soft covers use the same sparse default.
+function soft_symcover(ϕ::AbsLog{2},
         S::Union{SparseMatrixCSC,Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}};
         linsolve::Symbol=:lsqr, kwargs...)
-    a, _ = _soft_symcover_min_abslog2(S; linsolve, kwargs...)
+    a, _ = _soft_symcover_abslog2(S; linsolve, kwargs...)
     return a
 end
 
-function soft_cover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
-    a, b, _ = _soft_cover_min_abslog2(A; linsolve, kwargs...)
+function soft_cover(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
+    a, b, _ = _soft_cover_abslog2(A; linsolve, kwargs...)
     return a, b
 end

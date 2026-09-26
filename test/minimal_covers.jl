@@ -483,7 +483,7 @@ end
     @test (tl.nsolves, tl.lsqriters) == (th.nsolves, th.lsqriters)
 
     # With no outer passes the unweighted fit is the answer, not a start.
-    @test soft_symcover_min(AbsLog{2}(), A; linsolve=:lsqr) != symcover(A)
+    @test soft_symcover(AbsLog{2}(), A; linsolve=:lsqr) != symcover(A)
 end
 
 # Bound iterations for Cholesky-preconditioned `Float64` LSQR.
@@ -584,10 +584,10 @@ end
     @test symcover_min(AbsLog{2}(), Ar) ≈ [2.0, 2.0]
 end
 
-@testset "soft_cover_min native AbsLog{2}" begin
+@testset "soft_cover native AbsLog{2}" begin
     # On dense support, the geometric mean equals the minimum up to roundoff.
     A = [1.0 2.0 3.0; 6.0 5.0 4.0]
-    a, b = soft_cover_min(AbsLog{2}(), A)
+    a, b = soft_cover(AbsLog{2}(), A)
     a_ref, b_ref = similar(a), similar(b)
     MatrixCovers.unconstrained_min!(AbsLog{2}(), a_ref, b_ref, A)
     @test a ≈ a_ref && b ≈ b_ref
@@ -603,7 +603,7 @@ end
 
     # Non-1-based axes propagate from A, not from 1:n.
     Ao = OffsetArray(A, 10, 20)
-    ao, bo = soft_cover_min(AbsLog{2}(), Ao)
+    ao, bo = soft_cover(AbsLog{2}(), Ao)
     @test axes(ao, 1) == axes(Ao, 1)
     @test axes(bo, 1) == axes(Ao, 2)
     @test collect(ao) == a && collect(bo) == b
@@ -616,11 +616,6 @@ end
     @test symcover_min(A) == symcover_min(AbsLog{2}(), A)
     Aasym = [1.0 2.0 3.0; 4.0 5.0 6.0]
     @test cover_min(Aasym) == cover_min(AbsLog{2}(), Aasym)
-
-    # soft_symcover_min(A) and soft_cover_min(A) default to PowerMean{2}, matching
-    # soft_symcover(A)/soft_cover(A). Solved natively.
-    @test soft_symcover_min(A) == soft_symcover_min(PowerMean{2}(), A) == soft_symcover(A)
-    @test soft_cover_min(Aasym) == soft_cover_min(PowerMean{2}(), Aasym) == soft_cover(Aasym)
 end
 
 @testset "symcover_min!/cover_min! native AbsLog{2}" begin
@@ -882,7 +877,7 @@ end
     @test_throws "cover: the scale factors computed for `A` are $msg" cover(B)
     @test_throws "cover: the scale factors computed for `A` are $msg" cover(Matrix(B))
     @test_throws "soft_cover: the scale factors computed for `A` are $msg" soft_cover(B)
-    @test_throws "soft_cover_min: the scale factors computed for `A` are $msg" soft_cover_min(AbsLog{2}(), B)
+    @test_throws "soft_cover: the scale factors computed for `A` are $msg" soft_cover(AbsLog{2}(), B)
     @test_throws "initialize_cover: the scale factors computed for `A` are $msg" initialize_cover(B; strategy=:covariant)
     # The geometric-mean start does not propagate scales along the band.
     @test iscover(cover(B; start=:geomean)..., B)

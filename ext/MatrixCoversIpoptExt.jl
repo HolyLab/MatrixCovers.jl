@@ -183,11 +183,11 @@ function MatrixCovers.cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractV
 end
 
 # ============================================================
-# Soft cover: soft_symcover_min!(::AbsLinear{p}, a, A)
+# Soft cover: soft_symcover!(::AbsLinear{p}, a, A)
 # Same objective without coverage constraints; starts need not cover `A`.
 # ============================================================
 
-function MatrixCovers.soft_symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
+function MatrixCovers.soft_symcover!(::AbsLinear{2}, a::AbstractVector, A)
     MatrixCovers._prepare_soft_symcover_start!(a, A)
     axr = axes(A, 1)
     T = float(real(eltype(A)))
@@ -204,14 +204,14 @@ function MatrixCovers.soft_symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
     @objective(model, Min,
         sum(tw[k] * (1 - exp(tlog[k] - α[ti[k]] - α[tj[k]]))^2 for k in eachindex(ti)) + n_zeros)
     JuMP.optimize!(model)
-    check_solved(model, "soft_symcover_min!")
+    check_solved(model, "soft_symcover!")
     for (i, k) in pairs(pr)
         a[k] = supported[i] ? exp(JuMP.value(α[i])) : zero(T)
     end
     return a
 end
 
-function MatrixCovers.soft_symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
+function MatrixCovers.soft_symcover!(::AbsLinear{1}, a::AbstractVector, A)
     MatrixCovers._prepare_soft_symcover_start!(a, A)
     axr = axes(A, 1)
     T = float(real(eltype(A)))
@@ -232,7 +232,7 @@ function MatrixCovers.soft_symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
     end
     @objective(model, Min, sum(tw[k] * t[k] for k in eachindex(ti)) + n_zeros)
     JuMP.optimize!(model)
-    check_solved(model, "soft_symcover_min!")
+    check_solved(model, "soft_symcover!")
     for (i, k) in pairs(pr)
         a[k] = supported[i] ? exp(JuMP.value(α[i])) : zero(T)
     end
@@ -240,12 +240,12 @@ function MatrixCovers.soft_symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
 end
 
 # ============================================================
-# Soft cover: soft_cover_min!(::AbsLinear{p}, a, b, A)
+# Soft cover: soft_cover!(::AbsLinear{p}, a, b, A)
 # Asymmetric soft-cover model. Post-processing balances component gauges; zero
 # entries contribute the constant `ϕ(0) = 1`.
 # ============================================================
 
-function MatrixCovers.soft_cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractVector, A)
+function MatrixCovers.soft_cover!(::AbsLinear{2}, a::AbstractVector, b::AbstractVector, A)
     MatrixCovers._prepare_soft_cover_start!(a, b, A)
     axr, axc = axes(A, 1), axes(A, 2)
     T = float(real(eltype(A)))
@@ -265,7 +265,7 @@ function MatrixCovers.soft_cover_min!(::AbsLinear{2}, a::AbstractVector, b::Abst
         sum((1 - exp(elog[e] - α[ei[e]] - β[ej[e]]))^2 for e in eachindex(ei)) + n_zeros)
     _pin_gauge!(model, α, β, A, nza, nzb)
     JuMP.optimize!(model)
-    check_solved(model, "soft_cover_min!")
+    check_solved(model, "soft_cover!")
     for (i, k) in pairs(pr)
         a[k] = nza[i] > 0 ? exp(JuMP.value(α[i])) : zero(T)
     end
@@ -275,7 +275,7 @@ function MatrixCovers.soft_cover_min!(::AbsLinear{2}, a::AbstractVector, b::Abst
     return MatrixCovers._balance_cover!(a, b, A)
 end
 
-function MatrixCovers.soft_cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractVector, A)
+function MatrixCovers.soft_cover!(::AbsLinear{1}, a::AbstractVector, b::AbstractVector, A)
     MatrixCovers._prepare_soft_cover_start!(a, b, A)
     axr, axc = axes(A, 1), axes(A, 2)
     T = float(real(eltype(A)))
@@ -299,7 +299,7 @@ function MatrixCovers.soft_cover_min!(::AbsLinear{1}, a::AbstractVector, b::Abst
     @objective(model, Min, sum(t) + n_zeros)
     _pin_gauge!(model, α, β, A, nza, nzb)
     JuMP.optimize!(model)
-    check_solved(model, "soft_cover_min!")
+    check_solved(model, "soft_cover!")
     for (i, k) in pairs(pr)
         a[k] = nza[i] > 0 ? exp(JuMP.value(α[i])) : zero(T)
     end

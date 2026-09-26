@@ -120,26 +120,23 @@ Pass a penalty as the first solver argument to override the default.
 | [`cover`](@ref) | no | hard (`r ≤ 1`) | heuristic | — |
 | [`symcover_min`](@ref) | yes | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
 | [`cover_min`](@ref) | no | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
-| [`soft_symcover`](@ref) | yes | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog`, `AbsLinear`) | — |
-| [`soft_cover`](@ref) | no | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog`, `AbsLinear`) | — |
-| [`soft_symcover_min`](@ref) | yes | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog{2}`, `AbsLinear`) | native for `PowerMean`, `AbsLog{2}`; else JuMP |
-| [`soft_cover_min`](@ref) | no | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog{2}`, `AbsLinear`) | native for `PowerMean`, `AbsLog{2}`; else JuMP |
+| [`soft_symcover`](@ref) | yes | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog`, `AbsLinear`) | native for `PowerMean`, `AbsLog{2}`; else JuMP |
+| [`soft_cover`](@ref) | no | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog`, `AbsLinear`) | native for `PowerMean`, `AbsLog{2}`; else JuMP |
 
 For hard covers, [`symcover`](@ref) and [`cover`](@ref) are fast heuristics;
-their `_min` counterparts minimize the selected objective. For soft covers:
+their `_min` counterparts minimize the selected objective. A soft cover has no
+constraint to satisfy, so there is no separate heuristic tier:
+[`soft_symcover`](@ref) and [`soft_cover`](@ref) always minimize the objective.
 
-- [`soft_symcover`](@ref) and [`soft_cover`](@ref) are native. `PowerMean` uses
-  power-mean scaling iterations (damped simultaneous updates for the symmetric
-  problem, overrelaxed alternating updates for the asymmetric one), followed by
-  damped Newton steps when those iterations converge slowly; `AbsLinear`
-  uses coordinate descent and multistart. For nonconvex or nonsmooth penalties
-  they may stop at a fixed point that is not a local minimum.
-- [`soft_symcover_min`](@ref) and [`soft_cover_min`](@ref) find a local minimum.
-  `PowerMean` and `AbsLog{2}` are native; `AbsLinear` requires JuMP and Ipopt;
-  `AbsLog{1}` is not implemented.
+- `PowerMean` (native) uses power-mean scaling iterations (damped simultaneous
+  updates for the symmetric problem, overrelaxed alternating updates for the
+  asymmetric one), followed by damped Newton steps when those iterations
+  converge slowly.
+- `AbsLog{2}` (native) is one linear least-squares solve.
+- `AbsLog{1}` is a linear program solved with JuMP and HiGHS.
+- `AbsLinear` is not convex; several starts are each refined to a local minimum
+  with JuMP and Ipopt, and the best is returned.
 
-Under `PowerMean` and `AbsLog{2}`, the objective is convex, so both soft tiers
-reach the same minimum.
 The heuristics cost ``O(mn)``; native iterative solvers cost roughly ``O(mn)``
 per iteration.
 
@@ -256,9 +253,9 @@ julia> round.(a * b'; digits=6)
  6.0  5.0  7.5
 ```
 
-[`soft_symcover_min`](@ref) and [`soft_cover_min`](@ref) solve `PowerMean` and
-`AbsLog{2}` natively and use JuMP with Ipopt for `AbsLinear`. They do not accept
-`AbsLog{1}`; use [`soft_symcover`](@ref) or [`soft_cover`](@ref) instead.
+[`soft_symcover`](@ref) and [`soft_cover`](@ref) solve `PowerMean` and
+`AbsLog{2}` natively, and use JuMP with HiGHS for `AbsLog{1}` and with Ipopt for
+`AbsLinear`.
 
 ### Uniqueness
 
@@ -288,11 +285,11 @@ selection:
   selective boosting, or no feasibility step.
 - **Refiners** are the `!`-suffixed forms of the
   solvers: [`symcover_min!`](@ref), [`cover_min!`](@ref), [`soft_symcover!`](@ref),
-  [`soft_cover!`](@ref), [`soft_symcover_min!`](@ref), and [`soft_cover_min!`](@ref)
-  optimize a supplied point. Hard refiners require a cover; soft refiners do not.
+  and [`soft_cover!`](@ref) optimize a supplied point. Hard refiners require a
+  cover; soft refiners do not.
 - **Solvers** [`symcover_min`](@ref), [`cover_min`](@ref),
-  [`soft_symcover`](@ref), [`soft_cover`](@ref), [`soft_symcover_min`](@ref), and
-  [`soft_cover_min`](@ref) refine several starts and return the best objective
+  [`soft_symcover`](@ref), and [`soft_cover`](@ref) refine several starts and
+  return the best objective
   (for the convex penalties, one start suffices).
 
 Plain forms choose their starts; `!` forms refine the supplied start, except

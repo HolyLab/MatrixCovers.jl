@@ -110,7 +110,8 @@ end
         # Every solver family, including the ones behind the extensions.
         @test_throws "abs.(A)` to be symmetric" symcover_min(AbsLog{1}(), A)
         @test_throws "abs.(A)` to be symmetric" symcover_min(AbsLinear{2}(), A)
-        @test_throws "abs.(A)` to be symmetric" soft_symcover_min(AbsLinear{2}(), A)
+        @test_throws "abs.(A)` to be symmetric" soft_symcover(AbsLinear{2}(), A)
+        @test_throws "abs.(A)` to be symmetric" soft_symcover(AbsLog{1}(), A)
     end
     # The message names the offending pair and the entry point.
     @test_throws "symcover!" symcover([0.0 0.0; 1.0 0.0])

@@ -62,12 +62,34 @@ function _minimize_l2_over_l1_face!(model, lin, residuals, fname)
     return nothing
 end
 
+# The soft `AbsLog{1}` objective is convex (an L1 fit in the log scales), so it
+# is solved exactly by the same LPs without the coverage constraints.
+MatrixCovers.soft_symcover(::AbsLog{1}, A::AbstractMatrix) = _symcover_min_abslog1(A, nothing; soft=true)
+
+function MatrixCovers.soft_symcover!(::AbsLog{1}, a::AbstractVector, A::AbstractMatrix)
+    MatrixCovers._prepare_soft_symcover_start!(a, A)
+    a .= _symcover_min_abslog1(A, a; soft=true)
+    return a
+end
+
+MatrixCovers.soft_cover(::AbsLog{1}, A::AbstractMatrix) = _cover_min_abslog1(A, nothing; soft=true)
+
+function MatrixCovers.soft_cover!(::AbsLog{1}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
+    MatrixCovers._prepare_soft_cover_start!(a, b, A)
+    anew, bnew = _cover_min_abslog1(A, (a, b); soft=true)
+    a .= anew
+    b .= bnew
+    return a, b
+end
+
 # Symmetric `AbsLog{1}` LP. A second stage selects the canonical point on the
-# optimal face; `start` is only a solver hint.
-function _symcover_min_abslog1(A, start)
+# optimal face; `start` is only a solver hint. With `soft=true` the residuals
+# are unconstrained and the LP minimizes their absolute values through slacks.
+function _symcover_min_abslog1(A, start; soft::Bool=false)
+    fname = soft ? "soft_symcover" : "symcover_min"
     axr = axes(A, 1)
-    axes(A, 2) == axr || throw(ArgumentError("symcover_min requires a square matrix"))
-    MatrixCovers.require_abs_symmetric(A, :symcover_min)
+    axes(A, 2) == axr || throw(ArgumentError("$fname requires a square matrix"))
+    MatrixCovers.require_abs_symmetric(A, Symbol(fname))
     T = float(real(eltype(A)))
     pr = collect(axr)
     n = length(pr)
@@ -84,18 +106,40 @@ function _symcover_min_abslog1(A, start)
         α0 = [supported[k] ? log(T(start[pr[k]])) : zero(T) for k in 1:n]
         @variable(model, α[k=1:n], start = α0[k])
     end
-    lin = dot(α, 2 .* cnt)
-    @objective(model, Min, lin)
-    for e in eachindex(ei)
-        ei[e] <= ej[e] && @constraint(model, α[ei[e]] + α[ej[e]] - elog[e] >= 0)
+    if soft
+        # One slack per lower-triangle entry, weighted by its full-grid multiplicity.
+        tri = [e for e in eachindex(ei) if ei[e] <= ej[e]]
+        @variable(model, t[eachindex(tri)] >= 0)
+        for (k, e) in pairs(tri)
+            r = α[ei[e]] + α[ej[e]] - elog[e]
+            @constraint(model, t[k] >= r)
+            @constraint(model, t[k] >= -r)
+        end
+        lin = sum((ei[e] == ej[e] ? 1 : 2) * t[k] for (k, e) in pairs(tri); init=zero(JuMP.AffExpr))
+    else
+        lin = dot(α, 2 .* cnt)
+        for e in eachindex(ei)
+            ei[e] <= ej[e] && @constraint(model, α[ei[e]] + α[ej[e]] - elog[e] >= 0)
+        end
     end
+    @objective(model, Min, lin)
     JuMP.optimize!(model)
-    check_solved(model, "symcover_min")
+    check_solved(model, fname)
     residuals = [α[ei[e]] + α[ej[e]] - elog[e] for e in eachindex(ei)]
-    _minimize_l2_over_l1_face!(model, lin, residuals, "symcover_min")
+    _minimize_l2_over_l1_face!(model, lin, residuals, fname)
+    αv = [JuMP.value(α[i]) for i in 1:n]
+    if soft
+        # Without the coverage constraints, bipartite components keep their gauge.
+        αo = similar(Array{T}, axr)
+        for (i, k) in pairs(pr)
+            αo[k] = αv[i]
+        end
+        MatrixCovers._balance_bipartite_sym!(αo, MatrixCovers._sym_support(A, T))
+        αv = [αo[k] for k in pr]
+    end
     a = similar(Array{T}, axr)
     for (i, k) in pairs(pr)
-        a[k] = supported[i] ? exp(JuMP.value(α[i])) : zero(T)
+        a[k] = supported[i] ? exp(αv[i]) : zero(T)
     end
     return a
 end
@@ -145,8 +189,10 @@ function MatrixCovers.cover_min!(::AbsLog{1}, a::AbstractVector, b::AbstractVect
 end
 
 # Asymmetric `AbsLog{1}` LP. Balance globally in the model and per component
-# after solving.
-function _cover_min_abslog1(A, start)
+# after solving. With `soft=true` the residuals are unconstrained and the LP
+# minimizes their absolute values through slacks.
+function _cover_min_abslog1(A, start; soft::Bool=false)
+    fname = soft ? "soft_cover" : "cover_min"
     axr = axes(A, 1)
     axc = axes(A, 2)
     T = float(real(eltype(A)))
@@ -169,18 +215,28 @@ function _cover_min_abslog1(A, start)
         @variable(model, α[i=1:m], start = α0[i])
         @variable(model, β[j=1:n], start = β0[j])
     end
-    lin = dot(α, rowcount) + dot(β, colcount)
-    @objective(model, Min, lin)
-    for e in eachindex(ei)
-        @constraint(model, α[ei[e]] + β[ej[e]] - elog[e] >= 0)
+    if soft
+        @variable(model, t[eachindex(ei)] >= 0)
+        for e in eachindex(ei)
+            r = α[ei[e]] + β[ej[e]] - elog[e]
+            @constraint(model, t[e] >= r)
+            @constraint(model, t[e] >= -r)
+        end
+        lin = sum(t; init=zero(JuMP.AffExpr))
+    else
+        lin = dot(α, rowcount) + dot(β, colcount)
+        for e in eachindex(ei)
+            @constraint(model, α[ei[e]] + β[ej[e]] - elog[e] >= 0)
+        end
     end
+    @objective(model, Min, lin)
     nza, nzb = rowcount, colcount
     # Pin the global row/column gauge; post-processing handles components.
     @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
     JuMP.optimize!(model)
-    check_solved(model, "cover_min")
+    check_solved(model, fname)
     residuals = [α[ei[e]] + β[ej[e]] - elog[e] for e in eachindex(ei)]
-    _minimize_l2_over_l1_face!(model, lin, residuals, "cover_min")
+    _minimize_l2_over_l1_face!(model, lin, residuals, fname)
     a = similar(Array{T}, axr)
     b = similar(Array{T}, axc)
     for (i, k) in pairs(pr)
@@ -190,6 +246,7 @@ function _cover_min_abslog1(A, start)
         b[k] = nzb[j] > 0 ? exp(JuMP.value(β[j])) : zero(T)
     end
     MatrixCovers._balance_cover!(a, b, A)
+    soft && return a, b
     return MatrixCovers.inflate_feasible!(a, b, A)
 end
 

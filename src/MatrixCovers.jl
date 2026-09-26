@@ -14,7 +14,6 @@ export gramcover, gramcover!
 export soft_symcover, soft_symcover!, soft_cover, soft_cover!
 export initialize_cover, initialize_cover!, initialize_symcover, initialize_symcover!
 export symcover_min, symcover_min!, cover_min, cover_min!
-export soft_symcover_min, soft_symcover_min!, soft_cover_min, soft_cover_min!
 
 # `public` is parsed as a keyword only from Julia 1.11; this package supports 1.10.
 @static if VERSION >= v"1.11"
@@ -38,7 +37,7 @@ include("sparse_support.jl")  # sparse traversal and the sparse solver defaults
 
 
 # True only when a MethodError's argument types are consistent with the calling
-# convention of the `*_min` solvers — a penalty, the scale vectors the mutating
+# convention of the penalty-dispatched solvers — a penalty, the scale vectors the mutating
 # forms refine in place, and the matrix — i.e. the failure could plausibly be fixed
 # by loading an extension rather than by passing arguments of the right kind.
 function _looks_like_missing_extension(argtypes)
@@ -56,9 +55,9 @@ function __init__()
             printstyled(io, "\nAbsLog{2} is solved natively; other penalties require loading JuMP plus HiGHS (for AbsLog{1}) or Ipopt (for AbsLinear)."; color=:yellow)
             return true
         end
-        if exc.f === soft_symcover_min || exc.f === soft_symcover_min! ||
-           exc.f === soft_cover_min || exc.f === soft_cover_min!
-            printstyled(io, "\nPowerMean and AbsLog{2} are solved natively; AbsLinear penalties require loading JuMP plus Ipopt. AbsLog{1} is not yet supported."; color=:yellow)
+        if exc.f === soft_symcover || exc.f === soft_symcover! ||
+           exc.f === soft_cover || exc.f === soft_cover!
+            printstyled(io, "\nPowerMean and AbsLog{2} are solved natively; other penalties require loading JuMP plus HiGHS (for AbsLog{1}) or Ipopt (for AbsLinear)."; color=:yellow)
             return true
         end
     end
