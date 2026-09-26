@@ -6,7 +6,7 @@
         A = Float32[4 1.5; 1.5 1]
         for a in (symcover(A), soft_symcover(A), soft_symcover(AbsLog{1}(), A),
                   soft_symcover(AbsLinear{1}(), A), symcover_min(AbsLog{2}(), A),
-                  soft_symcover_min(AbsLog{2}(), A))
+                  soft_symcover(AbsLog{2}(), A))
             @test eltype(a) === Float32
             @test all(isfinite, a)
         end
@@ -26,7 +26,7 @@
         Asym = (X .+ X') ./ 2
         Agen = exp.(randn(rng, 60, 45))
         aref = symcover_min(AbsLog{2}(), Asym)
-        sref = soft_symcover_min(AbsLog{2}(), Asym)
+        sref = soft_symcover(AbsLog{2}(), Asym)
         gref, href = cover_min(AbsLog{2}(), Agen)
         A32 = Float32.(Asym)
 
@@ -55,7 +55,7 @@
         @test a16 ≈ aref rtol=2e-3
 
         # The soft cover is the same worker with no continuation and no boost.
-        s32 = soft_symcover_min(AbsLog{2}(), A32)
+        s32 = soft_symcover(AbsLog{2}(), A32)
         @test s32 isa Vector{Float32}
         @test s32 ≈ sref rtol=1e-5
 
@@ -78,7 +78,7 @@
     @testset "BigFloat flows through the family" begin
         A = BigFloat[4 1.5; 1.5 1]
         for a in (symcover(A), soft_symcover(A), symcover_min(AbsLog{2}(), A),
-                  soft_symcover_min(AbsLog{2}(), A))
+                  soft_symcover(AbsLog{2}(), A))
             @test eltype(a) === BigFloat
             @test all(isfinite, a)
         end
@@ -113,16 +113,6 @@
         for T in (Float32, Float64, BigFloat)
             @test MatrixCovers._multistart_switchtol(T) > eps(T)
         end
-
-        # Wider types must use their extra precision.
-        A = BigFloat[4 1.5 0.3; 1.5 1 0.7; 0.3 0.7 2.0]
-        start = initialize_symcover(A; feasible=:none)
-        u1, v1 = copy(start), copy(start)
-        u2, v2 = copy(start), copy(start)
-        MatrixCovers._msmc_als!(u1, v1, A, 500)
-        MatrixCovers._msmc_als!(u2, v2, A, 500; tol=1e-14)
-        @test cover_objective(AbsLinear{2}(), u1, v1, A) <
-              cover_objective(AbsLinear{2}(), u2, v2, A)
     end
 
 end

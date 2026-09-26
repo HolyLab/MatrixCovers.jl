@@ -1,6 +1,5 @@
 # Soft covers under `PowerMean{p}`. The objective is strictly convex in the log
-# scales, so every solver here returns the unique minimizer (up to the gauge) and
-# the `*_min` forms are the same computations.
+# scales, so every solver here returns the unique minimizer (up to the gauge).
 #
 # All arithmetic is in log space: with `L[i,j] = log|A[i,j]|`, `α = log.(a)` and
 # `β = log.(b)`, the exact minimizer over one row scale with the column scales held
@@ -46,21 +45,13 @@ _powermean_type(Ts::Type...) = float(promote_type(Ts..., Float64))
 
 soft_cover(ϕ::PowerMean, A::AbstractMatrix; kwargs...) =
     _soft_cover_powermean(ϕ, A, :soft_cover; kwargs...)
-soft_cover_min(ϕ::PowerMean, A::AbstractMatrix; kwargs...) =
-    _soft_cover_powermean(ϕ, A, :soft_cover_min; kwargs...)
 soft_cover!(ϕ::PowerMean, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
     _soft_cover_powermean!(ϕ, a, b, A, :soft_cover!; kwargs...)
-soft_cover_min!(ϕ::PowerMean, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
-    _soft_cover_powermean!(ϕ, a, b, A, :soft_cover_min!; kwargs...)
 
 soft_symcover(ϕ::PowerMean, A::AbstractMatrix; kwargs...) =
     _soft_symcover_powermean(ϕ, A, :soft_symcover; kwargs...)
-soft_symcover_min(ϕ::PowerMean, A::AbstractMatrix; kwargs...) =
-    _soft_symcover_powermean(ϕ, A, :soft_symcover_min; kwargs...)
 soft_symcover!(ϕ::PowerMean, a::AbstractVector, A::AbstractMatrix; kwargs...) =
     _soft_symcover_powermean!(ϕ, a, A, :soft_symcover!; kwargs...)
-soft_symcover_min!(ϕ::PowerMean, a::AbstractVector, A::AbstractMatrix; kwargs...) =
-    _soft_symcover_powermean!(ϕ, a, A, :soft_symcover_min!; kwargs...)
 
 # ============================================================
 # Drivers

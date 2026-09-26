@@ -25,10 +25,8 @@ specific built-in penalties:
 
 - hard covers ([`symcover_min`](@ref), [`cover_min`](@ref)): `AbsLog{2}`
   natively, `AbsLog{1}` and `AbsLinear` through JuMP;
-- soft covers ([`soft_symcover`](@ref), [`soft_cover`](@ref)): `PowerMean`,
-  `AbsLog`, and `AbsLinear` natively;
-- soft minimizers ([`soft_symcover_min`](@ref), [`soft_cover_min`](@ref)):
-  `PowerMean` and `AbsLog{2}` natively, `AbsLinear` through JuMP.
+- soft covers ([`soft_symcover`](@ref), [`soft_cover`](@ref)): `PowerMean` and
+  `AbsLog{2}` natively, `AbsLog{1}` and `AbsLinear` through JuMP.
 
 Passing a custom subtype to a solver raises a `MethodError`.
 """

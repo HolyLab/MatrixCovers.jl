@@ -27,16 +27,15 @@ const CASES = [
     ("symcover (heuristic)",          A -> symcover(A),                                  sparsesym, (300, 1000, 3000)),
     ("cover (heuristic)",             A -> cover(A),                                     densesym,  (30, 100, 300, 1000)),
     ("soft_symcover AbsLog{2}",       A -> soft_symcover(AbsLog{2}(), A),                densesym,  (30, 100, 300, 1000)),
-    ("soft_symcover AbsLog{1}",       A -> soft_symcover(AbsLog{1}(), A),                densesym,  (30, 100, 300)),
-    ("soft_symcover AbsLinear{2}",    A -> soft_symcover(A),                             densesym,  (30, 100, 300)),
-    ("soft_cover AbsLinear{2}",       A -> soft_cover(A),                                densesym,  (30, 100, 300)),
-    ("soft_cover AbsLinear{1}",       A -> soft_cover(AbsLinear{1}(), A),                densesym,  (30, 100, 300)),
+    ("soft_symcover AbsLog{1} HiGHS", A -> soft_symcover(AbsLog{1}(), A),                densesym,  (30, 100)),
+    ("soft_symcover PowerMean{2}",    A -> soft_symcover(A),                             densesym,  (30, 100, 300, 1000)),
+    ("soft_cover PowerMean{2}",       A -> soft_cover(A),                                densesym,  (30, 100, 300, 1000)),
+    ("soft_cover AbsLinear{1} Ipopt", A -> soft_cover(AbsLinear{1}(), A),                densesym,  (30, 60)),
     ("symcover_min AbsLog{2} dense",  A -> symcover_min(AbsLog{2}(), A),                 densesym,  (30, 100, 200)),
     ("symcover_min AbsLog{2} lsqr",   A -> symcover_min(AbsLog{2}(), A; linsolve=:lsqr), sparsesym, (100, 300, 1000)),
     ("cover_min AbsLog{2} dense",     A -> cover_min(AbsLog{2}(), A),                    densesym,  (30, 100, 200)),
     ("symcover_min AbsLog{1} HiGHS",  A -> symcover_min(AbsLog{1}(), A),                 densesym,  (30, 100)),
     ("symcover_min AbsLinear{2} Ipopt", A -> symcover_min(AbsLinear{2}(), A),            densesym,  (30, 60)),
-    ("soft_symcover_min AbsLog{2} HiGHS", A -> soft_symcover_min(AbsLog{2}(), A),        densesym,  (30, 100)),
 ]
 
 for (label, f, fam, sizes) in CASES

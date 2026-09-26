@@ -39,16 +39,18 @@
     @test iscover(a, b, A; atol=1e-10)
     @test cover_objective(AbsLog{2}(), a, b, A) ≈ 2*log(sqrt(2))^2
 
-    # soft_symcover_min(AbsLog{2}): unconstrained, lower objective than constrained
+    # soft_symcover(AbsLog{p}): unconstrained, lower objective than constrained
     for A in ([2.0 1.0; 1.0 3.0], [100.0 1.0; 1.0 0.01], [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0])
-        a_soft = soft_symcover_min(AbsLog{2}(), A)
-        a_hard = symcover_min(AbsLog{2}(), A)
-        @test cover_objective(AbsLog{2}(), a_soft, A) <= cover_objective(AbsLog{2}(), a_hard, A) + 1e-8
+        for ϕ in (AbsLog{1}(), AbsLog{2}())
+            a_soft = soft_symcover(ϕ, A)
+            a_hard = symcover_min(ϕ, A)
+            @test cover_objective(ϕ, a_soft, A) <= cover_objective(ϕ, a_hard, A) + 1e-8
+        end
     end
-    # Rank-1 matrix: both achieve zero AbsLog{2} objective
+    # Rank-1 matrix: both achieve zero objective
     A_rank1 = [2.0 1.0 4.0; 1.0 0.5 2.0; 4.0 2.0 8.0]
-    a_soft = soft_symcover_min(AbsLog{2}(), A_rank1)
-    @test cover_objective(AbsLog{2}(), a_soft, A_rank1) < 1e-8
+    @test cover_objective(AbsLog{2}(), soft_symcover(AbsLog{2}(), A_rank1), A_rank1) < 1e-8
+    @test cover_objective(AbsLog{1}(), soft_symcover(AbsLog{1}(), A_rank1), A_rank1) < 1e-6
 
     # Non-optimal solver statuses are errors.
     @test MatrixCovers.check_solved(JuMP.OPTIMAL, "HiGHS", "symcover_min") === nothing
@@ -60,12 +62,13 @@
     @test_throws "terminated with status" MatrixCovers.check_solved(JuMP.ALMOST_LOCALLY_SOLVED, "Ipopt", "symcover_min!")
 end
 
-@testset "symcover_min and soft_symcover_min (JuMP/Ipopt, AbsLinear)" begin
+@testset "symcover_min and soft_symcover (JuMP/Ipopt, AbsLinear)" begin
     # non-square rejected
     @test_throws "symcover_min requires a square matrix" symcover_min(AbsLinear{2}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
     @test_throws "symcover_min requires a square matrix" symcover_min(AbsLinear{1}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
-    @test_throws "soft_symcover_min requires a square matrix" soft_symcover_min(AbsLinear{2}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
-    @test_throws "soft_symcover_min requires a square matrix" soft_symcover_min(AbsLinear{1}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
+    @test_throws "soft_symcover requires a square matrix" soft_symcover(AbsLinear{2}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
+    @test_throws "soft_symcover requires a square matrix" soft_symcover(AbsLinear{1}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
+    @test_throws "soft_symcover requires a square matrix" soft_symcover(AbsLog{1}(), [1.0 2.0; 3.0 4.0; 5.0 6.0])
 
     for A in ([2.0 1.0; 1.0 3.0], [100.0 1.0; 1.0 0.01], [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0])
         a_fast = symcover(AbsLinear{2}(), A)
@@ -75,38 +78,29 @@ end
             @test iscover(a_min, A; atol=1e-6)
             @test cover_objective(ϕ, a_min, A) <= cover_objective(ϕ, a_fast, A) + 1e-8
 
-            # soft_symcover_min: lower or equal objective than constrained version
-            a_soft = soft_symcover_min(ϕ, A)
+            # soft_symcover: lower or equal objective than constrained version
+            a_soft = soft_symcover(ϕ, A)
             @test cover_objective(ϕ, a_soft, A) <= cover_objective(ϕ, a_min, A) + 1e-8
         end
         # AbsLinear{2} ≤ AbsLinear{1} soft objectives (p=2 is a stricter lower bound)
-        a2 = soft_symcover_min(AbsLinear{2}(), A)
-        a1 = soft_symcover_min(AbsLinear{1}(), A)
+        a2 = soft_symcover(AbsLinear{2}(), A)
+        a1 = soft_symcover(AbsLinear{1}(), A)
         @test cover_objective(AbsLinear{1}(), a1, A) <= cover_objective(AbsLinear{1}(), a2, A) + 1e-8
     end
 
     # Rank-1 matrix: soft cover achieves near-zero objective for all nonzero entries
     A_rank1 = [4.0 2.0; 2.0 1.0]
-    a2 = soft_symcover_min(AbsLinear{2}(), A_rank1)
+    a2 = soft_symcover(AbsLinear{2}(), A_rank1)
     @test cover_objective(AbsLinear{2}(), a2, A_rank1) < 1e-8
-    a1 = soft_symcover_min(AbsLinear{1}(), A_rank1)
+    a1 = soft_symcover(AbsLinear{1}(), A_rank1)
     @test cover_objective(AbsLinear{1}(), a1, A_rank1) < 1e-8
 
     # Matrix with zeros: zero entries contribute 1 each regardless of cover
     A = [0.0 1.0; 1.0 0.0]  # only off-diagonal nonzero; min possible = 0 (off-diag) + 2 (diag zeros)
-    a2 = soft_symcover_min(AbsLinear{2}(), A)
+    a2 = soft_symcover(AbsLinear{2}(), A)
     @test cover_objective(AbsLinear{2}(), a2, A) ≈ 2.0 atol=1e-8
-    a1 = soft_symcover_min(AbsLinear{1}(), A)
+    a1 = soft_symcover(AbsLinear{1}(), A)
     @test cover_objective(AbsLinear{1}(), a1, A) ≈ 2.0 atol=1e-8
-
-    # soft_symcover_min matches soft_symcover on the analytical minimum (AbsLog{2} minimum)
-    # (agreement to within solver tolerance)
-    for A in ([2.0 1.0; 1.0 3.0], [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0])
-        a_opt  = soft_symcover_min(AbsLinear{2}(), A)
-        a_heur = soft_symcover(AbsLinear{2}(), A; maxiter=50)
-        @test cover_objective(AbsLinear{2}(), a_opt, A) <=
-              cover_objective(AbsLinear{2}(), a_heur, A) + 1e-6
-    end
 end
 
 @testset "symcover_min!/cover_min! refiners (JuMP/HiGHS/Ipopt)" begin
@@ -161,27 +155,23 @@ end
     @test collect(ao) ≈ symcover_min!(ϕ, initialize_symcover(A), A)
 end
 
-@testset "soft_symcover_min multistart and refiner (Ipopt)" begin
+@testset "soft_symcover multistart and refiner (Ipopt)" begin
     # Soft refiners accept non-covering starts.
     A = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
     a0 = initialize_symcover(A; strategy=:geomean, feasible=:none)
     @test !iscover(a0, A)
     @test_throws "requires a start that covers `A`" symcover_min!(AbsLinear{2}(), copy(a0), A)
-    @test soft_symcover_min!(AbsLinear{2}(), copy(a0), A) isa AbstractVector
+    @test soft_symcover!(AbsLinear{2}(), copy(a0), A) isa AbstractVector
 
-    for ϕ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{2}())
-        a = soft_symcover_min(ϕ, A)
-        @test soft_symcover_min(ϕ, A) == a                       # deterministic
-        # The soft optimum is no worse than the heuristic soft cover.
-        @test cover_objective(ϕ, a, A) <=
-              cover_objective(ϕ, soft_symcover(ϕ, A), A) * (1 + 1e-6) + 1e-8
+    for ϕ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{1}())
+        @test soft_symcover(ϕ, A) == soft_symcover(ϕ, A)         # deterministic
     end
 
     # No start on the menu beats the driver.
     for ϕ in (AbsLinear{1}(), AbsLinear{2}())
-        a = soft_symcover_min(ϕ, A)
+        a = soft_symcover(ϕ, A)
         for strategy in (:hardcover, :geomean, :leaveout)
-            single = soft_symcover_min!(ϕ, initialize_symcover(A; strategy, feasible=:none), A)
+            single = soft_symcover!(ϕ, initialize_symcover(A; strategy, feasible=:none), A)
             @test cover_objective(ϕ, a, A) <= cover_objective(ϕ, single, A) * (1 + 1e-6) + 1e-8
         end
     end
@@ -194,57 +184,53 @@ end
               3.0721768720180109 333.53567816710364 0.92571970793600067 7.3601096491681046 1.0844635712556003]
     d = [20.451338935482074, 0.69212569803171398, 35.401627522529395, 15.904906661932396, 0.19696509774727827]
     for ϕ in (AbsLinear{1}(), AbsLinear{2}())
-        @test covaries(A -> soft_symcover_min(ϕ, A), Abasins, d; rtol=1e-5)
+        @test covaries(A -> soft_symcover(ϕ, A), Abasins, d; rtol=1e-5)
     end
 
-    @test_throws "positive scale on every supported row" soft_symcover_min!(AbsLinear{2}(), [1.0, -1.0, 2.0], A)
-    @test_throws "soft_symcover_min! requires a square matrix" soft_symcover_min!(AbsLinear{2}(), [1.0, 2.0], [1.0 2.0 3.0; 4.0 5.0 6.0])
-    @test_throws "unknown strategy :banana" soft_symcover_min(AbsLinear{2}(), A; strategies=(:banana,))
+    @test_throws "positive scale on every supported row" soft_symcover!(AbsLinear{2}(), [1.0, -1.0, 2.0], A)
+    @test_throws "soft_symcover! requires a square matrix" soft_symcover!(AbsLinear{2}(), [1.0, 2.0], [1.0 2.0 3.0; 4.0 5.0 6.0])
 end
 
-@testset "soft_cover_min multistart and refiner (Ipopt)" begin
+@testset "soft_cover multistart and refiner (Ipopt)" begin
     A = [1.0 2.0 3.0; 40.0 5.0 0.6]
     nza = vec(count(!iszero, A, dims=2))
     nzb = vec(count(!iszero, A, dims=1))
     balance(a, b) = sum(nza .* log.(a)) - sum(nzb .* log.(b))
 
-    # The soft start need not cover `A`, so cover_min! rejects what soft_cover_min! accepts.
+    # The soft start need not cover `A`, so cover_min! rejects what soft_cover! accepts.
     a0, b0 = initialize_cover(A; strategy=:geomean, feasible=:none)
     @test !iscover(a0, b0, A)
     @test_throws "requires a start that covers `A`" cover_min!(AbsLinear{2}(), copy(a0), copy(b0), A)
 
-    for ϕ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{2}())
-        a, b = soft_cover_min(ϕ, A)
-        @test soft_cover_min(ϕ, A) == (a, b)                      # deterministic
+    for ϕ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{1}(), AbsLog{2}())
+        a, b = soft_cover(ϕ, A)
+        @test soft_cover(ϕ, A) == (a, b)                          # deterministic
         # The objective depends on `a`, `b` only through their products, so the split is
         # fixed by the balance convention rather than left to the solver.
         @test balance(a, b) ≈ 0 atol=1e-7
         # Gauge-invariant in the start: (a, b) and (2a, b/2) name the same point.
-        ag, bg = soft_cover_min!(ϕ, 2 .* copy(a0), copy(b0) ./ 2, A)
-        ah, bh = soft_cover_min!(ϕ, copy(a0), copy(b0), A)
+        ag, bg = soft_cover!(ϕ, 2 .* copy(a0), copy(b0) ./ 2, A)
+        ah, bh = soft_cover!(ϕ, copy(a0), copy(b0), A)
         @test ag ≈ ah && bg ≈ bh
     end
 
-    # No start on the menu beats the driver, and the driver is no worse than the heuristic.
+    # No start on the menu beats the driver.
     for ϕ in (AbsLinear{1}(), AbsLinear{2}())
-        a, b = soft_cover_min(ϕ, A)
+        a, b = soft_cover(ϕ, A)
         for strategy in (:hardcover, :geomean)
-            sa, sb = soft_cover_min!(ϕ, initialize_cover(A; strategy, feasible=:none)..., A)
+            sa, sb = soft_cover!(ϕ, initialize_cover(A; strategy, feasible=:none)..., A)
             @test cover_objective(ϕ, a, b, A) <= cover_objective(ϕ, sa, sb, A) * (1 + 1e-6) + 1e-8
         end
-        ha, hb = soft_cover(ϕ, A)
-        @test cover_objective(ϕ, a, b, A) <= cover_objective(ϕ, ha, hb, A) * (1 + 1e-6) + 1e-8
 
         # The asymmetric soft cover relaxes the symmetric one on a symmetric matrix.
         As = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
-        aa, ab = soft_cover_min(ϕ, As)
+        aa, ab = soft_cover(ϕ, As)
         @test cover_objective(ϕ, aa, ab, As) <=
-              cover_objective(ϕ, soft_symcover_min(ϕ, As), As) * (1 + 1e-6) + 1e-8
+              cover_objective(ϕ, soft_symcover(ϕ, As), As) * (1 + 1e-6) + 1e-8
     end
 
-    @test_throws "positive scale on every supported row" soft_cover_min!(AbsLinear{2}(), [1.0, 0.0], [1.0, 1.0, 1.0], A)
-    @test_throws "positive scale on every supported column" soft_cover_min!(AbsLinear{2}(), [1.0, 1.0], [1.0, -1.0, 1.0], A)
-    @test_throws "at least one starting cover" soft_cover_min(AbsLinear{2}(), A; strategies=())
+    @test_throws "positive scale on every supported row" soft_cover!(AbsLinear{2}(), [1.0, 0.0], [1.0, 1.0, 1.0], A)
+    @test_throws "positive scale on every supported column" soft_cover!(AbsLinear{2}(), [1.0, 1.0], [1.0, -1.0, 1.0], A)
 end
 
 @testset "AbsLog{1} canonical selection on the optimal face (HiGHS)" begin
@@ -338,14 +324,11 @@ end
     @test_throws "unknown strategy :banana" symcover_min(ϕ, Abasin; strategies=(:banana,))
     @test_throws "no strategy in (:leaveout,)" symcover_min(ϕ, Adiag; strategies=(:leaveout,))
     @test_throws "has no asymmetric formulation" cover_min(ϕ, Aasym; strategies=(:leaveout,))
-    # An empty menu is reported as such by all four drivers, rather than as the
+    # An empty menu is reported as such by both drivers, rather than as the
     # unrelated "no strategy yields a start" that a fall-through would produce.
     @test_throws "at least one starting cover" cover_min(ϕ, Aasym; strategies=())
     @test_throws "at least one starting cover" symcover_min(ϕ, Abasin; strategies=())
-    @test_throws "at least one starting cover" soft_cover_min(ϕ, Aasym; strategies=())
-    @test_throws "at least one starting cover" soft_symcover_min(ϕ, Abasin; strategies=())
     @test_throws "symcover_min:" symcover_min(ϕ, Abasin; strategies=())
-    @test_throws "soft_symcover_min:" soft_symcover_min(ϕ, Abasin; strategies=())
 end
 
 @testset "error hint gated on argument types" begin
@@ -377,26 +360,17 @@ end
     script_driver = """
     using MatrixCovers
     A = [4.0 1.0; 1.0 4.0]
-    try
-        soft_symcover_min(AbsLinear{2}(), A)
-    catch e
-        print(sprint(showerror, e))
+    for call in (() -> soft_symcover(AbsLinear{2}(), A), () -> soft_cover(AbsLog{1}(), A))
+        try
+            call()
+        catch e
+            println(sprint(showerror, e))
+        end
     end
     """
     out_driver = read(`$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script_driver`, String)
-    @test occursin("loading JuMP", out_driver)
+    @test count("loading JuMP", out_driver) == 2
 
-    # Distinguish an unimplemented penalty from a missing extension.
-    e3 = try
-        soft_cover_min(AbsLog{1}(), A)
-        nothing
-    catch err
-        err
-    end
-    @test e3 isa MethodError
-    msg3 = sprint(showerror, e3)
-    @test occursin("AbsLog{1} is not yet supported", msg3)
-    @test occursin("loading JuMP", msg3)
 
     # Every penalty cover_min does not solve natively lives in an extension, whether the
     # call reaches it directly (AbsLog{1}) or through the AbsLinear multistart driver,
@@ -477,11 +451,11 @@ end
         @test ah ≈ ad rtol=1e-5
         @test bh ≈ bd rtol=1e-5
 
-        @test soft_symcover_min!(ϕ, soft_symcover(ϕ, M), M) ≈
-              soft_symcover_min!(ϕ, soft_symcover(ϕ, dense), dense) rtol=1e-5
+        @test soft_symcover!(ϕ, soft_symcover(ϕ, M), M) ≈
+              soft_symcover!(ϕ, soft_symcover(ϕ, dense), dense) rtol=1e-5
 
-        sah, sbh = soft_cover_min!(ϕ, soft_cover(ϕ, M)..., M)
-        sad, sbd = soft_cover_min!(ϕ, soft_cover(ϕ, dense)..., dense)
+        sah, sbh = soft_cover!(ϕ, soft_cover(ϕ, M)..., M)
+        sad, sbd = soft_cover!(ϕ, soft_cover(ϕ, dense)..., dense)
         @test sah ≈ sad rtol=1e-5
         @test sbh ≈ sbd rtol=1e-5
     end

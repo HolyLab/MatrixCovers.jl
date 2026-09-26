@@ -23,7 +23,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
     include("iscover.jl")           # the cover predicate
     include("heuristic_covers.jl")  # symcover/cover and their internals
     include("gram_covers.jl")       # gramcover/gramcover!: symmetric covers of A'*W*A
-    include("soft_covers.jl")       # soft_symcover/soft_cover multistart descent
+    include("soft_covers.jl")       # soft_symcover/soft_cover for AbsLog and AbsLinear
     include("powermean.jl")         # the PowerMean soft covers (the soft default)
     include("initializers.jl")      # initialize_symcover/initialize_cover strategies
     include("sparse_cholesky.jl")   # the CHOLMOD driver and the multi-array eachindex helper
@@ -45,7 +45,8 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
                      :cover_min_jump, :symcover_min_jump, :check_solved,
                      :require_abs_symmetric,
                      :_edge_list, :_sym_edge_list, :_degrees, :_support_components,
-                     :_balance_cover!, :inflate_feasible!)
+                     :_balance_cover!, :inflate_feasible!,
+                     :_balance_bipartite_sym!, :_sym_support)
         # External non-public names with no usable public equivalent.
         foreign = (:FreeUnits, :Unit, :Units, :Optimizer, :Experimental, :register_error_hint,
                    :RefValue, :getcolptr, :LibSuiteSparse, :TRUE,
