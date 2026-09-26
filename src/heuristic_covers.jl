@@ -41,9 +41,11 @@ julia> a * a'   # covers |A|: a[i]*a[j] >= abs(A[i, j])
 
 # Extended help
 
-The result is scale-covariant whenever every connected component of the support has a
-nonzero diagonal entry (rows with a zero diagonal take their reference from
-neighbors that have one).
+The result is scale-covariant up to floating-point round-off whenever every
+connected component of the support has a nonzero diagonal entry (rows with a
+zero diagonal take their reference from neighbors that have one). Covariance is
+not exact even for power-of-two scalings, because the method works with
+logarithms of the entries.
 
 The result is also permutation-equivariant up to floating-point round-off:
 covering `A[p, p]` for a permutation `p` gives `a[p]`.

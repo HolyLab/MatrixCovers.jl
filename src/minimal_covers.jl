@@ -53,6 +53,13 @@ If the solver warns that the result may not minimize the objective, follow the
 advice in the warning: increase `maxouter` when the update limit was reached,
 and `κ` when the residual stopped contracting before the limit.
 
+Without a warning, the result typically matches the exact minimizer to a
+relative accuracy of about `1e-8`, and occasionally only `1e-7`: the stopping
+test measures feasibility and complementary slackness but not stationarity.
+Scale covariance holds to the same accuracy. For a diagonal rescaling
+`A ./ (d * d')`, the result approximates `symcover_min(A) ./ d` but does not
+equal it bitwise, even when every `d[i]` is a power of two.
+
 The native solver computes in `Float64` for narrower input types, then converts
 the result to the required element type.
 
@@ -98,6 +105,9 @@ The native solver accepts the same `κ`, `maxouter`, `maxiter`, `fillbudget`,
 `:woodbury`, an `m × n` matrix may omit at most
 `min(m,n) ÷ 4` entries per row or column and `4 * max(m,n)` entries in total.
 `:dense` costs O((m+n)³) per Newton step; sparse matrices default to `:lsqr`.
+The accuracy and scale covariance of the result are as described for
+[`symcover_min`](@ref). For `A ./ (d * e')`, the products `a[i]*b[j]`
+approximate those of `cover_min(A)` divided by `d[i]*e[j]`.
 
 See also: [`symcover_min`](@ref), [`cover`](@ref), [`cover_min!`](@ref).
 """
