@@ -229,9 +229,11 @@ function _symcover_dense!(a::AbstractVector, A::AbstractMatrix, ::Type{T}, maxit
 end
 
 # `cover!` over a dense log-magnitude grid, up to but not including the balance
-# convention. `start` is one of `COVER_STARTS`.
+# convention. `start` is one of `COVER_STARTS`; `fname` and `hint` label the
+# error thrown when the scales exceed the exponent range of `T`.
 function _cover_dense!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
-                       ::Type{T}, maxiter::Int, cgiter::Int, start::Symbol) where {T}
+                       ::Type{T}, maxiter::Int, cgiter::Int, start::Symbol,
+                       fname::Symbol, hint::String) where {T}
     or = first(axes(A, 1)) - 1
     oc = first(axes(A, 2)) - 1
     m, n = size(A)
@@ -278,6 +280,7 @@ function _cover_dense!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
             end
         end
         _covariant_start!(α, β, na, nb, foreach_grid, foreach_gridneighbor)
+        _check_representable(α, ip -> na[ip] > 0, β, jp -> nb[jp] > 0, T, fname; gauge=true, hint)
         for ip in 1:m
             α[ip] = iszero(na[ip]) ? zero(T) : max(exp(α[ip]), floatmin(T))
         end
@@ -289,6 +292,7 @@ function _cover_dense!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
     map!(log, lβ, β)
     if cgiter > 0 && !fullsupport
         _cg_refine!(lα, lβ, foreach_grid, cgiter)
+        _check_representable(lα, ip -> na[ip] > 0, lβ, jp -> nb[jp] > 0, T, fname; gauge=true, hint)
         for ip in 1:m
             iszero(na[ip]) || (α[ip] = max(exp(lα[ip]), floatmin(T)); lα[ip] = log(α[ip]))
         end

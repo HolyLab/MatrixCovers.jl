@@ -53,6 +53,13 @@ If the solver warns that the result may not minimize the objective, follow the
 advice in the warning: increase `maxouter` when the update limit was reached,
 and `κ` when the residual stopped contracting before the limit.
 
+Without a warning, the result typically matches the exact minimizer to a
+relative accuracy of about `1e-8`, and occasionally only `1e-7`: the stopping
+test measures feasibility and complementary slackness but not stationarity.
+Scale covariance holds to the same accuracy. For a diagonal rescaling
+`A ./ (d * d')`, the result approximates `symcover_min(A) ./ d` but does not
+equal it bitwise, even when every `d[i]` is a power of two.
+
 The native solver computes in `Float64` for narrower input types, then converts
 the result to the required element type.
 
@@ -72,6 +79,16 @@ the balance convention
 `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` (`nzaᵢ`, `nzbⱼ` = nonzero counts of row `i`,
 column `j`).
 
+The factors of a nonsymmetric band matrix can vary geometrically along the
+band. For the tridiagonal Toeplitz matrix with subdiagonal `s` and
+superdiagonal `u`, the `AbsLog{2}` minimizer has `a[i+1]/a[i] ≈ sqrt(s/u)`, so
+for `n = 1000` and `s/u = 1/2` the entries of `a` span about 150 decades. The
+products `a[i]*b[j]` are unaffected, but quantities that combine factors from
+distant rows or columns, such as `norm(a)` or [`gramcover`](@ref), inherit the
+spread. [`cover`](@ref) and [`soft_cover`](@ref) behave the same way. Factors
+outside the floating-point range throw an error; converting `A` to `BigFloat`
+extends the range.
+
 Supported ϕ values:
 - `AbsLog{2}()`: native.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
@@ -88,6 +105,9 @@ The native solver accepts the same `κ`, `maxouter`, `maxiter`, `fillbudget`,
 `:woodbury`, an `m × n` matrix may omit at most
 `min(m,n) ÷ 4` entries per row or column and `4 * max(m,n)` entries in total.
 `:dense` costs O((m+n)³) per Newton step; sparse matrices default to `:lsqr`.
+The accuracy and scale covariance of the result are as described for
+[`symcover_min`](@ref). For `A ./ (d * e')`, the products `a[i]*b[j]`
+approximate those of `cover_min(A)` divided by `d[i]*e[j]`.
 
 See also: [`symcover_min`](@ref), [`cover`](@ref), [`cover_min!`](@ref).
 """
@@ -1588,6 +1608,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter:
          T[hassupp[ip] ? log(T(start[i])) : zero(T) for (ip, i) in enumerate(ax)]
     α, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve, boost, fillbudget, flopbudget)
     _warn_unconverged(fname, stats, maxouter)
+    _check_representable(α, ip -> hassupp[ip], nothing, nothing, T, fname; gauge=false)
     # Dense scale vector matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     a = similar(Array{T}, ax)
     for (ip, i) in enumerate(ax)
@@ -1664,7 +1685,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     end
     # Start the LSQR iteration from the heuristic cover.
     if start === nothing && use_lsqr && maxouter > 0
-        start = cover(A)
+        start = _cover!(similar(Array{T}, axr), similar(Array{T}, axc), A; fname=:cover_min)
     end
     # Woodbury uses a grid; dense and LSQR use an edge list.
     supp = if use_woodbury
@@ -1749,14 +1770,18 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     for c in 1:ncomp
         s[c] = (Lβ[c] - Lα[c]) / (2 * nec[c])
     end
+    lα = [hasrow[ip] ? x[ip] + s[rowcomp[ip]] : zero(T) for ip in 1:m]
+    lβ = [hascol[jp] ? x[m+jp] - s[colcomp[jp]] : zero(T) for jp in 1:n]
+    _check_representable(lα, ip -> hasrow[ip], lβ, jp -> hascol[jp], T,
+                         boost ? :cover_min : :soft_cover_min; gauge=false)
     # Dense scale vectors matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     a = similar(Array{T}, axr)
     b = similar(Array{T}, axc)
     for (ip, i) in enumerate(axr)
-        a[i] = hasrow[ip] ? exp(x[ip] + s[rowcomp[ip]]) : zero(T)
+        a[i] = hasrow[ip] ? exp(lα[ip]) : zero(T)
     end
     for (jp, j) in enumerate(axc)
-        b[j] = hascol[jp] ? exp(x[m+jp] - s[colcomp[jp]]) : zero(T)
+        b[j] = hascol[jp] ? exp(lβ[jp]) : zero(T)
     end
     boost && _certify_cover!(a, b, A, :cover_min)
     return a, b, stats

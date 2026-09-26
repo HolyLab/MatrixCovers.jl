@@ -837,3 +837,61 @@ end
     # Contraction beats the tenfold target, so κ never escalates.
     @test all(==(1e2), s2.κs)
 end
+
+@testset "covariance under power-of-two rescaling" begin
+    # Power-of-two `d` makes the rescaled matrix exact, but the covers are
+    # covariant only to round-off (`symcover`) or solver accuracy (`*_min`).
+    A2 = [-0.56 -1.1; -1.1 19.66]
+    A3 = [0.5 1.3 -1.68; 1.3 8.68 -2.85; -1.68 -2.85 7.78]
+    for (A, d) in ((A2, [8.0, 1.0]), (A2, [2.0, 1.0]), (A3, [8.0, 1.0, 1.0]), (A3, [2.0, 1.0, 1.0]))
+        Ã = A ./ (d * d')
+        @test Ã .* (d * d') == A
+        @test symcover(Ã) .* d ≈ symcover(A) rtol=1e-12
+        @test symcover_min(Ã) .* d ≈ symcover_min(A) rtol=1e-6
+    end
+    for seed in 1:3
+        rng = StableRNG(seed)
+        n = 30
+        B = randn(rng, n, n)
+        A = B + B' + 3I
+        d = 2.0 .^ round.(Int, 4 * log2(10) .* randn(rng, n))
+        e = 2.0 .^ round.(Int, 4 * log2(10) .* randn(rng, n))
+        Ã = A ./ (d * d')
+        @test symcover(Ã) .* d ≈ symcover(A) rtol=1e-12
+        @test symcover_min(Ã) .* d ≈ symcover_min(A) rtol=1e-6
+        a, b = cover_min(A)
+        ã, b̃ = cover_min(A ./ (d * e'))
+        @test (ã * b̃') .* (d * e') ≈ a * b' rtol=1e-6
+    end
+end
+
+@testset "factors that vary geometrically along a band" begin
+    toep(n, sub, dia, sup) = spdiagm(-1 => fill(sub, n - 1), 0 => fill(dia, n), 1 => fill(sup, n - 1))
+    # Interior row factors decay by sqrt(sub/sup) per row.
+    A = toep(200, 1.0, 7.0, 2.0)
+    a, b = cover_min(A)
+    @test iscover(a, b, A)
+    @test all(i -> isapprox(a[i+1] / a[i], sqrt(1 / 2); rtol=1e-6), 50:150)
+    @test maximum(abs, diff(log.(cover_min(toep(200, 1.0, 7.0, 1.0))[1]))) < 1e-6
+
+    # Here the factors span about 690 decades, beyond Float64's range.
+    B = toep(70, 1.0, 1.0, 1e20)
+    msg = "not representable in Float64"
+    @test_throws "cover_min: the scale factors computed for `A` are $msg" cover_min(B)
+    @test_throws "cover_min: the scale factors computed for `A` are $msg" cover_min(B; linsolve=:dense)
+    @test_throws "cover: the scale factors computed for `A` are $msg" cover(B)
+    @test_throws "cover: the scale factors computed for `A` are $msg" cover(Matrix(B))
+    @test_throws "soft_cover: the scale factors computed for `A` are $msg" soft_cover(B)
+    @test_throws "soft_cover_min: the scale factors computed for `A` are $msg" soft_cover_min(AbsLog{2}(), B)
+    @test_throws "initialize_cover: the scale factors computed for `A` are $msg" initialize_cover(B; strategy=:covariant)
+    # The geometric-mean start does not propagate scales along the band.
+    @test iscover(cover(B; start=:geomean)..., B)
+    # BigFloat's exponent range holds the minimal cover.
+    Bbig = big.(B)
+    a, b = cover_min(Bbig)
+    @test iscover(a, b, Bbig)
+    @test log10(maximum(a) / minimum(a)) > 616
+
+    @test_throws "cover requires finite entries, got abs(A[1, 1]) = Inf" cover(sparse([Inf 1; 1 1]))
+    @test_throws "cover requires finite entries, got abs(A[1, 1]) = NaN" cover([NaN 1; 1 1])
+end

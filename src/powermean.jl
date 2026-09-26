@@ -76,7 +76,11 @@ function _soft_cover_powermean(ϕ::PowerMean, A::AbstractMatrix, fname::Symbol; 
         a = _soft_symcover_powermean(ϕ, A, fname; kwargs...)
         return a, copy(a)
     end
-    a, b = initialize_cover(A; strategy=:covariant, feasible=:none)
+    T = float(real(eltype(A)))
+    a = similar(Array{T}, axes(A, 1))
+    b = similar(Array{T}, axes(A, 2))
+    covariant_start!(a, b, flat_support(A, T); fname)
+    _balance_cover!(a, b, A)
     return _soft_cover_powermean!(ϕ, a, b, A, fname; kwargs...)
 end
 
@@ -91,6 +95,7 @@ function _soft_cover_powermean!(::PowerMean{p}, a::AbstractVector, b::AbstractVe
     β = map(x -> x > 0 ? log(T(x)) : zero(T), b)
     stats = _powermean_solve!(α, β, R, C, T(p), rtol; kwargs...)
     _warn_powermean_unconverged(fname, stats, :sweeps)
+    _check_representable(α, i -> !isempty(_slots(R, i)), β, j -> !isempty(_slots(C, j)), T, fname; gauge=true)
     for i in eachindex(a, α)
         a[i] = isempty(_slots(R, i)) ? zero(eltype(a)) : exp(α[i])
     end
@@ -119,6 +124,7 @@ function _soft_symcover_powermean!(::PowerMean{p}, a::AbstractVector, A::Abstrac
     stats = _powermean_symsolve!(α, S, T(p), rtol; kwargs...)
     _warn_powermean_unconverged(fname, stats, :updates)
     _balance_bipartite_sym!(α, S)
+    _check_representable(α, i -> !isempty(_slots(S, i)), nothing, nothing, T, fname; gauge=false)
     for i in eachindex(a, α)
         a[i] = isempty(_slots(S, i)) ? zero(eltype(a)) : exp(α[i])
     end
