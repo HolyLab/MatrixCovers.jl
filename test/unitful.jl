@@ -271,45 +271,32 @@
     end
 
     @testset "gramcover carries units" begin
-        # `gramcover` must handle an uneven row/column unit split.
         J = [4.0 1.0; 1.0 3.0; 2.0 0.5] .* u"N/m"
-        a, b = cover(J)
-        s = gramcover(a, b, J)
-        # `unit(a[i])` is the same for every `i` -- it must be, for `a[i]^2` to sum
-        # across rows of a component in the first place -- so any row names it.
-        @test unit.(s) == unit(a[1]) .* unit.(b)
+        s = gramcover(J)
+        @test all(==(u"N/m"), unit.(s))
         @test all(ustrip.(s * s') .>= ustrip.(abs.(J' * J)))
 
-        # A dimensioned diagonal weight: `s` picks up `sqrt(unit(w))` on top.
-        w = [1.0, 2.0, 0.5] .* u"s"
-        sw = gramcover(a, b, J, w)
-        @test unit.(sw) == unit(a[1]) .* unit.(b) .* unit(sqrt(1.0u"s"))
+        # A dimensioned diagonal weight: `s` picks up `sqrt(unit(w))`.
+        w = [1.0, -2.0, 0.5] .* u"s"
+        sw = gramcover(J, w)
+        @test all(==(u"N/m" * unit(sqrt(1.0u"s"))), unit.(sw))
         # Form the weighted Gram product without a mixed-unit intermediate.
         Gw = J' * (Diagonal(w) * J)
         @test all(ustrip.(sw * sw') .>= ustrip.(abs.(Gw)))
-    end
 
-    @testset "gramcover with a general W carries units" begin
-        # Coupled block sums have units `a^2*W`.
-        J = [4.0 1.0 0.0 0.0
-             1.0 3.0 0.0 0.0
-             0.0 0.0 2.0 1.0
-             0.0 0.0 0.5 4.0] .* u"N/m"
-        a, b = cover(J)
-        W = [1.0 0.0 0.3 0.0
-             0.0 2.0 0.0 0.0
-             0.3 0.0 1.5 0.0
-             0.0 0.0 0.0 0.5] .* u"s"
-        s = gramcover(a, b, J, W)
-        @test unit.(s) == unit(a[1]) .* unit.(b) .* unit(sqrt(1.0u"s"))
-        G = J' * (W * J)
-        @test all(ustrip.(s * s') .>= ustrip.(abs.(G)))
+        # A general dimensioned weight: `v` carries `sqrt(unit(W))`.
+        W = [1.0 0.0 0.3
+             0.2 2.0 0.0
+             0.3 0.0 -1.5] .* u"s"
+        sW = gramcover(J, W)
+        @test all(==(u"N/m" * unit(sqrt(1.0u"s"))), unit.(sW))
+        @test all(ustrip.(sW * sW') .>= ustrip.(abs.(J' * (W * J))))
 
-        # Units do not alter gauge invariance.
-        a2, b2 = copy(a), copy(b)
-        a2[1:2] .*= 3; b2[1:2] ./= 3
-        a2[3:4] .*= 0.4; b2[3:4] ./= 0.4
-        @test isapprox(ustrip.(s), ustrip.(gramcover(a2, b2, J, W)); rtol=1e-6)
+        # The cover of `J` for a fixed row scale.
+        a = [1.0, 2.0, 0.5] .* u"m^-1"
+        _, b = cover(J, a)
+        @test all(==(u"N"), unit.(b))
+        @test iscover(a, b, J)
     end
 
     @testset "unit types the cover cannot use" begin

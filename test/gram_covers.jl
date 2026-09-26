@@ -1,428 +1,265 @@
-# gramcover/gramcover!: symmetric covers of A'*W*A built directly from an
-# asymmetric cover of A, without ever forming the Gram matrix.
+# gramcover/gramcover!: symmetric covers of A'*W*A computed from A and W, and
+# cover(A, a): the cover of A for a fixed row scale.
 
 @testset "gramcover" begin
 
-    # Explicit symmetrized block sums covered by `gramcover`.
-    function blocksums(a, J, W)
-        sc = MatrixCovers.support_components(J)
-        k = MatrixCovers.ncomponents(sc)
-        M = zeros(k, k)
-        for i in axes(W, 1), ip in axes(W, 2)
-            ci, cip = MatrixCovers.rowcomponent(sc, i), MatrixCovers.rowcomponent(sc, ip)
-            (iszero(ci) || iszero(cip)) && continue
-            M[ci, cip] += a[i] * abs(W[i, ip]) * a[ip]
+    # `s*s'` covers `abs.(G)`, compared in BigFloat so that `G` is (nearly) exact.
+    function covers_gram(s, A, W)
+        Ab = BigFloat.(A)
+        G = Ab' * BigFloat.(W) * Ab
+        sb = BigFloat.(s)
+        return all(sb * sb' .>= abs.(G))
+    end
+
+    # Random sparse pattern with lognormal magnitudes spanning many decades.
+    function lognormal_matrix(rng, m, n; density=0.4, σ=4.0)
+        L = zeros(m, n)
+        for j in 1:n, i in 1:m
+            rand(rng) < density || continue
+            L[i, j] = (rand(rng, Bool) ? 1 : -1) * exp(σ * randn(rng))
         end
-        return [max(M[p, q], M[q, p]) for p in 1:k, q in 1:k]
+        return L
     end
 
-    # Recover `σ[p]` from any supported column in component `p`.
-    function groupscales(s, b, J)
-        sc = MatrixCovers.support_components(J)
-        return [(j = findfirst(==(p), sc.colcomp); s[j] / b[j])
-                for p in 1:MatrixCovers.ncomponents(sc)]
-    end
+    rng = StableRNG(17)
+    A = [4.0 1.0 0.0 0.0
+         1.0 3.0 2.0 0.0
+         0.0 2.0 5.0 0.0
+         1.0 0.0 1.0 0.0
+         0.0 0.0 0.5 0.0]   # column 4 has no support
+    m, n = size(A)
 
-    # Three square blocks on the diagonal, one support component each.
-    function threeblocks(rng)
-        b1, b2, b3 = randn(rng, 2, 2), randn(rng, 2, 2), randn(rng, 2, 2)
-        return [b1 zeros(2, 2) zeros(2, 2)
-                zeros(2, 2) b2 zeros(2, 2)
-                zeros(2, 2) zeros(2, 2) b3]
-    end
-
-    @testset "random dense J: exact coverage of A'A" begin
-        rng = StableRNG(3)
-        J = randn(rng, 8, 5)
-        for coverfn in (cover, cover_min)
-            a, b = coverfn(J)
-            s = gramcover(a, b, J)
-            @test all(s * s' .>= abs.(J' * J))
-            # Cross-check the bound against a BigFloat computation of J'J.
-            Jb = BigFloat.(J)
-            Gb = Jb' * Jb
-            @test all(BigFloat.(s) * BigFloat.(s)' .>= abs.(Gb))
-        end
-    end
-
-    @testset "one component: the global bound is attained" begin
-        # A single component matches `norm(a)*b` within the documented roundoff
-        # inflation.
-        for (seed, m, k) in ((3, 5, 4), (7, 4, 4), (11, 12, 3))
-            rng = StableRNG(seed)
-            J = randn(rng, m, k)
-            a, b = cover(J)
-            s = gramcover(a, b, J)
-            @test ncomponents(support_components(J)) == 1
-            @test s ≈ norm(a) .* b rtol = (2 * length(a) + 3) * eps(Float64)
-            @test !all(s .<= norm(a) .* b)
-            # Coverage, which the margin exists to deliver, is unconditional.
-            @test all(s * s' .>= abs.(J' * J))
+    @testset "unweighted and diagonal weights" begin
+        for AA in (A, sparse(A))
+            s = gramcover(AA)
+            @test covers_gram(s, A, I(m))
+            @test s[4] == 0
+            @test s .^ 2 ≈ diag(A' * A)
+            # Mixed signs: a cover, but not generally minimal.
+            w = [1.0, -2.0, 0.5, 3.0, -0.25]
+            sw = gramcover(AA, w)
+            @test covers_gram(sw, A, Diagonal(w))
+            @test gramcover(AA, Diagonal(w)) == sw
+            @test sw .^ 2 ≈ diag(A' * Diagonal(abs.(w)) * A)
+            @test sw[4] == 0
+            # Zero weights drop their rows.
+            wz = [1.0, 0.0, 2.0, 0.0, 1.0]
+            sz = gramcover(AA, wz)
+            @test covers_gram(sz, A, Diagonal(wz))
+            @test sz ≈ gramcover(A[[1, 3, 5], :], wz[[1, 3, 5]])
         end
     end
 
-    @testset "block-diagonal: per-component structure" begin
-        rng = StableRNG(1)
-        B = randn(rng, 4, 3)
-        C = randn(rng, 3, 2)
-        J = [B zeros(4, 2); zeros(3, 3) C]
-        a, b = cover(J)
-        s = gramcover(a, b, J)
-
-        # Each block-diagonal support component is independent.
-        sB = gramcover(a[1:4], b[1:3], B)
-        sC = gramcover(a[5:7], b[4:5], C)
-        @test isapprox(s, vcat(sB, sC); rtol=1e-9)
-
-        # Entrywise tighter than the naive global bound, strictly so since a
-        # second component carries weight.
-        @test all(s .<= norm(a) .* b)
-        @test any(s .< norm(a) .* b .- 1e-12)
-    end
-
-    @testset "gauge invariance" begin
-        rng = StableRNG(1)
-        B = randn(rng, 4, 3)
-        C = randn(rng, 3, 2)
-        J = [B zeros(4, 2); zeros(3, 3) C]
-        a, b = cover(J)
-        s = gramcover(a, b, J)
-
-        a2, b2 = copy(a), copy(b)
-        γ = 10.0
-        a2[1:4] .*= γ;   b2[1:3] ./= γ
-        a2[5:7] .*= 0.3; b2[4:5] ./= 0.3
-        s2 = gramcover(a2, b2, J)
-        @test isapprox(s, s2; rtol=1e-12)
-
-        # Coupled components remain invariant under independent input gauges.
-        m = size(J, 1)
-        for W in (Matrix(2.0I, m, m) + [i == 1 && ip == 5 for i in 1:m, ip in 1:m],
-                  fill(0.5, m, m) + Diagonal(1:m))
-            @test isapprox(gramcover(a, b, J, W), gramcover(a2, b2, J, W); rtol=1e-12)
+    @testset "minimality for nonnegative weights" begin
+        for _ in 1:5
+            B = randn(rng, 7, 4)
+            w = rand(rng, 7)
+            s = gramcover(B, w)
+            @test s .^ 2 ≈ diag(B' * Diagonal(w) * B)
+            @test covers_gram(s, B, Diagonal(w))
         end
-
-        # A coupling fixes the scale of a component whose diagonal block vanishes.
-        Wz = zeros(m, m)
-        Wz[1:4, 1:4] .= 1.0
-        Wz[1, 5] = Wz[5, 1] = 2.0
-        @test isapprox(gramcover(a, b, J, Wz), gramcover(a2, b2, J, Wz); rtol=1e-12)
-        sz = gramcover(a, b, J, Wz)
-        Gz = J' * Wz * J
-        @test all(sz * sz' .>= abs.(Gz) .- 1e-9 * maximum(abs, Gz))
     end
 
-    @testset "diagonal weights: positive, zero, and negative" begin
-        rng = StableRNG(5)
-        J = randn(rng, 6, 4)
-        a, b = cover(J)
-        w = [1.5, 0.0, -2.0, 3.0, 0.0, -0.5]
-        s = gramcover(a, b, J, w)
-        @test all(s * s' .>= abs.(J' * Diagonal(w) * J))
-        @test gramcover(a, b, J, Diagonal(w)) == gramcover(a, b, J, w)
+    @testset "Cholesky weight" begin
+        for _ in 1:5
+            X = randn(rng, m, m)
+            W = X * X' + 0.1I
+            for AA in (A, sparse(A))
+                s = gramcover(AA, cholesky(W))
+                @test s .^ 2 ≈ diag(A' * W * A)
+                @test covers_gram(s, A, W)
+                @test s[4] == 0
+            end
+            # Lower-triangular storage gives the same scales.
+            @test gramcover(A, cholesky(Symmetric(W, :L))) ≈ gramcover(A, cholesky(W))
+        end
     end
 
-    @testset "dense W: symmetric PSD, nonsymmetric, and component-coupling" begin
-        rng = StableRNG(1)
-        B = randn(rng, 4, 3)
-        C = randn(rng, 3, 2)
-        J = [B zeros(4, 2); zeros(3, 3) C]
-        a, b = cover(J)
-        m = size(J, 1)
-
-        R = randn(rng, m, m)
-        W = R'R
-        s = gramcover(a, b, J, W)
-        G = J' * W * J
-        @test all(s * s' .>= abs.(G) .- 1e-9 * maximum(abs, G))
-
-        Wn = randn(rng, m, m)
-        sn = gramcover(a, b, J, Wn)
-        Gn = J' * Wn * J
-        @test all(sn * sn' .>= abs.(Gn) .- 1e-9 * maximum(abs, Gn))
-
-        # A nonzero off-diagonal coupling rows from the two different blocks:
-        # component merging must still yield a valid bound.
-        Wc = Matrix{Float64}(I, m, m)
-        Wc[1, 5] = Wc[5, 1] = 2.0
-        sc = gramcover(a, b, J, Wc)
-        Gc = J' * Wc * J
-        @test all(sc * sc' .>= abs.(Gc) .- 1e-9 * maximum(abs, Gc))
-
-        # A single loopless edge admits no gauge-invariant cover.
-        Wo = zeros(m, m)
-        Wo[1, 5] = Wo[5, 1] = 2.0
-        @test_throws "no gauge-invariant cover exists" gramcover(a, b, J, Wo)
-        so = gramcover(a, b, J, Wo; degenerate=:uniform)
-        Go = J' * Wo * J
-        @test all(so * so' .>= abs.(Go) .- 1e-9 * maximum(abs, Go))
-        a2, b2 = copy(a), copy(b)
-        a2[1:4] .*= 8; b2[1:3] ./= 8
-        @test !isapprox(so, gramcover(a2, b2, J, Wo; degenerate=:uniform); rtol=1e-6)
+    @testset "general W" begin
+        # Indefinite and asymmetric.
+        W = randn(rng, m, m)
+        @test !issymmetric(W)
+        for AA in (A, sparse(A))
+            s = gramcover(AA, W)
+            @test covers_gram(s, A, W)
+            @test s[4] == 0
+        end
+        # A user-supplied `v`.
+        v = fill(nextfloat(sqrt(maximum(abs, W))), m)
+        s = gramcover(A, W; v)
+        @test s ≈ v[1] .* vec(sum(abs, A; dims=1))
+        @test covers_gram(s, A, W)
+        # Sparse W.
+        Ws = sprandn(rng, m, m, 0.4) + I
+        @test covers_gram(gramcover(A, Ws), A, Ws)
+        # For diagonal W, the general bound is looser than the Diagonal method
+        # by at most sqrt(n_j).
+        w = rand(rng, m) .+ 0.1
+        sg = gramcover(A, Matrix(Diagonal(w)))
+        sd = gramcover(A, w)
+        nj = vec(count(!iszero, A; dims=1))
+        @test all(sd .<= sg)
+        @test all(sg .<= sqrt.(nj) .* sd .* (1 + 1e-12))
     end
 
-    @testset "sparse J" begin
-        Js = sparse([1, 2, 3, 3], [1, 2, 1, 3], [2.0, 3.0, 1.0, 4.0], 3, 3)
-        a, b = cover(Js)
-        s = gramcover(a, b, Js)
-        @test all(s * s' .>= abs.(Matrix(Js)' * Matrix(Js)))
-        w = [1.0, -1.0, 2.0]
-        sw = gramcover(a, b, Js, w)
-        @test all(sw * sw' .>= abs.(Matrix(Js)' * Diagonal(w) * Matrix(Js)))
+    @testset "sandwich against the implied cover of A" begin
+        for _ in 1:5
+            B = lognormal_matrix(rng, 9, 6; density=0.5)
+            w = exp.(2 .* randn(rng, 9))
+            _, b = cover(B, 1 ./ sqrt.(w))
+            s = gramcover(B, w)
+            nj = vec(count(!iszero, B; dims=1))
+            @test all(b .<= s)
+            @test all(s .<= sqrt.(nj) .* b .* (1 + 1e-12))
+        end
     end
 
-    @testset "sparse W matches its dense reading" begin
-        rng = StableRNG(21)
-        B = randn(rng, 4, 3); C = randn(rng, 3, 2)
-        J = [B zeros(4, 2); zeros(3, 3) C]   # two support components
-        a, b = cover(J)
-        m = size(J, 1)
-        Wsp = sparse(1.0I, m, m)
-        Wsp[1, 5] = Wsp[5, 1] = 0.5
-        s = gramcover(a, b, J, Wsp)
-        @test s == gramcover(a, b, J, Matrix(Wsp))
-        @test all(s * s' .>= abs.(J' * Matrix(Wsp) * J))
-        # Uncoupled weights.
-        Dsp = sparse(2.0I, m, m)
-        @test gramcover(a, b, J, Dsp) == gramcover(a, b, J, Matrix(Dsp))
+    @testset "scale covariance" begin
+        B = randn(rng, 6, 4)
+        w = randn(rng, 6)
+        d1 = exp.(3 .* randn(rng, 6))
+        d2 = exp.(3 .* randn(rng, 4))
+        B2 = Diagonal(d1) * B * Diagonal(d2)
+        w2 = w ./ d1 .^ 2
+        @test gramcover(B2, w2) ≈ d2 .* gramcover(B, w) rtol = 1e-12
+        X = randn(rng, 6, 6)
+        W = X * X' + I
+        W2 = Diagonal(1 ./ d1) * W * Diagonal(1 ./ d1)
+        @test gramcover(B2, cholesky(Symmetric(W2))) ≈ d2 .* gramcover(B, cholesky(W)) rtol = 1e-10
+        Wg = randn(rng, 6, 6)
+        Wg2 = Diagonal(1 ./ d1) * Wg * Diagonal(1 ./ d1)
+        @test gramcover(B2, Wg2) ≈ d2 .* gramcover(B, Wg) rtol = 1e-8
     end
 
-    @testset "empty column" begin
-        J = [1.0 0.0; 2.0 0.0; 0.0 0.0]
-        a, b = cover(J)
-        s = gramcover(a, b, J)
-        @test s[2] == 0
-        @test all(s * s' .>= abs.(J' * J))
+    @testset "covering in floating point, wide dynamic range" begin
+        for _ in 1:20
+            B = lognormal_matrix(rng, 12, 8)
+            w = (rand(rng, 12) .- 0.3) .* exp.(4 .* randn(rng, 12))
+            @test covers_gram(gramcover(B), B, I(12))
+            @test covers_gram(gramcover(B, w), B, Diagonal(w))
+            # Against the Gram matrix formed in Float64.
+            s = gramcover(B, abs.(w))
+            @test all(s * s' .>= abs.(B' * Diagonal(abs.(w)) * B))
+            Wg = lognormal_matrix(rng, 12, 12; density=0.5)
+            @test covers_gram(gramcover(B, Wg), B, Wg)
+        end
     end
 
-    @testset "OffsetArray" begin
-        J = [4.0 1.0; 1.0 3.0; 2.0 0.5]
-        Jo = OffsetArray(J, 0:2, 0:1)
-        ao, bo = cover(Jo)
-        so = gramcover(ao, bo, Jo)
-        @test axes(so, 1) == axes(Jo, 2)
-
-        a, b = cover(J)
-        s = gramcover(a, b, J)
-        @test collect(so) ≈ s
-
-        # And with an offset weight vector.
-        wo = OffsetArray([1.0, 2.0, -0.5], 0:2)
-        sow = gramcover(ao, bo, Jo, wo)
-        w = collect(wo)
-        sw = gramcover(a, b, J, w)
-        @test collect(sow) ≈ sw
+    @testset "generic axes" begin
+        w = [1.0, -2.0, 0.5, 3.0, -0.25]
+        W = randn(rng, m, m)
+        Ao = OffsetArray(A, -3, 5)
+        wo = OffsetArray(w, -3)
+        Wo = OffsetArray(W, -3, -3)
+        for (s, so) in ((gramcover(A), gramcover(Ao)),
+                        (gramcover(A, w), gramcover(Ao, wo)),
+                        (gramcover(A, W), gramcover(Ao, Wo)))
+            @test axes(so) == (axes(Ao, 2),)
+            @test parent(so) == s
+        end
+        # A factorization has one-based axes; only the columns of `A` may be offset.
+        X = randn(rng, m, m)
+        C = cholesky(X * X' + I)
+        Ac = OffsetArray(A, 0, 5)
+        sc = gramcover(Ac, C)
+        @test axes(sc) == (axes(Ac, 2),)
+        @test parent(sc) == gramcover(A, C)
+        @test_throws "axes(A, 1) must be" gramcover(Ao, C)
+        # Views.
+        Av = view(A, 1:4, 2:4)
+        @test gramcover(Av, w[1:4]) == gramcover(A[1:4, 2:4], w[1:4])
+        @test gramcover(Av, C.U[1:4, 1:4]' * C.U[1:4, 1:4] |> cholesky) ≈
+              gramcover(A[1:4, 2:4], C.U[1:4, 1:4]' * C.U[1:4, 1:4] |> cholesky)
+        @test gramcover(Av, W[1:4, 1:4]) == gramcover(A[1:4, 2:4], W[1:4, 1:4])
+        # cover(A, a)
+        a = rand(rng, m) .+ 0.5
+        ao, bo = cover(Ao, OffsetArray(a, -3))
+        @test axes(bo) == (axes(Ao, 2),)
+        @test parent(bo) == cover(A, a)[2]
     end
 
     @testset "gramcover!" begin
-        J = [4.0 1.0; 1.0 3.0; 2.0 0.5]
-        a, b = cover(J)
-        s = gramcover(a, b, J)
-
-        sbuf = similar(b)
-        r = gramcover!(sbuf, a, b, J)
-        @test r === sbuf
-        @test sbuf == s
-
-        w = [1.0, -2.0, 0.5]
-        swbuf = similar(b)
-        rw = gramcover!(swbuf, a, b, J, w)
-        @test rw === swbuf
-        @test swbuf == gramcover(a, b, J, w)
-
-        W = Matrix{Float64}(I, 3, 3)
-        sWbuf = similar(b)
-        rW = gramcover!(sWbuf, a, b, J, W)
-        @test rW === sWbuf
-        @test sWbuf == gramcover(a, b, J, W)
-
-        @test_throws "`s` holds one Gram scale per support column" gramcover!(zeros(3), a, b, J)
-        @test_throws "`a` holds one scale per support row" gramcover!(similar(b), zeros(4), b, J)
-        @test_throws "`b` holds one scale per support column" gramcover!(similar(b), a, zeros(4), J)
-        @test_throws "`w` holds one weight per support row" gramcover(a, b, J, zeros(4))
-        @test_throws "`W` couples support rows" gramcover(a, b, J, zeros(4, 4))
+        w = rand(rng, m)
+        W = randn(rng, m, m)
+        C = cholesky(W * W' + I)
+        s = zeros(n)
+        @test gramcover!(s, A) === s
+        @test s == gramcover(A)
+        @test gramcover!(s, A, w) === s
+        @test s == gramcover(A, w)
+        @test gramcover!(s, A, Diagonal(w)) === s
+        @test s == gramcover(A, w)
+        @test gramcover!(s, A, C) === s
+        @test s == gramcover(A, C)
+        @test gramcover!(s, A, W) === s
+        @test s == gramcover(A, W)
+        v = fill(nextfloat(sqrt(maximum(abs, W))), m)
+        @test gramcover!(s, A, W; v) === s
+        @test s == gramcover(A, W; v)
     end
 
-    @testset "SupportComponents form and Diagonal weights" begin
-        B = randn(StableRNG(2), 4, 3)
-        C = randn(StableRNG(3), 3, 2)
-        J = [B zeros(4, 2); zeros(3, 3) C]
-        a, b = cover(J)
-        w = [1.0, -2.0, 0.5, 3.0, -1.0, 2.0, 0.25]
-        sc = MatrixCovers.support_components(J)
-
-        # Passing the components in place of the matrix matches the matrix forms.
-        @test gramcover(a, b, sc) == gramcover(a, b, J)
-        @test gramcover(a, b, sc, w) == gramcover(a, b, J, w)
-
-        # `W::Diagonal` is the vector-weighted form, for every entry point.
-        @test gramcover(a, b, J, Diagonal(w)) == gramcover(a, b, J, w)
-        @test gramcover(a, b, sc, Diagonal(w)) == gramcover(a, b, sc, w)
-
-        sbuf = similar(b)
-        @test gramcover!(sbuf, a, b, sc) === sbuf
-        @test sbuf == gramcover(a, b, J)
-        @test gramcover!(sbuf, a, b, J, Diagonal(w)) === sbuf
-        @test sbuf == gramcover(a, b, J, w)
-        @test gramcover!(sbuf, a, b, sc, Diagonal(w)) === sbuf
-        @test sbuf == gramcover(a, b, sc, w)
-
-        # Matrix-weight methods accept and validate `degenerate` consistently.
-        @test gramcover(a, b, J, Diagonal(w); degenerate=:uniform) == gramcover(a, b, J, w)
-        @test gramcover(a, b, sc, Diagonal(w); degenerate=:uniform) == gramcover(a, b, sc, w)
-        @test gramcover!(sbuf, a, b, J, Diagonal(w); degenerate=:uniform) === sbuf
-        @test sbuf == gramcover(a, b, J, w)
-        @test_throws "`degenerate` must be :error or :uniform" gramcover(a, b, J, Diagonal(w); degenerate=:nonsense)
-        @test_throws "`degenerate` must be :error or :uniform" gramcover(a, b, sc, Diagonal(w); degenerate=:nonsense)
-        @test_throws "`degenerate` must be :error or :uniform" gramcover!(sbuf, a, b, J, Diagonal(w); degenerate=:nonsense)
-        @test_throws "`degenerate` must be :error or :uniform" gramcover!(sbuf, a, b, sc, Diagonal(w); degenerate=:nonsense)
+    @testset "argument errors" begin
+        W = randn(rng, m, m)
+        @test_throws DimensionMismatch gramcover!(zeros(3), A)
+        @test_throws "eachindex(s) must be" gramcover!(zeros(3), A)
+        @test_throws "eachindex(s) must be" gramcover!(zeros(3), A, ones(m))
+        @test_throws "eachindex(s) must be" gramcover!(zeros(3), A, cholesky(W * W' + I))
+        @test_throws "eachindex(s) must be" gramcover!(zeros(3), A, W)
+        @test_throws DimensionMismatch gramcover(A, ones(3))
+        @test_throws "eachindex(w) must be" gramcover(A, ones(3))
+        @test_throws "eachindex(w) must be" gramcover(A, Diagonal(ones(3)))
+        @test_throws "axes(W) must be" gramcover(A, zeros(3, 3))
+        @test_throws "axes(W) must be" gramcover(A, zeros(m, m + 1))
+        @test_throws "axes(W) must be" gramcover(A, zeros(3, 3); v=ones(3))
+        @test_throws "axes(A, 1) must be" gramcover(A, cholesky(Matrix(1.0I, 3, 3)))
+        @test_throws "eachindex(v) must be" gramcover(A, W; v=ones(3))
+        vneg = fill(10.0, m); vneg[2] = -1
+        @test_throws "`v` must be nonnegative" gramcover(A, W; v=vneg)
+        @test_throws "abs(W[i,k]) <= v[i]*v[k]" gramcover(A, W; v=fill(1e-3, m))
     end
+end
 
-    @testset "general W leaves an uncoupled component as its own group" begin
-        # Three support components; `W` couples the first two and leaves the third
-        # alone, so that third component forms a singleton group of its own.
-        rng = StableRNG(5)
-        B = randn(rng, 2, 2); C = randn(rng, 2, 2); D = randn(rng, 2, 2)
-        J = [B zeros(2, 4); zeros(2, 2) C zeros(2, 2); zeros(2, 4) D]
-        a, b = cover(J)
-        @test MatrixCovers.ncomponents(MatrixCovers.support_components(J)) == 3
+@testset "cover(A, a)" begin
+    rng = StableRNG(5)
+    A = [4.0 1.0 0.0 0.0
+         1.0 3.0 2.0 0.0
+         0.0 2.0 5.0 0.0
+         1.0 0.0 1.0 0.0]
+    a = [1.0, 2.0, 0.5, 4.0]
+    a2, b = cover(A, a)
+    @test a2 === a
+    @test b == [4.0, 4.0, 10.0, 0.0]
+    @test iscover(a, b, A)
+    @test cover(sparse(A), a)[2] == b
 
-        W = Matrix{Float64}(I, 6, 6)
-        W[1, 3] = W[3, 1] = 1.5      # couples component 1 (rows 1-2) to component 2 (rows 3-4)
-        s = gramcover(a, b, J, W)
-        G = J' * W * J
-        @test all(s * s' .>= abs.(G) .- 1e-9 * maximum(abs, G))
-        # The uncoupled third component (W is the identity there) reproduces the
-        # unweighted cover, up to the roundoff inflation.
-        @test s[5:6] ≈ gramcover(a, b, J)[5:6]
-    end
-
-    @testset "two coupled components, both diagonal blocks nonzero" begin
-        # Closed form for a 2×2 `Ms` with positive diagonal.
-        rng = StableRNG(9)
-        B = randn(rng, 4, 3); C = randn(rng, 3, 2)
-        J = [B zeros(4, 2); zeros(3, 3) C]
-        a, b = cover(J)
-        m = size(J, 1)
-        κs = Float64[]
-        for c in (0.05, 40.0)
-            W = Matrix{Float64}(I, m, m)
-            W[1, 5] = W[5, 1] = c
-            s = gramcover(a, b, J, W)
-            Ms = blocksums(a, J, W)
-            κ = Ms[1, 2] / sqrt(Ms[1, 1] * Ms[2, 2])
-            push!(κs, κ)
-            σ = groupscales(s, b, J)
-            @test σ ≈ sqrt.([Ms[1, 1], Ms[2, 2]]) .* sqrt(max(1, κ)) rtol = 1e-6
-            G = J' * W * J
-            @test all(s * s' .>= abs.(G))
+    for _ in 1:20
+        B = sprandn(rng, 10, 7, 0.4)
+        B = B .* exp.(4 .* randn(rng, 10))
+        a = exp.(3 .* randn(rng, 10))
+        _, b = cover(B, a)
+        @test iscover(a, b, B)
+        # Tight in every supported column.
+        for j in axes(B, 2)
+            col = abs.(B[:, j])
+            if iszero(col)
+                @test b[j] == 0
+            else
+                @test maximum(col ./ (a .* b[j])) ≈ 1 rtol = 4eps()
+            end
         end
-        @test κs[1] < 1 < κs[2]
+        # With `a` from a full cover, `b` is no looser than that cover's.
+        a0, b0 = cover(B)
+        _, b1 = cover(B, a0)
+        @test iscover(a0, b1, B)
+        @test all(b1 .<= b0)
     end
 
-    @testset "two coupled components, one diagonal block zero" begin
-        # For `Ms = [d e; e 0]`, the minimal cover saturates its two constraints.
-        rng = StableRNG(11)
-        B = randn(rng, 4, 3); C = randn(rng, 3, 2)
-        J = [B zeros(4, 2); zeros(3, 3) C]
-        a, b = cover(J)
-        m = size(J, 1)
-        W = zeros(m, m)
-        W[1:4, 1:4] .= 1.0
-        W[1, 5] = W[5, 1] = 2.0
-        s = gramcover(a, b, J, W)
-        Ms = blocksums(a, J, W)
-        @test iszero(Ms[2, 2])
-        σ = groupscales(s, b, J)
-        @test σ[1] ≈ sqrt(Ms[1, 1]) rtol = 1e-6
-        @test σ[2] ≈ Ms[1, 2] / sqrt(Ms[1, 1]) rtol = 1e-6
-        G = J' * W * J
-        @test all(s * s' .>= abs.(G))
-    end
-
-    @testset "three coupled components in a triangle, every diagonal block zero" begin
-        # An odd cycle fixes the gauge without a diagonal block.
-        rng = StableRNG(13)
-        J = threeblocks(rng)
-        a, b = cover(J)
-        m = size(J, 1)
-        W = zeros(m, m)
-        W[1, 3] = W[3, 1] = 1.5
-        W[1, 5] = W[5, 1] = 0.75
-        W[3, 5] = W[5, 3] = 2.25
-        s = gramcover(a, b, J, W)
-        Ms = blocksums(a, J, W)
-        @test all(iszero, [Ms[p, p] for p in 1:3])
-        σ = groupscales(s, b, J)
-        @test σ ≈ [sqrt(Ms[1, 2] * Ms[1, 3] / Ms[2, 3]),
-                   sqrt(Ms[1, 2] * Ms[2, 3] / Ms[1, 3]),
-                   sqrt(Ms[1, 3] * Ms[2, 3] / Ms[1, 2])] rtol = 1e-6
-        G = J' * W * J
-        @test all(s * s' .>= abs.(G))
-
-        # The result remains gauge-invariant.
-        a2, b2 = copy(a), copy(b)
-        for (p, (rows, cols)) in enumerate(((1:2, 1:2), (3:4, 3:4), (5:6, 5:6)))
-            γ = (2.0, 0.3, 7.0)[p]
-            a2[rows] .*= γ; b2[cols] ./= γ
-        end
-        @test isapprox(s, gramcover(a2, b2, J, W); rtol=1e-6)
-    end
-
-    @testset "loopless bipartite coupling graphs are refused" begin
-        # An even cycle without loops is bipartite.
-        rng = StableRNG(17)
-        blocks = [randn(rng, 2, 2) for _ in 1:4]
-        J = zeros(8, 8)
-        for p in 1:4
-            J[2p-1:2p, 2p-1:2p] .= blocks[p]
-        end
-        a, b = cover(J)
-        @test MatrixCovers.ncomponents(MatrixCovers.support_components(J)) == 4
-        W = zeros(8, 8)
-        for (i, ip) in ((1, 3), (3, 5), (5, 7), (7, 1))
-            W[i, ip] = W[ip, i] = 1.0 + 0.5 * i
-        end
-        @test_throws "no gauge-invariant cover exists" gramcover(a, b, J, W)
-        s = gramcover(a, b, J, W; degenerate=:uniform)
-        G = J' * W * J
-        @test all(s * s' .>= abs.(G))
-
-        @test_throws "`degenerate` must be :error or :uniform" gramcover(a, b, J, W; degenerate=:nonsense)
-
-        # One loop removes the obstruction.
-        W[1, 1] = 1.0
-        s1 = gramcover(a, b, J, W)
-        G1 = J' * W * J
-        @test all(s1 * s1' .>= abs.(G1))
-    end
-
-    @testset "generic W over three coupled components" begin
-        # Compare the minimal cover with a valid diagonal-normalized cover.
-        rng = StableRNG(19)
-        J = threeblocks(rng)
-        a, b = cover(J)
-        m = size(J, 1)
-        W = abs.(randn(rng, m, m)) .+ 0.1
-        s = gramcover(a, b, J, W)
-        G = J' * W * J
-        @test all(s * s' .>= abs.(G))
-
-        Ms = blocksums(a, J, W)
-        σ = groupscales(s, b, J)
-        @test σ ≈ symcover_min(AbsLog{2}(), Ms) rtol = 1e-6
-
-        # This diagonal-normalized formula covers `Ms` but need not be minimal.
-        d = [Ms[p, p] for p in 1:3]
-        σh = [sqrt(sum(Ms[p, q] * sqrt(d[p] / d[q]) for q in 1:3)) for p in 1:3]
-        @test all(σh * σh' .>= Ms)
-        @test cover_objective(AbsLog{2}(), σ, Ms) <= cover_objective(AbsLog{2}(), σh, Ms)
-
-        a2, b2 = copy(a), copy(b)
-        for (p, γ) in enumerate((5.0, 0.2, 1.7))
-            a2[2p-1:2p] .*= γ; b2[2p-1:2p] ./= γ
-        end
-        @test isapprox(s, gramcover(a2, b2, J, W); rtol=1e-6)
-    end
-
+    # Unsupported rows may have a zero scale; supported rows may not.
+    A0 = [1.0 2.0; 0.0 0.0]
+    @test cover(A0, [1.0, 0.0])[2] == [1.0, 2.0]
+    @test_throws ArgumentError cover(A, [1.0, 0.0, 1.0, 1.0])
+    @test_throws "positive on every row that has a stored nonzero" cover(A, [1.0, 0.0, 1.0, 1.0])
+    @test_throws "must be nonnegative" cover(A0, [1.0, -1.0])
+    @test_throws "must be nonnegative" cover(A, [1.0, NaN, 1.0, 1.0])
+    @test_throws DimensionMismatch cover(A, ones(3))
 end

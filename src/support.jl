@@ -220,7 +220,7 @@ stored nonzero.
 
 Component ids run `1:ncomponents(sc)`; unsupported rows and columns report `0`.
 Use [`rowcomponent`](@ref) and [`colcomponent`](@ref) with the matrix's own
-indices. Pass this object to [`gramcover`](@ref) to reuse the traversal.
+indices.
 """
 struct SupportComponents{R<:AbstractUnitRange,C<:AbstractUnitRange}
     rowcomp::Vector{Int}

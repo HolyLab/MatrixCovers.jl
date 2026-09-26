@@ -332,8 +332,10 @@ The balanced factors of an asymmetric cover are deterministic but not
 individually covariant under one-sided scaling. This matters when consuming one
 factor, for example when covering `J'*J` from a cover of `J`.
 
-[`gramcover`](@ref)`(a, b, J[, W])` constructs a symmetric cover of `J'*W*J`
-that covaries with right-scaling of `J`.
+[`gramcover`](@ref)`(J[, W])` constructs a symmetric cover of `J'*W*J`
+directly from `J` and `W`, without a cover of `J`, and covaries with
+right-scaling of `J`. [`cover`](@ref)`(J, a)` gives the tightest cover of `J`
+for a fixed row scale `a`.
 
 ```jldoctest gauge
 julia> using MatrixCovers, LinearAlgebra
@@ -350,7 +352,7 @@ true
 julia> first(r) ≈ 1
 false
 
-julia> s1 = gramcover(a1, b1, J); s2 = gramcover(a2, b2, J * D);
+julia> s1 = gramcover(J); s2 = gramcover(J * D);
 
 julia> s2 ≈ D.diag .* s1
 true
