@@ -722,7 +722,7 @@ end
     _, s = MatrixCovers._symcover_min_abslog2(A)
     @test s.nouter == length(s.exits) == length(s.drops) == length(s.kkt) == length(s.κs)
     @test s.nouter <= 32
-    @test all(in((:stable, :decrease, :maxiter)), s.exits)
+    @test all(in((:stable, :decrease, :linesearch, :maxiter)), s.exits)
     # With room to converge, no outer pass runs out of Newton steps.
     @test all(!=(:maxiter), s.exits)
     # κ starts at the default, escalates monotonically, and respects the cap.
