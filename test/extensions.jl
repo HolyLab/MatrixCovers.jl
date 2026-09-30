@@ -251,7 +251,7 @@ end
     # No start on the menu beats the driver.
     for ϕ in (AbsLinear{1}(), AbsLinear{2}())
         a, b = soft_cover(ϕ, A)
-        for strategy in (:hardcover, :geomean)
+        for strategy in (:hardcover, :covariant)
             sa, sb = soft_cover!(ϕ, initialize_cover(A; strategy, feasible=:none)..., A)
             @test cover_objective(ϕ, a, b, A) <= cover_objective(ϕ, sa, sb, A) * (1 + 1e-6) + 1e-8
         end
@@ -261,6 +261,17 @@ end
         aa, ab = soft_cover(ϕ, As)
         @test cover_objective(ϕ, aa, ab, As) <=
               cover_objective(ϕ, soft_symcover(ϕ, As), As) * (1 + 1e-6) + 1e-8
+    end
+
+    # Covariant starts make the selected cover covariant on irregular support too.
+    rng = StableRNG(3)
+    for _ in 1:20
+        B = exp.(2 .* randn(rng, 5, 6)) .* (rand(rng, 5, 6) .> 0.4)
+        dr = exp.(3 .* randn(rng, 5))
+        dc = exp.(3 .* randn(rng, 6))
+        (any(iszero, sum(B; dims=1)) || any(iszero, sum(B; dims=2))) && continue
+        @test covaries(B -> soft_cover(AbsLinear{2}(), B), B, dr, dc; rtol=1e-5)
+        @test covaries(B -> cover_min(AbsLinear{2}(), B), B, dr, dc; rtol=1e-5)
     end
 
     @test_throws "positive scale on every supported row" soft_cover!(AbsLinear{2}(), [1.0, 0.0], [1.0, 1.0, 1.0], A)
@@ -329,7 +340,7 @@ end
 
         ab, bb = cover_min(ϕ, Aasym)
         @test iscover(ab, bb, Aasym; rtol=1e-6)
-        for strategy in (:hardcover, :geomean)
+        for strategy in (:hardcover, :covariant)
             sa, sb = cover_min!(ϕ, initialize_cover(Aasym; strategy)..., Aasym)
             @test cover_objective(ϕ, ab, bb, Aasym) <=
                   cover_objective(ϕ, sa, sb, Aasym) * (1 + 1e-6) + 1e-8

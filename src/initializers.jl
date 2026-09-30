@@ -2,7 +2,7 @@
 
 # Default starts for nonconvex `AbsLinear` solvers.
 const SYMCOVER_MIN_STRATEGIES = (:hardcover, :geomean, :leaveout)
-const COVER_MIN_STRATEGIES = (:hardcover, :geomean)
+const COVER_MIN_STRATEGIES = (:hardcover, :covariant)
 
 # ============================================================
 # Public interface

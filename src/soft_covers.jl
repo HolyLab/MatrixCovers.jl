@@ -32,7 +32,7 @@ Supported penalties and their keywords are:
   are each refined to a local minimum, and the one with the least objective is
   returned; requires JuMP and Ipopt. `starts` (default 5) is the number of
   starts: a few structured starts, then log-normal perturbations of the
-  geometric-mean start with spread `σ` (default 2.0; `sigma` is an alias),
+  first structured start with spread `σ` (default 2.0; `sigma` is an alias),
   drawn from `rng` (default `MersenneTwister(0)`).
 
 Unsupported rows receive zero scale. When a connected component of the support
@@ -372,14 +372,14 @@ function _soft_symcover_abslinear(ϕ::AbsLinear, A::AbstractMatrix, starts::Int,
                            A, starts, σ, rng; labels, objs)
 end
 
-# Asymmetric `AbsLinear` starts: boosted geometric mean, tightened cover, and
-# log-normal perturbations.
+# Asymmetric `AbsLinear` starts: boosted covariant start, tightened cover, and
+# log-normal perturbations. Every start is covariant, so the selection is too.
 function _soft_cover_abslinear_inits(A::AbstractMatrix, starts::Int, σ::Real, rng)
     T = float(real(eltype(A)))
-    ag, bg = initialize_cover(A; strategy=:geomean, feasible=:boost)
+    ag, bg = initialize_cover(A; strategy=:covariant, feasible=:boost)
     labels = ["boost"]
     inits = [(copy(ag), copy(bg))]
-    # Reuse the geometric-mean and boost passes when constructing the hard start.
+    # Reuse the covariant start and boost pass when constructing the hard start.
     length(inits) < starts && (push!(labels, "hardcover"); push!(inits, tighten_cover!(copy(ag), copy(bg), A)))
     k = 0
     while length(inits) < starts
