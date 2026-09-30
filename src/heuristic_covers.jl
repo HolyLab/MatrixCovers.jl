@@ -394,41 +394,75 @@ _uncon_scale(si::T, ni::Int, halfmu::T, ρi::T) where {T} =
 # `nmissing` counts supported rows (those with some A_ij ≠ 0)  for which
 # A_ii == 0.
 #
-# Each pass assigns every such row the mean of `log|A_ik| - ρ[k]` over its
-# already-referenced neighbors `k`, so the reference spreads outward by graph
-# distance from the diagonal. A pass costs one traversal, so the total is
-# proportional to the largest graph distance from the diagonal.
+# A breadth-first search from all rows with a nonzero diagonal entry assigns
+# every other reachable row the mean of `log|A_ik| - ρ[k]` over its neighbors
+# `k` in the preceding layer, so the reference spreads outward by graph distance
+# from the diagonal. The cost is proportional to the number of entries.
 #
 # Rows in components with no nonzero diagonal entry never receive a reference
 # and are set to zero, on which the start is not covariant.
 function _sym_reference!(ρ::AbstractVector{T}, foreach_entries::F, nmissing::Int) where {T,F}
     if nmissing > 0
-        acc = similar(ρ, T)
-        cnt = zeros(Int, eachindex(ρ))
-        while nmissing > 0
-            fill!(acc, zero(T))
-            fill!(cnt, 0)
-            foreach_entries() do i, j, lv
-                i == j && return
-                ri, rj = ρ[i], ρ[j]
-                # Only entries joining a referenced row to an unreferenced one contribute.
-                if isnan(ri) && !isnan(rj)
-                    acc[i] += lv - rj
-                    cnt[i] += 1
-                elseif isnan(rj) && !isnan(ri)
-                    acc[j] += lv - ri
-                    cnt[j] += 1
+        # Adjacency lists of the off-diagonal support, by position.
+        o = first(eachindex(ρ)) - 1
+        n = length(ρ)
+        deg = zeros(Int, n)
+        foreach_entries() do i, j, lv
+            i == j && return
+            deg[i-o] += 1
+            deg[j-o] += 1
+        end
+        ptr = Vector{Int}(undef, n + 1)
+        ptr[1] = 1
+        for p in 1:n
+            ptr[p+1] = ptr[p] + deg[p]
+        end
+        nbr = Vector{Int}(undef, ptr[end] - 1)
+        nlv = Vector{T}(undef, ptr[end] - 1)
+        cursor = ptr[1:n]
+        foreach_entries() do i, j, lv
+            i == j && return
+            p, q = i - o, j - o
+            nbr[cursor[p]], nlv[cursor[p]] = q, lv
+            cursor[p] += 1
+            nbr[cursor[q]], nlv[cursor[q]] = p, lv
+            cursor[q] += 1
+        end
+        dist = fill(-1, n)
+        queue = Vector{Int}(undef, n)
+        qend = 0
+        for p in 1:n
+            if !isnan(ρ[p+o])
+                dist[p] = 0
+                qend += 1
+                queue[qend] = p
+            end
+        end
+        # Vertices leave the queue in order of distance, so the preceding layer
+        # of each vertex has been assigned by the time it is reached.
+        head = 1
+        while head <= qend
+            v = queue[head]
+            head += 1
+            if dist[v] > 0
+                tot, cnt = zero(T), 0
+                for s in ptr[v]:ptr[v+1]-1
+                    u = nbr[s]
+                    if dist[u] == dist[v] - 1
+                        tot += nlv[s] - ρ[u+o]
+                        cnt += 1
+                    end
+                end
+                ρ[v+o] = tot / cnt
+            end
+            for s in ptr[v]:ptr[v+1]-1
+                u = nbr[s]
+                if dist[u] < 0
+                    dist[u] = dist[v] + 1
+                    qend += 1
+                    queue[qend] = u
                 end
             end
-            nnew = 0
-            for i in eachindex(ρ)
-                if cnt[i] > 0
-                    ρ[i] = acc[i] / cnt[i]
-                    nnew += 1
-                end
-            end
-            nnew == 0 && break
-            nmissing -= nnew
         end
     end
     for i in eachindex(ρ)
