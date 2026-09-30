@@ -1434,6 +1434,12 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                 fnew = _fal(xt, κcur, λ, sscale, bscale, supp, symmetric)
                 stable = false
             end
+            # No step above the floor decreases the objective: keep `x`.
+            if fnew > fcur
+                drop = zero(T)
+                exit = :linesearch
+                break
+            end
             x = xt
             drop = (fcur - fnew) / max(fcur, one(T))
             # For exact inner solves, an unchanged active set ends the descent.
