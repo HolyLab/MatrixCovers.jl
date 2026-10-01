@@ -1806,10 +1806,24 @@ function symcover_min_jump end
 # JuMP reference used to test the native asymmetric solver.
 function cover_min_jump end
 
+"""
+    SolverFailure(msg)
+
+Thrown when an external solver (Ipopt or HiGHS) stops without reaching a usable
+local minimum: it reports a status other than solved, or it returns scales that
+diverge on a plateau of the objective. A different start may succeed. The
+`AbsLinear` multistarts of [`soft_cover`](@ref) and [`soft_symcover`](@ref)
+leave out perturbed starts that throw this.
+"""
+struct SolverFailure <: Exception
+    msg::String
+end
+Base.showerror(io::IO, e::SolverFailure) = print(io, "SolverFailure: ", e.msg)
+
 # Reject all non-solved statuses, including `ALMOST_*`. Taking the status keeps
 # this helper independent of JuMP.
 function check_solved(status, solver, fname)
     Symbol(status) in (:OPTIMAL, :LOCALLY_SOLVED) ||
-        error("$fname: $solver terminated with status $status")
+        throw(SolverFailure("$fname: $solver terminated with status $status"))
     return nothing
 end

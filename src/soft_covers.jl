@@ -31,9 +31,11 @@ Supported penalties and their keywords are:
 - `AbsLinear{1}()`, `AbsLinear{2}()`: the objective is not convex. Several starts
   are each refined to a local minimum, and the one with the least objective is
   returned; requires JuMP and Ipopt. `starts` (default 5) is the number of
-  starts: a few structured starts, then log-normal perturbations of the
-  geometric-mean start with spread `σ` (default 2.0; `sigma` is an alias),
-  drawn from `rng` (default `MersenneTwister(0)`).
+  starts: a few deterministic starts, then log-normal perturbations of the
+  first deterministic start with spread `σ` (default 2.0; `sigma` is an
+  alias), drawn from `rng` (default `MersenneTwister(0)`). A perturbed start
+  whose refinement throws a [`SolverFailure`](@ref) is left out of the
+  selection; a failing deterministic start throws.
 
 Unsupported rows receive zero scale. When a connected component of the support
 is bipartite with no diagonal entry, the products on the support do not
@@ -167,9 +169,12 @@ Supported penalties and their keywords are:
 - `AbsLinear{1}()`, `AbsLinear{2}()`: the objective is not convex. Several starts
   are each refined to a local minimum, and the one with the least objective is
   returned; requires JuMP and Ipopt. `starts` (default 4) is the number of
-  starts: the geometric-mean and hard-cover starts, then log-normal
-  perturbations of the first with spread `σ` (default 2.0; `sigma` is an alias),
-  drawn from `rng` (default `MersenneTwister(0)`).
+  starts: the boosted covariant start of [`cover`](@ref) and the hard cover
+  tightened from it, then log-normal perturbations of the first with spread `σ`
+  (default 2.0; `sigma` is an alias), drawn from `rng` (default
+  `MersenneTwister(0)`). A perturbed start whose refinement throws a
+  [`SolverFailure`](@ref) is left out of the selection; a failing deterministic
+  start throws.
 
 Unsupported rows and columns receive zero scale. The factors use the balance
 convention of [`cover_min`](@ref).
@@ -314,15 +319,26 @@ function _multistart_select(objs)
     return besti
 end
 
-# Shared multistart driver: refine every start, then select. Optional `labels` and
+# Shared multistart driver: refine every start, then select. `inits_builder` returns the
+# labels, the starts, and the number `nfixed` of leading deterministic starts; the rest
+# are random. A random start whose refinement throws `SolverFailure` gets objective
+# `Inf`, while a failing deterministic start propagates the error. Optional `labels` and
 # `objs` collect candidate data for tests.
 function _multistart_run(inits_builder::F, refine!::G, objective::H, A::AbstractMatrix,
                          starts::Int, σ::Real, rng; labels=nothing, objs=nothing) where {F,G,H}
-    labs, inits = inits_builder(A, starts, σ, rng)
-    for x in inits
-        refine!(x, A)
+    labs, inits, nfixed = inits_builder(A, starts, σ, rng)
+    failed = falses(length(inits))
+    for (k, x) in enumerate(inits)
+        k <= nfixed && (refine!(x, A); continue)
+        try
+            refine!(x, A)
+        catch err
+            err isa SolverFailure || rethrow()
+            failed[k] = true
+        end
     end
     E = [objective(x, A) for x in inits]
+    E[failed] .= Inf
     labels === nothing || append!(labels, labs)
     objs === nothing || append!(objs, E)
     return inits[_multistart_select(E)]
@@ -351,7 +367,7 @@ function _soft_symcover_abslinear_inits(A::AbstractMatrix, starts::Int, σ::Real
     if length(inits) < starts && _nsupport(A) < length(A)
         push!(labels, "feasible"); push!(inits, initialize_symcover(A; strategy=:diagfeasible, feasible=:none))
     end
-    k = 0
+    nfixed, k = length(inits), 0
     while length(inits) < starts
         p = similar(ag)
         for i in ax
@@ -360,7 +376,7 @@ function _soft_symcover_abslinear_inits(A::AbstractMatrix, starts::Int, σ::Real
         end
         k += 1; push!(labels, "rand$k"); push!(inits, p)
     end
-    return labels, inits
+    return labels, inits, nfixed
 end
 
 # Scale-covariant symmetric `AbsLinear` multistart.
@@ -372,16 +388,16 @@ function _soft_symcover_abslinear(ϕ::AbsLinear, A::AbstractMatrix, starts::Int,
                            A, starts, σ, rng; labels, objs)
 end
 
-# Asymmetric `AbsLinear` starts: boosted geometric mean, tightened cover, and
-# log-normal perturbations.
+# Asymmetric `AbsLinear` starts: boosted covariant start, tightened cover, and
+# log-normal perturbations. Every start is covariant, so the selection is too.
 function _soft_cover_abslinear_inits(A::AbstractMatrix, starts::Int, σ::Real, rng)
     T = float(real(eltype(A)))
-    ag, bg = initialize_cover(A; strategy=:geomean, feasible=:boost)
+    ag, bg = initialize_cover(A; strategy=:covariant, feasible=:boost)
     labels = ["boost"]
     inits = [(copy(ag), copy(bg))]
-    # Reuse the geometric-mean and boost passes when constructing the hard start.
+    # Reuse the covariant start and boost pass when constructing the hard start.
     length(inits) < starts && (push!(labels, "hardcover"); push!(inits, tighten_cover!(copy(ag), copy(bg), A)))
-    k = 0
+    nfixed, k = length(inits), 0
     while length(inits) < starts
         a = similar(ag); b = similar(bg)
         for i in axes(A, 1)
@@ -394,7 +410,7 @@ function _soft_cover_abslinear_inits(A::AbstractMatrix, starts::Int, σ::Real, r
         end
         k += 1; push!(labels, "rand$k"); push!(inits, (a, b))
     end
-    return labels, inits
+    return labels, inits, nfixed
 end
 
 # Scale-covariant asymmetric `AbsLinear` multistart.

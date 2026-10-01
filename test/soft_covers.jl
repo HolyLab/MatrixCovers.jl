@@ -327,6 +327,28 @@ end
     @test "feasible" ∉ albs
 end
 
+@testset "multistart skips failed random starts" begin
+    # Two deterministic starts, then two random ones; `refine!` fails on the labeled start.
+    builder(A, starts, σ, rng) = (["s1", "s2", "rand1", "rand2"], [[1.0], [2.0], [3.0], [0.5]], 2)
+    objective(x, A) = x[1]
+    function run(bad)
+        refine!(x, A) = x[1] == bad && throw(MatrixCovers.SolverFailure("refinement failed"))
+        labels = String[]; objs = Float64[]
+        x = MatrixCovers._multistart_run(builder, refine!, objective, ones(1, 1), 4, 2.0, nothing;
+                                         labels, objs)
+        return x, objs
+    end
+    # A failed random start is excluded from the selection, even when its start is best.
+    x, objs = run(0.5)
+    @test x == [1.0]
+    @test objs == [1.0, 2.0, 3.0, Inf]
+    # A failed deterministic start throws.
+    @test_throws "refinement failed" run(2.0)
+    # Errors other than `SolverFailure` propagate from random starts too.
+    @test_throws DomainError MatrixCovers._multistart_run(builder,
+        (x, A) -> x[1] == 0.5 && throw(DomainError(x)), objective, ones(1, 1), 4, 2.0, nothing)
+end
+
 @testset "converged cover covariance" begin
     rng = StableRNG(1)
     B = exp.(2 .* randn(rng, 40, 40)) .* randn(rng, 40, 40)
