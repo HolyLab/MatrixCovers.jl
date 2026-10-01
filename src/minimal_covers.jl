@@ -1806,10 +1806,17 @@ function symcover_min_jump end
 # JuMP reference used to test the native asymmetric solver.
 function cover_min_jump end
 
+# A local solver stopped without reaching a usable local minimum: a non-solved
+# status, or scales that diverge. Multistart drivers skip random starts that throw this.
+struct SolverFailure <: Exception
+    msg::String
+end
+Base.showerror(io::IO, e::SolverFailure) = print(io, "SolverFailure: ", e.msg)
+
 # Reject all non-solved statuses, including `ALMOST_*`. Taking the status keeps
 # this helper independent of JuMP.
 function check_solved(status, solver, fname)
     Symbol(status) in (:OPTIMAL, :LOCALLY_SOLVED) ||
-        error("$fname: $solver terminated with status $status")
+        throw(SolverFailure("$fname: $solver terminated with status $status"))
     return nothing
 end

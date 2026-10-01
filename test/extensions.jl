@@ -125,16 +125,20 @@ end
     end
 end
 
-@testset "AbsLinear{2} refinement stopping on a plateau throws" begin
+@testset "AbsLinear refinement stopping on a plateau throws" begin
     # A start with one scale far too large puts every ratio in that row/column near 0, where
-    # the (1-r)^2 objective is flat; Ipopt reports the start region as solved.
-    ϕ = AbsLinear{2}()
+    # the |1-r|^p objective is flat; Ipopt reports the start region as solved. For p = 1,
+    # Ipopt may instead fail numerically as the scales diverge.
     A = ones(3, 3)
-    msg = r"Ipopt stopped on a plateau: every supported entry in (row|column) 3"
-    @test_throws msg soft_cover!(ϕ, ones(3), [1.0, 1.0, 1e40], A)
-    @test_throws msg soft_symcover!(ϕ, [1.0, 1.0, 1e40], A)
-    @test_throws msg cover_min!(ϕ, ones(3), [1.0, 1.0, 1e40], A)
-    @test_throws msg symcover_min!(ϕ, [1.0, 1.0, 1e40], A)
+    plateau = r"Ipopt stopped on a plateau: every supported entry in (row|column) 3"
+    for (ϕ, msg) in ((AbsLinear{1}(), Regex(plateau.pattern * "|Ipopt terminated with status")),
+                     (AbsLinear{2}(), plateau))
+        @test_throws msg soft_cover!(ϕ, ones(3), [1.0, 1.0, 1e40], A)
+        @test_throws msg soft_symcover!(ϕ, [1.0, 1.0, 1e40], A)
+        @test_throws msg cover_min!(ϕ, ones(3), [1.0, 1.0, 1e40], A)
+        @test_throws msg symcover_min!(ϕ, [1.0, 1.0, 1e40], A)
+        @test_throws MatrixCovers.SolverFailure soft_cover!(ϕ, ones(3), [1.0, 1.0, 1e40], A)
+    end
 end
 
 @testset "symcover_min!/cover_min! refiners (JuMP/HiGHS/Ipopt)" begin

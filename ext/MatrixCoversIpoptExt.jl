@@ -4,7 +4,7 @@ using JuMP: JuMP, @variable, @objective, @constraint
 using Ipopt: Ipopt
 using MatrixCovers
 using MatrixCovers: AbsLinear
-using MatrixCovers: _edge_list, _sym_edge_list, _degrees
+using MatrixCovers: _edge_list, _sym_edge_list, _degrees, SolverFailure
 
 # Models use 1-based positions and scatter results back to `A`'s axes. Support is
 # gathered as an O(nnz) edge list; unsupported scales are zero.
@@ -29,28 +29,29 @@ function _ipopt_model(; unscaled::Bool=false)
     return model
 end
 
-# At a stationary point of an AbsLinear{2} model with finite scales, every supported row and
-# column has an entry with ratio r = |A[i,j]|/(a[i]*b[j]) ≥ 1: the derivative of Σ(1-r)^2
-# with respect to log(a[i]) is Σⱼ 2r(1-r), which is positive when every r in row i lies in
-# (0, 1). As all r of a row or column approach 0 this derivative vanishes, and Ipopt can
-# report a point where those scales diverge as solved. Throw if some supported row or column
-# has no ratio of at least 1/2. Edge `e` joins row `ri[e]` and column `ci[e]` with log-ratio
-# `elog[e] - lα[ri[e]] - lβ[ci[e]]`; `pr`, `pc` map positions to indices of `A`.
+# At a stationary point of an AbsLinear{p} model with finite scales, every supported row and
+# column has an entry with ratio r = |A[i,j]|/(a[i]*b[j]) ≥ 1: the derivative of Σ|1-r|^p
+# with respect to log(a[i]) is Σⱼ p r(1-r)^(p-1) when every r in row i lies in (0, 1), which
+# is positive. As all r of a row or column approach 0 this derivative vanishes, and Ipopt can
+# report a point where those scales diverge as solved, or fail numerically on the way there.
+# Throw if some supported row or column has no ratio of at least 1/2. Edge `e` joins row
+# `ri[e]` and column `ci[e]` with log-ratio `elog[e] - lα[ri[e]] - lβ[ci[e]]`; `pr`, `pc`
+# map positions to indices of `A`.
 function check_not_plateau(fname, ri, ci, elog, lα, lβ, pr, pc)
     rowmax = fill(-Inf, length(lα))
     colmax = fill(-Inf, length(lβ))
     for e in eachindex(ri, ci, elog)
         lr = elog[e] - lα[ri[e]] - lβ[ci[e]]
-        isnan(lr) && error("$fname: Ipopt returned NaN scales")
+        isnan(lr) && throw(SolverFailure("$fname: Ipopt returned NaN scales"))
         rowmax[ri[e]] = max(rowmax[ri[e]], lr)
         colmax[ci[e]] = max(colmax[ci[e]], lr)
     end
     for (dim, lmax, p) in (("row", rowmax, pr), ("column", colmax, pc))
         k = findfirst(x -> -Inf < x < -log(2), lmax)
         k === nothing && continue
-        error("$fname: Ipopt stopped on a plateau: every supported entry in $dim $(p[k]) of `A` \
+        throw(SolverFailure("$fname: Ipopt stopped on a plateau: every supported entry in $dim $(p[k]) of `A` \
                is less than half its cover (largest ratio 10^$(round(lmax[k] / log(10); digits=1))), and the scales \
-               diverge there. A different start may avoid it.")
+               diverge there. A different start may avoid it."))
     end
     return nothing
 end
@@ -135,8 +136,10 @@ function MatrixCovers.symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
     end
     JuMP.optimize!(model)
     check_solved(model, "symcover_min!")
+    lα = JuMP.value.(α)
+    check_not_plateau("symcover_min!", fi, fj, flog, lα, lα, pr, pr)
     for (i, k) in pairs(pr)
-        a[k] = supported[i] ? exp(JuMP.value(α[i])) : zero(T)
+        a[k] = supported[i] ? exp(lα[i]) : zero(T)
     end
     return a
 end
@@ -209,11 +212,13 @@ function MatrixCovers.cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractV
     _pin_gauge!(model, α, β, A, nza, nzb)
     JuMP.optimize!(model)
     check_solved(model, "cover_min!")
+    lα, lβ = JuMP.value.(α), JuMP.value.(β)
+    check_not_plateau("cover_min!", ei, ej, elog, lα, lβ, pr, pc)
     for (i, k) in pairs(pr)
-        a[k] = nza[i] > 0 ? exp(JuMP.value(α[i])) : zero(T)
+        a[k] = nza[i] > 0 ? exp(lα[i]) : zero(T)
     end
     for (j, k) in pairs(pc)
-        b[k] = nzb[j] > 0 ? exp(JuMP.value(β[j])) : zero(T)
+        b[k] = nzb[j] > 0 ? exp(lβ[j]) : zero(T)
     end
     MatrixCovers._balance_cover!(a, b, A)
     return MatrixCovers.inflate_feasible!(a, b, A)
@@ -272,8 +277,10 @@ function MatrixCovers.soft_symcover!(::AbsLinear{1}, a::AbstractVector, A)
     @objective(model, Min, sum(tw[k] * t[k] for k in eachindex(ti)) + n_zeros)
     JuMP.optimize!(model)
     check_solved(model, "soft_symcover!")
+    lα = JuMP.value.(α)
+    check_not_plateau("soft_symcover!", fi, fj, flog, lα, lα, pr, pr)
     for (i, k) in pairs(pr)
-        a[k] = supported[i] ? exp(JuMP.value(α[i])) : zero(T)
+        a[k] = supported[i] ? exp(lα[i]) : zero(T)
     end
     return a
 end
@@ -341,11 +348,13 @@ function MatrixCovers.soft_cover!(::AbsLinear{1}, a::AbstractVector, b::Abstract
     _pin_gauge!(model, α, β, A, nza, nzb)
     JuMP.optimize!(model)
     check_solved(model, "soft_cover!")
+    lα, lβ = JuMP.value.(α), JuMP.value.(β)
+    check_not_plateau("soft_cover!", ei, ej, elog, lα, lβ, pr, pc)
     for (i, k) in pairs(pr)
-        a[k] = nza[i] > 0 ? exp(JuMP.value(α[i])) : zero(T)
+        a[k] = nza[i] > 0 ? exp(lα[i]) : zero(T)
     end
     for (j, k) in pairs(pc)
-        b[k] = nzb[j] > 0 ? exp(JuMP.value(β[j])) : zero(T)
+        b[k] = nzb[j] > 0 ? exp(lβ[j]) : zero(T)
     end
     return MatrixCovers._balance_cover!(a, b, A)
 end
