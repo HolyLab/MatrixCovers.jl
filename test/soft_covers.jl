@@ -328,7 +328,7 @@ end
 end
 
 @testset "multistart skips failed random starts" begin
-    # Two structured starts, then two random ones; `refine!` fails on the labeled start.
+    # Two deterministic starts, then two random ones; `refine!` fails on the labeled start.
     builder(A, starts, σ, rng) = (["s1", "s2", "rand1", "rand2"], [[1.0], [2.0], [3.0], [0.5]], 2)
     objective(x, A) = x[1]
     function run(bad)
@@ -342,7 +342,7 @@ end
     x, objs = run(0.5)
     @test x == [1.0]
     @test objs == [1.0, 2.0, 3.0, Inf]
-    # A failed structured start throws.
+    # A failed deterministic start throws.
     @test_throws "refinement failed" run(2.0)
     # Errors other than `SolverFailure` propagate from random starts too.
     @test_throws DomainError MatrixCovers._multistart_run(builder,

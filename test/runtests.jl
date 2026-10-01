@@ -42,7 +42,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
                      :_prepare_cover_start!, :_prepare_symcover_start!,
                      :_prepare_soft_cover_start!, :_prepare_soft_symcover_start!,
                      :foreach_support, :foreach_support_sym,
-                     :cover_min_jump, :symcover_min_jump, :check_solved, :SolverFailure,
+                     :cover_min_jump, :symcover_min_jump, :check_solved,
                      :require_abs_symmetric,
                      :_edge_list, :_sym_edge_list, :_degrees, :_support_components,
                      :_balance_cover!, :inflate_feasible!,

@@ -31,11 +31,11 @@ Supported penalties and their keywords are:
 - `AbsLinear{1}()`, `AbsLinear{2}()`: the objective is not convex. Several starts
   are each refined to a local minimum, and the one with the least objective is
   returned; requires JuMP and Ipopt. `starts` (default 5) is the number of
-  starts: a few structured starts, then log-normal perturbations of the
-  first structured start with spread `σ` (default 2.0; `sigma` is an alias),
-  drawn from `rng` (default `MersenneTwister(0)`). A perturbed start whose
-  refinement fails (Ipopt does not converge, or the scales diverge) is left out
-  of the selection; a failing structured start throws.
+  starts: a few deterministic starts, then log-normal perturbations of the
+  first deterministic start with spread `σ` (default 2.0; `sigma` is an
+  alias), drawn from `rng` (default `MersenneTwister(0)`). A perturbed start
+  whose refinement throws a [`SolverFailure`](@ref) is left out of the
+  selection; a failing deterministic start throws.
 
 Unsupported rows receive zero scale. When a connected component of the support
 is bipartite with no diagonal entry, the products on the support do not
@@ -172,9 +172,9 @@ Supported penalties and their keywords are:
   starts: the boosted covariant start of [`cover`](@ref) and the hard cover
   tightened from it, then log-normal perturbations of the first with spread `σ`
   (default 2.0; `sigma` is an alias), drawn from `rng` (default
-  `MersenneTwister(0)`). A perturbed start whose refinement fails (Ipopt does
-  not converge, or the scales diverge) is left out of the selection; a failing
-  structured start throws.
+  `MersenneTwister(0)`). A perturbed start whose refinement throws a
+  [`SolverFailure`](@ref) is left out of the selection; a failing deterministic
+  start throws.
 
 Unsupported rows and columns receive zero scale. The factors use the balance
 convention of [`cover_min`](@ref).
@@ -320,10 +320,10 @@ function _multistart_select(objs)
 end
 
 # Shared multistart driver: refine every start, then select. `inits_builder` returns the
-# labels, the starts, and the number `nfixed` of leading structured starts; the rest are
-# random. A random start whose refinement throws `SolverFailure` gets objective `Inf`,
-# while a failing structured start propagates the error. Optional `labels` and `objs`
-# collect candidate data for tests.
+# labels, the starts, and the number `nfixed` of leading deterministic starts; the rest
+# are random. A random start whose refinement throws `SolverFailure` gets objective
+# `Inf`, while a failing deterministic start propagates the error. Optional `labels` and
+# `objs` collect candidate data for tests.
 function _multistart_run(inits_builder::F, refine!::G, objective::H, A::AbstractMatrix,
                          starts::Int, σ::Real, rng; labels=nothing, objs=nothing) where {F,G,H}
     labs, inits, nfixed = inits_builder(A, starts, σ, rng)

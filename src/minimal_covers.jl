@@ -1806,8 +1806,15 @@ function symcover_min_jump end
 # JuMP reference used to test the native asymmetric solver.
 function cover_min_jump end
 
-# A local solver stopped without reaching a usable local minimum: a non-solved
-# status, or scales that diverge. Multistart drivers skip random starts that throw this.
+"""
+    SolverFailure(msg)
+
+Thrown when an external solver (Ipopt or HiGHS) stops without reaching a usable
+local minimum: it reports a status other than solved, or it returns scales that
+diverge on a plateau of the objective. A different start may succeed. The
+`AbsLinear` multistarts of [`soft_cover`](@ref) and [`soft_symcover`](@ref)
+leave out perturbed starts that throw this.
+"""
 struct SolverFailure <: Exception
     msg::String
 end
