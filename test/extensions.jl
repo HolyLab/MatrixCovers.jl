@@ -487,6 +487,12 @@ end
         @test fh[1] ≈ fd[1] rtol=1e-6
         @test fh[2] ≈ fd[2] rtol=1e-6
     end
+    for (fh, fd) in ((cover_transversal(M), cover_transversal(dense)),
+                     (MatrixCovers.cover_transversal_jump(M)[1],
+                      MatrixCovers.cover_transversal_jump(dense)[1]))
+        @test fh[1] ≈ fd[1] rtol=1e-6
+        @test fh[2] ≈ fd[2] rtol=1e-6
+    end
 
     # Ipopt: the AbsLinear kernels, whose starts the caller supplies.
     for p in (1, 2)

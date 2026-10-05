@@ -271,6 +271,8 @@ MC.symcover_min(A::QMatrix; kwargs...) = sym(MC.symcover_min, A; kwargs...)
 MC.symcover_min!(a::QVector, A::QMatrix; kwargs...) = symstart!(MC.symcover_min!, a, A; kwargs...)
 MC.cover_min(A::QMatrix; kwargs...) = asym(MC.cover_min, A; kwargs...)
 MC.cover_min!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.cover_min!, a, b, A; kwargs...)
+MC.cover_transversal(A::QMatrix; kwargs...) = asym(MC.cover_transversal, A; kwargs...)
+MC.cover_transversal!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover_transversal!, a, b, A; kwargs...)
 
 # Disambiguate sparse unitful matrices without losing sparse storage.
 const QSparse = SparseMatrixCSC{<:Quantity}
@@ -283,6 +285,8 @@ MC.symcover_min(ϕ::AbsLog{2}, A::QSparseSym; kwargs...) =
 
 MC.cover_min(ϕ::AbsLog{2}, A::QSparse; kwargs...) =
     asym(MC.cover_min, A, ϕ; kwargs...)
+
+MC.cover_transversal(A::QSparse; kwargs...) = asym(MC.cover_transversal, A; kwargs...)
 
 MC.soft_symcover(ϕ::AbsLog{2}, A::QSparseSym; kwargs...) =
     sym(MC.soft_symcover, A, ϕ; kwargs...)

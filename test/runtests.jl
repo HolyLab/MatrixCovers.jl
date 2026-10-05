@@ -28,6 +28,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
     include("initializers.jl")      # initialize_symcover/initialize_cover strategies
     include("sparse_cholesky.jl")   # the CHOLMOD driver and the multi-array eachindex helper
     include("minimal_covers.jl")    # the *_min family (native solvers)
+    include("transversal.jl")       # cover_transversal and the maximum-product transversal
     include("storage_types.jl")     # sparse/structured/wrapped storage vs dense reference
     include("element_types.jl")     # Float32/BigFloat: eltype-scaled internal tolerances
     include("extensions.jl")        # JuMP/HiGHS and Ipopt solvers, missing-extension hints
@@ -42,7 +43,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
                      :_prepare_cover_start!, :_prepare_symcover_start!,
                      :_prepare_soft_cover_start!, :_prepare_soft_symcover_start!,
                      :foreach_support, :foreach_support_sym,
-                     :cover_min_jump, :symcover_min_jump, :check_solved,
+                     :cover_min_jump, :symcover_min_jump, :cover_transversal_jump, :check_solved,
                      :require_abs_symmetric,
                      :_edge_list, :_sym_edge_list, :_degrees, :_support_components,
                      :_balance_cover!, :inflate_feasible!,

@@ -420,11 +420,15 @@ end
 # Support layouts for residuals `x[p] + x[q] - log|A[i,j]|`. Symmetric
 # off-diagonal entries are stored once with multiplicity two.
 
-# One element per support entry for LSQR and dense solves.
+# One element per support entry for LSQR and dense solves. The residual of
+# entry `e = (p, q)` is `x[p] + qsign*x[q] - cvals[e]`; `qsign = -1` gives
+# differences, for which a uniform shift of `x` changes no residual.
 struct EdgeList{T}
     edges::Vector{Tuple{Int,Int}}   # support entries as pairs of unknowns
     cvals::Vector{T}                # log|A_ij| per stored entry
+    qsign::T                        # `1` or `-1`
 end
+EdgeList{T}(edges, cvals) where {T} = EdgeList{T}(edges, cvals, oneunit(T))
 
 # Dense grid for Woodbury sweeps; `-Inf` marks entries outside the support.
 struct Grid{T}
@@ -459,11 +463,11 @@ SupportSystem{T}(N, supp::S, args...) where {T,S} = SupportSystem{T,S}(N, supp, 
 
 # Objective `f(x) = Σ_e mult_e·ψ_e(z_e)`.
 function _fal(x, κ, λ, sscale, bscale, supp::EdgeList{T}, symmetric::Bool) where {T}
-    edges, cvals = supp.edges, supp.cvals
+    edges, cvals, qs = supp.edges, supp.cvals, supp.qsign
     κT = T(κ)
     v = zero(T)
     for (e, (p, q)) in enumerate(edges)
-        z = x[p] + x[q] - cvals[e]
+        z = x[p] + qs * x[q] - cvals[e]
         l = λ[e]
         viol = z < l * bscale
         s = ifelse(viol, l * sscale, zero(T))
@@ -526,12 +530,12 @@ end
 
 # Compute the objective and the active set in one sweep.
 function _falpat(x, κ, λ, sscale, bscale, pat, supp::EdgeList{T}, symmetric::Bool) where {T}
-    edges, cvals = supp.edges, supp.cvals
+    edges, cvals, qs = supp.edges, supp.cvals, supp.qsign
     κT = T(κ)
     v = zero(T)
     same = true
     for (e, (p, q)) in enumerate(edges)
-        z = x[p] + x[q] - cvals[e]
+        z = x[p] + qs * x[q] - cvals[e]
         l = λ[e]
         viol = z < l * bscale
         s = ifelse(viol, l * sscale, zero(T))
@@ -625,12 +629,12 @@ _multiplier_storage(::Type{T}, supp::Grid) where {T} = zeros(T, size(supp.C))
 # `z > 0` by `2(κ-1)z`, so `κdrain = max(1 + λ/(2z))` over entries with
 # `z > zmin` is the penalty at which one update zeroes every such multiplier.
 function _update_multipliers!(λ, x, κ, zmin, supp::EdgeList{T}, symmetric::Bool) where {T}
-    edges, cvals = supp.edges, supp.cvals
+    edges, cvals, qs = supp.edges, supp.cvals, supp.qsign
     dλ = 2 * (T(κ) - oneunit(T))
     v = zero(T)
     κdrain = oneunit(T)
     for (e, (p, q)) in enumerate(edges)
-        z = x[p] + x[q] - cvals[e]
+        z = x[p] + qs * x[q] - cvals[e]
         l = max(zero(T), λ[e] - dλ * z)
         λ[e] = l
         v = max(v, -z, min(z, l))
@@ -644,10 +648,10 @@ _drain_penalty(z::T, l::T, zmin::T) where {T} = ifelse(z > zmin, oneunit(T) + l 
 # Zero the multiplier of every entry with slack `z > zmin` and return how many
 # were positive. Complementary slackness requires these multipliers to vanish.
 function _zero_slack_multipliers!(λ, x, zmin, supp::EdgeList{T}, symmetric::Bool) where {T}
-    edges, cvals = supp.edges, supp.cvals
+    edges, cvals, qs = supp.edges, supp.cvals, supp.qsign
     nzeroed = 0
     for (e, (p, q)) in enumerate(edges)
-        if x[p] + x[q] - cvals[e] > zmin && λ[e] > 0
+        if x[p] + qs * x[q] - cvals[e] > zmin && λ[e] > 0
             λ[e] = zero(T)
             nzeroed += 1
         end
@@ -735,6 +739,7 @@ _violation_pattern(supp::Grid) = fill(false, size(supp.C))
 # Smallest uniform log-scale shift that restores feasibility.
 function _boost_shift(x, supp::EdgeList{T}, symmetric::Bool) where {T}
     edges, cvals = supp.edges, supp.cvals
+    supp.qsign > 0 || throw(ArgumentError("a uniform shift cannot restore feasibility of difference residuals"))
     γ = zero(T)
     for (e, (p, q)) in enumerate(edges)
         γ = max(γ, (cvals[e] - x[p] - x[q]) / 2)
@@ -955,12 +960,15 @@ end
 
 # Unweighted normal-matrix pattern for the LSQR preconditioner. The ridge makes
 # bipartite support components positive definite. `N == 0` disables it.
+# Several entries may join the same pair of unknowns; their contributions are
+# summed into one stored value.
 function _precond_pattern(::Type{T}, supp::EdgeList, v0, N::Int, mult) where {T}
     N == 0 && return spzeros(T, 0, 0)
-    # Diagonal values first; each off-diagonal edge is stored in both triangles.
     Mv = zeros(T, N)
-    colptr = zeros(Int, N + 1)
-    colptr[1] = 1
+    ne = length(supp.edges)
+    I = sizehint!(Int[], 2 * ne + N)
+    J = sizehint!(Int[], 2 * ne + N)
+    V = sizehint!(T[], 2 * ne + N)
     for (p, q) in supp.edges
         if p == q
             Mv[p] += 4 * oneunit(T)
@@ -968,40 +976,21 @@ function _precond_pattern(::Type{T}, supp::EdgeList, v0, N::Int, mult) where {T}
             w = mult(p, q) * oneunit(T)
             Mv[p] += w
             Mv[q] += w
-            colptr[p+1] += 1
-            colptr[q+1] += 1
+            push!(I, p, q); push!(J, q, p); push!(V, supp.qsign * w, supp.qsign * w)
         end
     end
     dmax = zero(T)
     for p in 1:N
         Mv[p] += v0[p]^2
         dmax = max(dmax, Mv[p])
-        colptr[p+1] += 1
     end
     ρ = _precond_ridge(dmax)
-    cumsum!(colptr, colptr)
-    nz = colptr[N+1] - 1
-    rowval = zeros(Int, nz)
-    nzval = zeros(T, nz)
-    cursor = colptr[1:N]
-    for (p, q) in supp.edges
-        p == q && continue
-        w = mult(p, q) * oneunit(T)
-        rowval[cursor[q]] = p; nzval[cursor[q]] = w; cursor[q] += 1
-        rowval[cursor[p]] = q; nzval[cursor[p]] = w; cursor[p] += 1
-    end
     for p in 1:N
-        rowval[cursor[p]] = p
-        nzval[cursor[p]] = Mv[p] + ρ
+        push!(I, p); push!(J, p); push!(V, Mv[p] + ρ)
     end
-    # Rows within a column arrive in edge order; the factorization needs them sorted.
-    for q in 1:N
-        r = colptr[q]:colptr[q+1]-1
-        perm = sortperm(view(rowval, r))
-        rowval[r] = rowval[r][perm]
-        nzval[r] = nzval[r][perm]
-    end
-    return SparseMatrixCSC(N, N, colptr, rowval, nzval)
+    # `sparse` sums duplicates and keeps any that cancel as stored zeros, so the
+    # pattern holds every pair of unknowns that some entry joins.
+    return sparse(I, J, V, N, N)
 end
 
 _precond_pattern(::Type{T}, ::Grid, v0, N::Int, mult) where {T} = spzeros(T, 0, 0)
@@ -1214,6 +1203,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
         # more than one branch would be boxed and lose its type.
         edges = supp.edges
         cvals = supp.cvals
+        qs = supp.qsign
         if use_lsqr
             weighted = κ !== nothing
             κl = weighted ? T(κ) : oneunit(T)
@@ -1222,7 +1212,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
             for (e, (p, q)) in enumerate(edges)
                 c = cvals[e]
                 l = λ[e]
-                viol = weighted && (x[p] + x[q] - c) < l * bscalel
+                viol = weighted && (x[p] + qs * x[q] - c) < l * bscalel
                 vpat[e] = viol
                 sw = sqrt(mult(p, q) * (viol ? κl : oneunit(T)))
                 ws[e] = sw
@@ -1238,6 +1228,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                     # degrees `mdiag` are the diagonal of `RᵀWR`.
                     fill!(mdiag, zero(T))
                     nzv = nonzeros(Msp)
+                    fill!(nzv, zero(T))
                     for (e, (p, q)) in enumerate(edges)
                         w = ws[e]^2
                         if p == q
@@ -1245,8 +1236,8 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                         else
                             mdiag[p] += w
                             mdiag[q] += w
-                            nzv[epos[2 * e - 1]] = w
-                            nzv[epos[2 * e]] = w
+                            nzv[epos[2 * e - 1]] += qs * w
+                            nzv[epos[2 * e]] += qs * w
                         end
                     end
                     dmax = zero(T)
@@ -1267,7 +1258,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                 Pmul! = function (y, yv)
                     solve_up!(pxv, MF, yv)
                     for (e, (p, q)) in enumerate(edges)
-                        y[e] = ws[e] * (pxv[p] + pxv[q])
+                        y[e] = ws[e] * (pxv[p] + qs * pxv[q])
                     end
                     y[g] = dot(v0, pxv)
                     return y
@@ -1277,7 +1268,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                     for (e, (p, q)) in enumerate(edges)
                         t = ws[e] * y[e]
                         pg[p] += t
-                        pg[q] += t
+                        pg[q] += qs * t
                     end
                     @. pg += v0 * y[g]
                     solve_ptl!(z, MF, pg)
@@ -1309,7 +1300,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                 Dmul! = function (y, yv)
                     @. px = yv / psqrt
                     for (e, (p, q)) in enumerate(edges)
-                        y[e] = ws[e] * (px[p] + px[q])
+                        y[e] = ws[e] * (px[p] + qs * px[q])
                     end
                     y[g] = dot(v0, px)
                     return y
@@ -1319,7 +1310,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                     for (e, (p, q)) in enumerate(edges)
                         t = ws[e] * y[e]
                         pg[p] += t
-                        pg[q] += t
+                        pg[q] += qs * t
                     end
                     @. pg += v0 * y[g]
                     @. z = pg / psqrt
@@ -1331,7 +1322,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
             end
             Amul! = function (y, xx)
                 for (e, (p, q)) in enumerate(edges)
-                    y[e] = ws[e] * (xx[p] + xx[q])
+                    y[e] = ws[e] * (xx[p] + qs * xx[q])
                 end
                 y[g] = dot(v0, xx)
                 return y
@@ -1341,7 +1332,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                 for (e, (p, q)) in enumerate(edges)
                     t = ws[e] * y[e]
                     z[p] += t
-                    z[q] += t
+                    z[q] += qs * t
                 end
                 @. z += v0 * y[g]
                 return z
@@ -1357,23 +1348,23 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
             for (e, (p, q)) in enumerate(edges)
                 c = cvals[e]
                 l = λ[e]
-                viol = weighted && (x[p] + x[q] - c) < l * bscalel
+                viol = weighted && (x[p] + qs * x[q] - c) < l * bscalel
                 vpat[e] = viol
                 w = viol ? κl : oneunit(T)
                 # Active entries fit toward `c + λ/(2κ)`, adding `w*s = λ/2`.
                 t = viol ? w * c + l / 2 : w * c
                 f[p] += t
-                q == p || (f[q] += t)
+                q == p || (f[q] += qs * t)
             end
             if Bfact[] === nothing || prevκ[] != κl || vpat != prevpat
                 B = v0 * v0'
                 for (e, (p, q)) in enumerate(edges)
                     w = vpat[e] ? κl : oneunit(T)
                     B[p, p] += w
-                    B[p, q] += w
+                    B[p, q] += qs * w
                     if q != p
                         B[q, q] += w
-                        B[q, p] += w
+                        B[q, p] += qs * w
                     end
                 end
                 # A small scale-relative ridge lifts unpinned gauge directions.
@@ -1624,13 +1615,27 @@ function _symcover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter:
     return a, stats
 end
 
-# Worker for `cover_min(::AbsLog{2})`, returning `(a, b, stats)`.
+# Worker for `cover_min(::AbsLog{2})` and `cover_transversal`, returning
+# `(a, b, stats)`. With `transversal=true`, the cover is tight on a
+# maximum-product transversal, which eliminates the column scales, and the
+# transversal's duals are the start; a vector `transversal` names the column
+# matched to each row position instead, which must also be a maximum-product
+# transversal.
 function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
                             maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
                             boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET,
-                            flopbudget::Real=LSQR_FLOP_BUDGET)
-    linsolve in (:auto, :dense, :lsqr, :woodbury) ||
-        throw(ArgumentError("linsolve must be :auto, :dense, :lsqr, or :woodbury; got :$linsolve"))
+                            flopbudget::Real=LSQR_FLOP_BUDGET,
+                            transversal::Union{Nothing,Bool,AbstractVector{<:Integer}}=nothing,
+                            fname::Symbol=:cover_min)
+    tt = transversal !== nothing && transversal !== false
+    if tt
+        linsolve in (:auto, :dense, :lsqr) ||
+            throw(ArgumentError("$fname: linsolve must be :auto, :dense, or :lsqr; got :$linsolve"))
+        start === nothing || throw(ArgumentError("$fname does not accept a start"))
+    else
+        linsolve in (:auto, :dense, :lsqr, :woodbury) ||
+            throw(ArgumentError("linsolve must be :auto, :dense, :lsqr, or :woodbury; got :$linsolve"))
+    end
     axr = axes(A, 1)
     axc = axes(A, 2)
     # The problem depends only on `abs.(A)`, so the working type is real.
@@ -1638,10 +1643,11 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     # Solver tolerances require at least Float64 resolution.
     if eps(T) > eps(Float64)
         a64, b64, stats = _cover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
-                                             κ, maxouter, maxiter, linsolve, start, boost, fillbudget, flopbudget)
+                                             κ, maxouter, maxiter, linsolve, start, boost, fillbudget, flopbudget,
+                                             transversal, fname)
         # Narrowing rounds to nearest and so can round a product below its entry.
         a, b = T.(a64), T.(b64)
-        boost && _certify_cover!(a, b, A, :cover_min)
+        boost && _certify_cover!(a, b, A, fname)
         return a, b, stats
     end
     m = length(axr)
@@ -1674,7 +1680,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     nzero = m * n - ne
     zbudget = 4 * max(m, n)
     use_woodbury = false
-    if !use_lsqr && linsolve !== :dense
+    if !use_lsqr && linsolve !== :dense && !tt
         ok = T === Float64 && maxzero <= zbound && nzero <= zbudget
         if linsolve === :woodbury && !ok
             T === Float64 ||
@@ -1690,9 +1696,10 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
         linsolve = :lsqr
     end
     # Start the LSQR iteration from the heuristic cover.
-    if start === nothing && use_lsqr && maxouter > 0
+    if start === nothing && use_lsqr && maxouter > 0 && !tt
         start = _cover!(similar(Array{T}, axr), similar(Array{T}, axc), A; fname=:cover_min)
     end
+    x0 = nothing
     # Woodbury uses a grid; dense and LSQR use an edge list.
     supp = if use_woodbury
         C = fill(T(-Inf), m, n)
@@ -1704,13 +1711,54 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
         G = _row_support(A, T)
         edges = Tuple{Int,Int}[]
         cvals = T[]
-        for (ip, i) in enumerate(axr)
-            for s in _slots(G, i)
-                push!(edges, (ip, m + G.idx[s] - first(axc) + 1))
-                push!(cvals, log(G.val[s]))
+        if tt
+            σ, α0, _, logπ = _max_product_transversal(G, axc, fname)
+            if transversal isa AbstractVector
+                σ = _check_transversal(transversal, G, axc, logπ, fname)
             end
+            # Tightness on the transversal fixes `β[σ[i]] = ctrans[σ[i]] - α[i]`,
+            # so entry `(i, j)` off the transversal has residual
+            # `α[i] - α[k] - (log|A[i,j]| - ctrans[j])` with `k = τ[j]`.
+            τ = invperm(σ)
+            ctrans = zeros(T, n)
+            for (ip, i) in enumerate(axr)
+                for s in _slots(G, i)
+                    G.idx[s] - first(axc) + 1 == σ[ip] && (ctrans[σ[ip]] = log(G.val[s]))
+                end
+            end
+            for (ip, i) in enumerate(axr)
+                for s in _slots(G, i)
+                    jp = G.idx[s] - first(axc) + 1
+                    jp == σ[ip] && continue
+                    push!(edges, (ip, τ[jp]))
+                    push!(cvals, log(G.val[s]) - ctrans[jp])
+                end
+            end
+            dsupp = EdgeList{T}(edges, cvals, -oneunit(T))
+            # Solve for one scale per component of rows forced to move together.
+            comp, offs, nc = _tight_components(edges, cvals, α0)
+            cedges = Tuple{Int,Int}[]
+            ccvals = T[]
+            for (e, (p, q)) in enumerate(edges)
+                comp[p] == comp[q] && continue
+                push!(cedges, (comp[p], comp[q]))
+                push!(ccvals, cvals[e] - offs[p] + offs[q])
+            end
+            y0 = zeros(T, nc)
+            for p in 1:m
+                y0[comp[p]] = α0[p] - offs[p]
+            end
+            x0 = y0
+            EdgeList{T}(cedges, ccvals, -oneunit(T))
+        else
+            for (ip, i) in enumerate(axr)
+                for s in _slots(G, i)
+                    push!(edges, (ip, m + G.idx[s] - first(axc) + 1))
+                    push!(cvals, log(G.val[s]))
+                end
+            end
+            EdgeList{T}(edges, cvals)
         end
-        EdgeList{T}(edges, cvals)
     end
     # Zero set defining the off-diagonal pattern of sparse `C`.
     zedges = Tuple{Int,Int}[]
@@ -1740,9 +1788,19 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     for jp in 1:n
         hascol[jp] && (v0[m+jp] = -one(T))
     end
-    sys = SupportSystem{T}(N, supp, false, vcat(hasrow, hascol), dfull, zedges, Umat, v0)
+    sys = if tt
+        # Unknowns are the component scales; a component is isolated when no
+        # entry joins it to another.
+        hasedge = falses(nc)
+        for (p, q) in supp.edges
+            hasedge[p] = hasedge[q] = true
+        end
+        SupportSystem{T}(nc, supp, false, hasedge, T[], zedges, Umat, T.(hasedge))
+    else
+        SupportSystem{T}(N, supp, false, vcat(hasrow, hascol), dfull, zedges, Umat, v0)
+    end
     x0 = if start === nothing
-        nothing
+        x0
     else
         sa, sb = start
         s0 = zeros(T, N)
@@ -1754,8 +1812,12 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
         end
         s0
     end
-    x, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve, boost, fillbudget, flopbudget)
-    _warn_unconverged(:cover_min, stats, maxouter)
+    x, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve,
+                               boost=boost && !tt, fillbudget, flopbudget)
+    _warn_unconverged(fname, stats, maxouter)
+    if tt
+        x = _transversal_scales(x[comp] .+ offs, dsupp, σ, ctrans, boost)
+    end
     # Apply the balance convention independently to each support component.
     rowcomp, colcomp, ncomp, _, _ = _support_components(A)
     Lα = zeros(T, ncomp)
@@ -1779,7 +1841,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     lα = [hasrow[ip] ? x[ip] + s[rowcomp[ip]] : zero(T) for ip in 1:m]
     lβ = [hascol[jp] ? x[m+jp] - s[colcomp[jp]] : zero(T) for jp in 1:n]
     _check_representable(lα, ip -> hasrow[ip], lβ, jp -> hascol[jp], T,
-                         boost ? :cover_min : :soft_cover; gauge=false)
+                         boost ? fname : :soft_cover; gauge=false)
     # Dense scale vectors matching cover/symcover; `similar(A, …)` is a SparseVector for sparse A.
     a = similar(Array{T}, axr)
     b = similar(Array{T}, axc)
@@ -1789,8 +1851,50 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     for (jp, j) in enumerate(axc)
         b[j] = hascol[jp] ? exp(lβ[jp]) : zero(T)
     end
-    boost && _certify_cover!(a, b, A, :cover_min)
+    boost && _certify_cover!(a, b, A, fname)
     return a, b, stats
+end
+
+# Stacked log scales `(α; β)` from the row scales `α` of the difference system
+# in `supp`, with `β[σ[i]] = ctrans[σ[i]] - α[i]`. With `boost`, a uniform shift
+# of all scales restores coverage of entries the solver left slightly violated.
+function _transversal_scales(α::Vector{T}, supp::EdgeList{T}, σ, ctrans, boost::Bool) where {T}
+    m = length(α)
+    x = [α; zeros(T, m)]
+    for ip in 1:m
+        x[m+σ[ip]] = ctrans[σ[ip]] - α[ip]
+    end
+    if boost
+        γ = zero(T)
+        for (e, (p, q)) in enumerate(supp.edges)
+            γ = max(γ, (supp.cvals[e] - α[p] + α[q]) / 2)
+        end
+        x .+= γ
+    end
+    return x
+end
+
+# Validate a caller-chosen transversal `σ` (columns by row position) against the
+# support in `G` and the maximum log product `logπ`.
+function _check_transversal(σ::AbstractVector{<:Integer}, G::GroupedSupport, axc, logπ, fname)
+    n = length(G.ax)
+    length(σ) == n && sort(σ) == 1:n ||
+        throw(ArgumentError("$fname: the transversal must be a permutation of 1:$n"))
+    l = zero(logπ)
+    for (ip, i) in enumerate(G.ax)
+        found = false
+        for s in _slots(G, i)
+            if G.idx[s] - first(axc) + 1 == σ[ip]
+                l += log(G.val[s])
+                found = true
+                break
+            end
+        end
+        found || throw(ArgumentError("$fname: the transversal includes a zero entry in row position $ip"))
+    end
+    abs(l - logπ) <= 1000 * eps(typeof(logπ)) * max(oneunit(logπ), abs(logπ), n) ||
+        throw(ArgumentError("$fname: the transversal has log product $l, but the maximum is $logπ"))
+    return Vector{Int}(σ)
 end
 
 # Soft `AbsLog{2}` covers are the unweighted initial solve with no feasibility
@@ -1805,6 +1909,9 @@ function symcover_min_jump end
 
 # JuMP reference used to test the native asymmetric solver.
 function cover_min_jump end
+
+# JuMP reference used to test `cover_transversal`; also returns `log π*`.
+function cover_transversal_jump end
 
 """
     SolverFailure(msg)
