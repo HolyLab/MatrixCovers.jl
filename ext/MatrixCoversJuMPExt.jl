@@ -178,6 +178,45 @@ function MatrixCovers.cover_min_jump(::AbsLog{2}, A)
     return MatrixCovers.inflate_feasible!(a, b, A)
 end
 
+# Two-stage reference for `cover_transversal`: the LP `min ∑α + ∑β` over hard
+# covers attains `log π*`; the QP then minimizes the `AbsLog{2}` objective with
+# `∑α + ∑β` fixed at that value.
+function MatrixCovers.cover_transversal_jump(A)
+    axr = axes(A, 1)
+    axc = axes(A, 2)
+    length(axr) == length(axc) || throw(ArgumentError("cover_transversal_jump requires a square matrix"))
+    T = float(real(eltype(A)))
+    m = n = length(axr)
+    ei, ej, elog = _edge_list(A, T)
+    model = JuMP.Model(HiGHS.Optimizer)
+    JuMP.set_silent(model)
+    @variable(model, α[1:m])
+    @variable(model, β[1:n])
+    for e in eachindex(ei)
+        @constraint(model, α[ei[e]] + β[ej[e]] - elog[e] >= 0)
+    end
+    @objective(model, Min, sum(α) + sum(β))
+    JuMP.optimize!(model)
+    check_solved(model, "cover_transversal_jump")
+    logπ = JuMP.objective_value(model)
+    @constraint(model, sum(α) + sum(β) == logπ)
+    nza, nzb = _degrees(ei, m), _degrees(ej, n)
+    @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
+    @objective(model, Min, sum(abs2, α[ei[e]] + β[ej[e]] - elog[e] for e in eachindex(ei)))
+    JuMP.optimize!(model)
+    check_solved(model, "cover_transversal_jump")
+    a = similar(Array{T}, axr)
+    b = similar(Array{T}, axc)
+    for (i, k) in enumerate(axr)
+        a[k] = exp(JuMP.value(α[i]))
+    end
+    for (j, k) in enumerate(axc)
+        b[k] = exp(JuMP.value(β[j]))
+    end
+    MatrixCovers._balance_cover!(a, b, A)
+    return MatrixCovers.inflate_feasible!(a, b, A), logπ
+end
+
 MatrixCovers.cover_min(::AbsLog{1}, A) = _cover_min_abslog1(A, nothing)
 
 function MatrixCovers.cover_min!(::AbsLog{1}, a::AbstractVector, b::AbstractVector, A)

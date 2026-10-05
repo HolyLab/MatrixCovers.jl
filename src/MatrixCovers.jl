@@ -14,6 +14,7 @@ export gramcover, gramcover!
 export soft_symcover, soft_symcover!, soft_cover, soft_cover!
 export initialize_cover, initialize_cover!, initialize_symcover, initialize_symcover!
 export symcover_min, symcover_min!, cover_min, cover_min!
+export cover_transversal, cover_transversal!
 
 # `public` is parsed as a keyword only from Julia 1.11; this package supports 1.10.
 @static if VERSION >= v"1.11"
@@ -32,6 +33,7 @@ include("soft_covers.jl")
 include("powermean.jl")        # the PowerMean soft covers, the soft-cover default
 include("sparse_cholesky.jl")  # CHOLMOD factorizations for the minimal-cover solvers
 include("minimal_covers.jl")
+include("transversal.jl")      # transversal-tight minimal covers
 include("powermean_newton.jl") # Newton refinement of the PowerMean soft covers
 include("sparse_support.jl")  # sparse traversal and the sparse solver defaults
 

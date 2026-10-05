@@ -104,6 +104,8 @@
         @test unit.(symcover_min!(AbsLog{2}(), a, Symmetric(S))) == fill(u"m^-1", 3)
         a, b = initialize_cover(S)
         @test all(unit.(v) == fill(u"m^-1", 3) for v in cover_min!(AbsLog{2}(), a, b, S))
+        @test all(unit.(v) == fill(u"m^-1", 3) for v in cover_transversal(S))
+        @test all(unit.(v) == fill(u"m^-1", 3) for v in cover_transversal!(a, b, S))
     end
 
     @testset "balance convention holds in the caller's units" begin
@@ -166,7 +168,7 @@
             @test unit.(a) == UA
             @test eltype(ustrip.(a)) <: AbstractFloat
         end
-        for f in (cover, initialize_cover, soft_cover, cover_min)
+        for f in (cover, initialize_cover, soft_cover, cover_min, cover_transversal)
             a, b = f(A)
             @test unit.(a) == unit.(b) == UA
         end

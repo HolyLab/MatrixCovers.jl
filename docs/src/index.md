@@ -120,11 +120,16 @@ Pass a penalty as the first solver argument to override the default.
 | [`cover`](@ref) | no | hard (`r ≤ 1`) | heuristic | — |
 | [`symcover_min`](@ref) | yes | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
 | [`cover_min`](@ref) | no | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
+| [`cover_transversal`](@ref) | no | hard, tight on a maximum-product transversal | `AbsLog{2}` | — |
 | [`soft_symcover`](@ref) | yes | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog`, `AbsLinear`) | native for `PowerMean`, `AbsLog{2}`; else JuMP |
 | [`soft_cover`](@ref) | no | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog`, `AbsLinear`) | native for `PowerMean`, `AbsLog{2}`; else JuMP |
 
 For hard covers, [`symcover`](@ref) and [`cover`](@ref) are fast heuristics;
-their `_min` counterparts minimize the selected objective. A soft cover has no
+their `_min` counterparts minimize the selected objective.
+[`cover_transversal`](@ref) minimizes the `AbsLog{2}` objective of a square,
+structurally nonsingular matrix among the hard covers that are tight on a
+transversal of maximum product, the covers that maximize `|det|` of the scaled
+matrix. A soft cover has no
 constraint to satisfy, so there is no separate heuristic tier:
 [`soft_symcover`](@ref) and [`soft_cover`](@ref) always minimize the objective.
 
@@ -293,7 +298,8 @@ selection:
   (for the convex penalties, one start suffices).
 
 Plain forms choose their starts; `!` forms refine the supplied start, except
-[`symcover!`](@ref) and [`cover!`](@ref), which are in-place heuristics.
+[`symcover!`](@ref), [`cover!`](@ref), and [`cover_transversal!`](@ref), which
+write their result in place.
 
 ```jldoctest manualstart
 julia> using MatrixCovers, JuMP, Ipopt

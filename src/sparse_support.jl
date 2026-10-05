@@ -167,6 +167,11 @@ function symcover_min(ϕ::AbsLog{2}, H::Hermitian{<:Any, <:SparseMatrixCSC}; lin
     return a
 end
 
+function cover_transversal(A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
+    a, b, _ = _cover_min_abslog2(A; transversal=true, fname=:cover_transversal, linsolve, kwargs...)
+    return a, b
+end
+
 # The refiners take the same sparse `linsolve` default as the solvers above.
 function symcover_min!(ϕ::AbsLog{2}, a::AbstractVector,
         S::Union{SparseMatrixCSC,Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}};
