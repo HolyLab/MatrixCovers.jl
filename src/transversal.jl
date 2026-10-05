@@ -106,8 +106,10 @@ end
 # Returns `(σ, α, β, logπ)` in positions: row `i` is matched to column `σ[i]`,
 # `logπ = ∑ᵢ log|A[i,σ[i]]|`, and the duals `α = -u`, `β = cmax - v` satisfy
 # `α[i] + β[j] >= log|A[i,j]|` on the support, with equality on the transversal,
-# up to roundoff.
-function _max_product_transversal(G::GroupedSupport, axc::AbstractUnitRange, fname)
+# up to roundoff. A structurally singular support throws an `ArgumentError`, or
+# returns `nothing` when `throw_singular` is false.
+function _max_product_transversal(G::GroupedSupport, axc::AbstractUnitRange, fname;
+                                  throw_singular::Bool=true)
     T = eltype(G.val)
     axr = G.ax
     n = length(axr)
@@ -131,7 +133,10 @@ function _max_product_transversal(G::GroupedSupport, axc::AbstractUnitRange, fna
     # feasible; `u[i]` takes row `i`'s smallest cost, and zero-cost entries are
     # matched greedily.
     for (ip, i) in enumerate(axr)
-        isempty(_slots(G, i)) && _throw_singular(fname)
+        if isempty(_slots(G, i))
+            throw_singular && _throw_singular(fname)
+            return nothing
+        end
         ui = T(Inf)
         for s in _slots(G, i)
             ui = min(ui, cmax[G.idx[s]-oc] - log(G.val[s]))
@@ -183,7 +188,10 @@ function _max_product_transversal(G::GroupedSupport, axc::AbstractUnitRange, fna
                     break
                 end
             end
-            jp == 0 && _throw_singular(fname)
+            if jp == 0
+                throw_singular && _throw_singular(fname)
+                return nothing
+            end
             final[jp] = true
             push!(cols, jp)
             δ = dist[jp]

@@ -129,7 +129,10 @@ their `_min` counterparts minimize the selected objective.
 [`cover_transversal`](@ref) minimizes the `AbsLog{2}` objective of a square,
 structurally nonsingular matrix among the hard covers that are tight on a
 transversal of maximum product, the covers that maximize `|det|` of the scaled
-matrix. A soft cover has no
+matrix. For such matrices [`cover`](@ref) returns a heuristic cover with the
+same tightness by default (`start=:transversal`); a cover that leaves a
+maximum-product transversal loose can make the scaled matrix far more
+ill-conditioned than necessary. A soft cover has no
 constraint to satisfy, so there is no separate heuristic tier:
 [`soft_symcover`](@ref) and [`soft_cover`](@ref) always minimize the objective.
 
@@ -142,8 +145,9 @@ constraint to satisfy, so there is no separate heuristic tier:
 - `AbsLinear` is not convex; several starts are each refined to a local minimum
   with JuMP and Ipopt, and the best is returned.
 
-The heuristics cost ``O(mn)``; native iterative solvers cost roughly ``O(mn)``
-per iteration.
+The heuristics cost ``O(mn)``, except that the transversal start of
+[`cover`](@ref) also solves an assignment problem by shortest augmenting paths;
+native iterative solvers cost roughly ``O(mn)`` per iteration.
 
 ### Covariance of the heuristics
 
@@ -167,13 +171,14 @@ julia> round.(extrema(P2 ./ P1); digits=3)
 
 [`cover`](@ref) is covariant on any support: positive diagonal rescaling of
 `A` rescales the cover products identically wherever `A` is nonzero.
-This holds for any number of conjugate-gradient refinement iterations
-(`cgiter`, default 4):
+This holds for both the default transversal start (square, structurally
+nonsingular `A`) and the `:covariant` start, and for any number of
+conjugate-gradient refinement iterations (`cgiter`):
 
 ```jldoctest covariance
 julia> e = [2.0, 0.3, 5.0]; E = Diagonal(e);
 
-julia> function covariance_spread(cgiter; start=:covariant)
+julia> function covariance_spread(cgiter; start=:auto)
            r1, c1 = cover(A; cgiter, start)
            r2, c2 = cover(D * A * E; cgiter, start)
            Q1 = (d .* r1) * (e .* c1)'
