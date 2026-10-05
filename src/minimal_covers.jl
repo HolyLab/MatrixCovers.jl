@@ -109,6 +109,14 @@ The accuracy and scale covariance of the result are as described for
 [`symcover_min`](@ref). For `A ./ (d * e')`, the products `a[i]*b[j]`
 approximate those of `cover_min(A)` divided by `d[i]*e[j]`.
 
+When the multiplier iteration stops before its KKT residual reaches the
+tolerance, an active-set method (the dual method of Goldfarb and Idnani)
+continues from its result. The entries that are tight at the solution form a
+graph, and each step solves the objective with a spanning forest of them held
+tight, a sparse graph Laplacian with one unknown per tree. The method ends when
+the KKT conditions hold to rounding error, which makes the result the exact
+minimizer; only when it fails does the solver warn.
+
 See also: [`symcover_min`](@ref), [`cover`](@ref), [`cover_min!`](@ref).
 """
 function cover_min end
@@ -1620,13 +1628,14 @@ end
 # maximum-product transversal, which eliminates the column scales, and the
 # transversal's duals are the start; a vector `transversal` names the column
 # matched to each row position instead, which must also be a maximum-product
-# transversal.
+# transversal. With `polish`, the active-set solver of `_polish_cover` finishes
+# a multiplier iteration that stops before converging.
 function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
                             maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
                             boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET,
                             flopbudget::Real=LSQR_FLOP_BUDGET,
                             transversal::Union{Nothing,Bool,AbstractVector{<:Integer}}=nothing,
-                            fname::Symbol=:cover_min)
+                            polish::Bool=true, fname::Symbol=:cover_min)
     tt = transversal !== nothing && transversal !== false
     if tt
         linsolve in (:auto, :dense, :lsqr) ||
@@ -1644,7 +1653,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     if eps(T) > eps(Float64)
         a64, b64, stats = _cover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
                                              κ, maxouter, maxiter, linsolve, start, boost, fillbudget, flopbudget,
-                                             transversal, fname)
+                                             transversal, polish, fname)
         # Narrowing rounds to nearest and so can round a product below its entry.
         a, b = T.(a64), T.(b64)
         boost && _certify_cover!(a, b, A, fname)
@@ -1814,6 +1823,10 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     end
     x, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve,
                                boost=boost && !tt, fillbudget, flopbudget)
+    if polish && !stats.converged && maxouter > 0
+        x, certified, nsteps = _polish_cover(x, supp, m)
+        stats = merge(stats, (; converged=certified, polish=(; certified, nsteps)))
+    end
     _warn_unconverged(fname, stats, maxouter)
     if tt
         x = _transversal_scales(x[comp] .+ offs, dsupp, σ, ctrans, boost)

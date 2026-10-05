@@ -36,8 +36,8 @@ The keywords `κ`, `maxouter`, `maxiter`, `fillbudget`, `flopbudget`, and
 `linsolve` are as for [`cover_min`](@ref), except that `linsolve=:woodbury` is
 not supported; `:auto` chooses `:lsqr` when the stored support fills at most a
 quarter of the grid and `:dense` otherwise. Sparse matrices default to `:lsqr`.
-If `:lsqr` warns that the result may not minimize the objective,
-`linsolve=:dense` solves each Newton step exactly at O(n³) cost.
+As for [`cover_min`](@ref), an active-set method finishes a solve whose
+multiplier iteration stops early.
 
 See also: [`cover_transversal!`](@ref), [`cover_min`](@ref).
 """
