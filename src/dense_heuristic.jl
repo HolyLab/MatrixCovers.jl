@@ -229,7 +229,7 @@ function _symcover_dense!(a::AbstractVector, A::AbstractMatrix, ::Type{T}, maxit
 end
 
 # `cover!` over a dense log-magnitude grid, up to but not including the balance
-# convention. `start` is one of `COVER_STARTS`; `fname` and `hint` label the
+# convention. `start` is `:covariant` or `:geomean`; `fname` and `hint` label the
 # error thrown when the scales exceed the exponent range of `T`.
 function _cover_dense!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix,
                        ::Type{T}, maxiter::Int, cgiter::Int, start::Symbol,

@@ -106,21 +106,31 @@ end
 # Returns `(σ, α, β, logπ)` in positions: row `i` is matched to column `σ[i]`,
 # `logπ = ∑ᵢ log|A[i,σ[i]]|`, and the duals `α = -u`, `β = cmax - v` satisfy
 # `α[i] + β[j] >= log|A[i,j]|` on the support, with equality on the transversal,
-# up to roundoff.
-function _max_product_transversal(G::GroupedSupport, axc::AbstractUnitRange, fname)
+# up to roundoff. A structurally singular support throws an `ArgumentError`, or
+# returns `nothing` when `throw_singular` is false.
+function _max_product_transversal(G::GroupedSupport, axc::AbstractUnitRange, fname;
+                                  throw_singular::Bool=true)
     T = eltype(G.val)
     axr = G.ax
     n = length(axr)
     length(axc) == n || throw(ArgumentError("$fname requires a square matrix, got size ($n, $(length(axc)))"))
     oc = first(axc) - 1
+    # Column positions and costs of the entries, slot by slot.
+    jcol = Vector{Int}(undef, length(G.idx))
+    w = Vector{T}(undef, length(G.val))
     cmax = fill(T(-Inf), n)
     for (ip, i) in enumerate(axr)
         for s in _slots(G, i)
             lv = log(G.val[s])
             isfinite(lv) || throw(ArgumentError("$fname requires finite entries, got abs(A[$i, $(G.idx[s])]) = $(G.val[s])"))
             jp = G.idx[s] - oc
+            jcol[s] = jp
+            w[s] = lv
             cmax[jp] = max(cmax[jp], lv)
         end
+    end
+    for s in eachindex(w, jcol)
+        w[s] = cmax[jcol[s]] - w[s]
     end
     # Columns of the transversal entries, by row; rows of matched columns.
     σ = zeros(Int, n)
@@ -131,15 +141,51 @@ function _max_product_transversal(G::GroupedSupport, axc::AbstractUnitRange, fna
     # feasible; `u[i]` takes row `i`'s smallest cost, and zero-cost entries are
     # matched greedily.
     for (ip, i) in enumerate(axr)
-        isempty(_slots(G, i)) && _throw_singular(fname)
+        if isempty(_slots(G, i))
+            throw_singular && _throw_singular(fname)
+            return nothing
+        end
         ui = T(Inf)
         for s in _slots(G, i)
-            ui = min(ui, cmax[G.idx[s]-oc] - log(G.val[s]))
+            ui = min(ui, w[s])
         end
         u[ip] = ui
         for s in _slots(G, i)
-            jp = G.idx[s] - oc
-            if τ[jp] == 0 && cmax[jp] - log(G.val[s]) - ui == 0
+            jp = jcol[s]
+            if τ[jp] == 0 && w[s] - ui == 0
+                σ[ip] = jp
+                τ[jp] = ip
+                break
+            end
+        end
+    end
+    # Augmenting paths of length two on zero-cost entries: an unmatched row
+    # takes the column of a matched row that can move to a free zero-cost
+    # column. A matched column stays matched, so each row's scan for a free
+    # column resumes where it last stopped (`next`), and the pass costs one
+    # sweep over the support.
+    next = [G.ptr[ip] for ip in 1:n]
+    for (ip, i) in enumerate(axr)
+        σ[ip] == 0 || continue
+        for s in _slots(G, i)
+            w[s] - u[ip] == 0 || continue
+            jp = jcol[s]
+            kp = τ[jp]
+            if kp == 0
+                σ[ip] = jp
+                τ[jp] = ip
+                break
+            end
+            k = first(axr) + kp - 1
+            stop = last(_slots(G, k))
+            t = next[kp]
+            while t <= stop && (τ[jcol[t]] != 0 || w[t] - u[kp] != 0)
+                t += 1
+            end
+            next[kp] = t
+            if t <= stop
+                σ[kp] = jcol[t]
+                τ[jcol[t]] = kp
                 σ[ip] = jp
                 τ[jp] = ip
                 break
@@ -165,9 +211,9 @@ function _max_product_transversal(G::GroupedSupport, axc::AbstractUnitRange, fna
             push!(rows, ip)
             i = first(axr) + ip - 1
             for s in _slots(G, i)
-                jp = G.idx[s] - oc
+                jp = jcol[s]
                 final[jp] && continue
-                r = δ + (cmax[jp] - log(G.val[s]) - u[ip] - v[jp])
+                r = δ + (w[s] - u[ip] - v[jp])
                 if r < dist[jp]
                     isinf(dist[jp]) && push!(touched, jp)
                     dist[jp] = r
@@ -183,7 +229,10 @@ function _max_product_transversal(G::GroupedSupport, axc::AbstractUnitRange, fna
                     break
                 end
             end
-            jp == 0 && _throw_singular(fname)
+            if jp == 0
+                throw_singular && _throw_singular(fname)
+                return nothing
+            end
             final[jp] = true
             push!(cols, jp)
             δ = dist[jp]
@@ -222,7 +271,7 @@ function _max_product_transversal(G::GroupedSupport, axc::AbstractUnitRange, fna
     logπ = zero(T)
     for (ip, i) in enumerate(axr)
         for s in _slots(G, i)
-            if G.idx[s] - oc == σ[ip]
+            if jcol[s] == σ[ip]
                 logπ += log(G.val[s])
                 break
             end

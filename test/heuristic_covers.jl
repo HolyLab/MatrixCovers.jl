@@ -330,9 +330,9 @@ end
     dr, dc = exp.(4 .* randn(rng, n)), exp.(4 .* randn(rng, n))
     # Covariance holds at every refinement count.
     for k in (0, 1, 4, 4n)
-        @test covdev(A -> cover(A; cgiter=k), A, dr, dc) < 1e-9
-        @test covaries(A -> cover(A; cgiter=k), A, dr, dc; rtol=1e-9)
-        a, b = cover(A; cgiter=k)
+        @test covdev(A -> cover(A; cgiter=k, start=:covariant), A, dr, dc) < 1e-9
+        @test covaries(A -> cover(A; cgiter=k, start=:covariant), A, dr, dc; rtol=1e-9)
+        a, b = cover(A; cgiter=k, start=:covariant)
         @test iscover(a, b, A; rtol=8eps())
     end
     @test_throws ArgumentError cover(A; cgiter=-1)
@@ -352,7 +352,7 @@ end
     # Powers of two rescale the input exactly in binary floating point.
     d2r, d2c = exp2.(rand(rng, -10:10, n)), exp2.(rand(rng, -10:10, n))
     for k in (0, 1, 4, 4n)
-        @test covdev(A -> cover(A; cgiter=k), A, d2r, d2c) < 1e-12
+        @test covdev(A -> cover(A; cgiter=k, start=:covariant), A, d2r, d2c) < 1e-12
     end
 
     # The dense-grid and flattened-support paths start and refine identically.
@@ -365,16 +365,16 @@ end
         B[i, i] = exp(2 * randn(rng))
     end
     for k in (0, 4, 40)
-        ad, bd = cover(B; cgiter=k)
-        as, bs = cover(sparse(B); cgiter=k)
+        ad, bd = cover(B; cgiter=k, start=:covariant)
+        as, bs = cover(sparse(B); cgiter=k, start=:covariant)
         @test ad .* bd' ≈ as .* bs' rtol = 1e-12
     end
     # A grid with scattered zeros exercises the same fallback on both paths.
     C = exp.(2 .* randn(rng, m, m)) .* (rand(rng, m, m) .< 0.9)
     C[7, :] .= 0.0                        # an unsupported row
     for k in (0, 4)
-        ad, bd = cover(C; cgiter=k)
-        as, bs = cover(sparse(C); cgiter=k)
+        ad, bd = cover(C; cgiter=k, start=:covariant)
+        as, bs = cover(sparse(C); cgiter=k, start=:covariant)
         @test ad .* bd' ≈ as .* bs' rtol = 1e-12
     end
 
@@ -383,9 +383,9 @@ end
     Fbig = exp.(2 .* randn(rng, m, m))
     P = Matrix(Bidiagonal(exp.(randn(rng, n)), exp.(randn(rng, n - 1)), :U))
     for A0 in (F, sparse(F), Fbig, P, sparse(P))
-        a0, b0 = cover(A0; cgiter=0)
+        a0, b0 = cover(A0; cgiter=0, start=:covariant)
         for k in (4, 50)
-            a, b = cover(A0; cgiter=k)
+            a, b = cover(A0; cgiter=k, start=:covariant)
             @test all(isfinite, a) && all(isfinite, b)
             @test a .* b' ≈ a0 .* b0' rtol = 1e-12
         end
@@ -469,9 +469,11 @@ end
     n = 12
     trid = Matrix(Tridiagonal(exp.(randn(rng, n - 1)), exp.(randn(rng, n)), exp.(randn(rng, n - 1))))
 
-    # The default is the covariant start.
-    for A in (exp.(randn(rng, 9, 7)), trid, sparse(trid))
-        @test cover(A) == cover(A; start=:covariant)
+    # The default is the covariant start for rectangular matrices and the
+    # transversal start for square ones.
+    @test (A = exp.(randn(rng, 9, 7)); cover(A) == cover(A; start=:covariant))
+    for A in (trid, sparse(trid))
+        @test cover(A) == cover(A; start=:transversal)
     end
 
     # The geometric-mean start yields covers obeying the package's conventions.
@@ -535,6 +537,101 @@ end
     @test initialize_cover(B; strategy=:hardcover, feasible=:none, start=:geomean) == (ab, bb)
 
     # Any other start is rejected before work begins.
-    @test_throws "unknown start :nope; expected one of :covariant, :geomean" cover(B; start=:nope)
-    @test_throws "unknown start :nope; expected one of :covariant, :geomean" cover!(abuf, bbuf, B; start=:nope)
+    @test_throws "unknown start :nope; expected one of :auto, :transversal, :covariant, :geomean" cover(B; start=:nope)
+    @test_throws "unknown start :nope; expected one of :auto, :transversal, :covariant, :geomean" cover!(abuf, bbuf, B; start=:nope)
+end
+
+@testset "cover: transversal start" begin
+    # Largest product over transversals, and whether the cover is tight on every
+    # entry of a maximum-product transversal (`∑ log a + ∑ log b == log π*`).
+    function logπ(A)
+        Af = float.(abs.(A))
+        _, _, _, lπ = MatrixCovers._max_product_transversal(MatrixCovers._row_support(Af, Float64), axes(Af, 2), :test)
+        return lπ
+    end
+    gap(a, b, A) = sum(log, a) + sum(log, b) - logπ(A)
+    # Largest deviation from covariance of the products on the support; the
+    # products between disconnected support components carry independent gauges.
+    function supportdev(coverfn, A, dr, dc)
+        local a1, b1 = coverfn(A)
+        local aD, bD = coverfn(dr .* A .* dc')
+        local dev = 0.0
+        foreach_support(A) do i, j, _
+            dev = max(dev, abs(log(aD[i] * bD[j] / (dr[i] * a1[i] * dc[j] * b1[j]))))
+        end
+        return dev
+    end
+
+    # A single maximum-product transversal (1,2), (2,3), (3,1) that the
+    # covariant start covers loosely at (1,2).
+    η = 1e-3
+    A = [1 1 0; η^2 1 1; 1 0 0]
+    a, b = cover(A)
+    @test a .* b' ≈ ones(3, 3) rtol = 1e-12
+    @test isbalanced(a, b, A)
+    a, b = cover(A; start=:covariant)
+    @test gap(a, b, A) > 1
+
+    rng = StableRNG(11)
+    # Random sparse matrices with a nonzero diagonal, and ±1 patterns, whose many
+    # tied maximum-product transversals test independence from the one the
+    # matching returns.
+    mats = Any[]
+    for n in (5, 30, 120)
+        push!(mats, sprandn(rng, n, n, 3 / n) + spdiagm(0 => exp.(randn(rng, n))))
+        P = sprand(rng, n, n, 4 / n) .!= 0
+        push!(mats, sparse(rand(rng, (-1.0, 1.0), n, n) .* (P .| I(n))))
+    end
+    push!(mats, rand(rng, (-1.0, 1.0), 70, 70))                     # dense grid path
+    push!(mats, exp.(3 .* randn(rng, 70, 70)) .* (rand(rng, 70, 70) .< 0.3) + 1e-3I)
+    for B in mats
+        n = size(B, 1)
+        a, b = cover(B)
+        @test iscover(a, b, B)
+        @test isbalanced(a, b, B)
+        @test abs(gap(a, b, B)) <= 1e-10 * max(1, abs(logπ(B)))
+        @test cover(B; start=:transversal) == (a, b)
+        dr, dc = 2.0 .^ rand(rng, -20:20, n), 2.0 .^ rand(rng, -20:20, n)
+        @test supportdev(cover, B, dr, dc) < 1e-10
+        @test supportdev(X -> cover(X; cgiter=0, maxiter=0), B, dr, dc) < 1e-10
+        # Dense and sparse storage agree.
+        ad, bd = cover(Matrix(B))
+        dev = 0.0
+        foreach_support(B) do i, j, _
+            dev = max(dev, abs(log(ad[i] * bd[j] / (a[i] * b[j]))))
+        end
+        @test dev < 1e-10
+    end
+
+    # On transversal-tight covers, the heuristic improves on the duals.
+    B = mats[5]
+    a0, b0 = cover(B; cgiter=0, maxiter=0)
+    a, b = cover(B)
+    @test cover_objective(AbsLog{2}(), a, b, B) < cover_objective(AbsLog{2}(), a0, b0, B)
+
+    # Offset axes and views.
+    B = Matrix(mats[3])
+    a, b = cover(B)
+    Bo = OffsetArray(B, -3:size(B, 1)-4, 2:size(B, 2)+1)
+    ao, bo = cover(Bo)
+    @test axes(ao, 1) == axes(Bo, 1) && axes(bo, 1) == axes(Bo, 2)
+    @test collect(ao) .* collect(bo)' ≈ a .* b' rtol = 1e-12
+    Bv = view(B, 1:size(B, 1), :)
+    av, bv = cover(Bv)
+    @test av .* bv' ≈ a .* b' rtol = 1e-12
+
+    # Rectangular and structurally singular matrices fall back to `:covariant`
+    # by default and are rejected when `:transversal` is requested.
+    R = [1 2 3; 6 5 4]
+    @test cover(R) == cover(R; start=:covariant)
+    @test_throws "start=:transversal requires a square matrix" cover(R; start=:transversal)
+    S = [1.0 2 0; 3 4 0; 5 6 0]
+    @test cover(S) == cover(S; start=:covariant)
+    S2 = [1.0 2 3; 0 0 4; 0 0 5]
+    @test cover(S2) == cover(S2; start=:covariant)
+    for X in (S, S2)
+        @test_throws "requires a structurally nonsingular matrix" cover(X; start=:transversal)
+    end
+    @test_throws "cgiter must be nonnegative" cover(A; cgiter=-1)
+    @test_throws "maxiter must be nonnegative" cover(A; maxiter=-1)
 end

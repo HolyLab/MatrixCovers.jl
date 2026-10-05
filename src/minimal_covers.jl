@@ -1706,7 +1706,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     end
     # Start the LSQR iteration from the heuristic cover.
     if start === nothing && use_lsqr && maxouter > 0 && !tt
-        start = _cover!(similar(Array{T}, axr), similar(Array{T}, axc), A; fname=:cover_min)
+        start = _cover!(similar(Array{T}, axr), similar(Array{T}, axc), A; start=:covariant, fname=:cover_min)
     end
     x0 = nothing
     # Woodbury uses a grid; dense and LSQR use an edge list.
