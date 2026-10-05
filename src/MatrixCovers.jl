@@ -33,6 +33,7 @@ include("soft_covers.jl")
 include("powermean.jl")        # the PowerMean soft covers, the soft-cover default
 include("sparse_cholesky.jl")  # CHOLMOD factorizations for the minimal-cover solvers
 include("minimal_covers.jl")
+include("active_set.jl")       # exact solution of the AbsLog{2} problem from a near-optimal point
 include("transversal.jl")      # transversal-tight minimal covers
 include("powermean_newton.jl") # Newton refinement of the PowerMean soft covers
 include("sparse_support.jl")  # sparse traversal and the sparse solver defaults
