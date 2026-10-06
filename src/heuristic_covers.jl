@@ -145,7 +145,11 @@ julia> a * b'
 With `start=:transversal` or `:covariant` the cover products are
 scale-covariant on the support: for positive diagonal `D1`, `D2`, covering
 `D1 * A * D2` multiplies each supported product by `D1[i, i] * D2[j, j]`. This
-holds for every `cgiter` and `maxiter`.
+holds in exact arithmetic for every `cgiter` and `maxiter`. In floating point,
+the products are covariant only to within the truncation error of the
+conjugate-gradient iterations, which can greatly amplify roundoff on
+ill-conditioned problems; raising `cgiter` until the iterations converge
+restores covariance to near roundoff.
 
 For square `A`, every hard cover has `prod(a) * prod(b) >= π*`, where `π*` is
 the largest product `∏ᵢ |A[i,σ(i)]|` over permutations `σ`; equality holds
