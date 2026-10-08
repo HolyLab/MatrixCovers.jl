@@ -45,6 +45,48 @@ end
     @test symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; κ=1e3, maxouter=16) isa Vector
 end
 
+@testset "symcover_min active-set finish on dense supports" begin
+    # Three multiplier updates leave the KKT residual near 0.2, so the result
+    # rests on the active-set finish. The symmetric minimizer is also the
+    # minimizer of the asymmetric problem on the same matrix, which the
+    # asymmetric active-set finish solves exactly. (A multiplier iteration that
+    # converges on its own pins the products only to about `sqrt(eps)`.)
+    rng = StableRNG(3)
+    L = randn(rng, 200, 200)
+    A = exp.((L .+ L') ./ 2)
+    ga, gb, gs = MatrixCovers._cover_min_abslog2(A; maxouter=3)
+    @test gs.polish.certified
+    oref = cover_objective(AbsLog{2}(), ga, gb, A)
+    for linsolve in (:woodbury, :dense, :lsqr)
+        a, s = MatrixCovers._symcover_min_abslog2(A; linsolve, maxouter=3)
+        @test s.linsolve === linsolve
+        @test s.kkt[end] > 0.1
+        @test s.converged && s.polish.certified
+        @test iscover(a, A)
+        @test a .* a' ≈ ga .* gb' rtol=1e-12
+        @test cover_objective(AbsLog{2}(), a, A) ≈ oref rtol=1e-12
+    end
+
+    # Covariance of the finished solve under diagonal rescaling.
+    cfn = M -> MatrixCovers._symcover_min_abslog2(M; maxouter=3)[1]
+    d = exp.(randn(rng, 200))
+    @test covaries(cfn, A, d; rtol=1e-6)
+    @test covaries_objective(AbsLog{2}(), cfn, A, d; rtol=1e-10)
+
+    # Offset axes carry through the finish.
+    Ao = OffsetArray(A, -5, -5)
+    ao = symcover_min(AbsLog{2}(), Ao; maxouter=3)
+    @test axes(ao, 1) == axes(Ao, 1)
+    @test collect(ao) ≈ symcover_min(AbsLog{2}(), A; maxouter=3) rtol=1e-12
+
+    # Without the finish, the stalled iteration warns; an uncertified finish
+    # says so.
+    @test_logs (:warn, r"Increase `maxouter` or `κ`") MatrixCovers._symcover_min_abslog2(A; maxouter=3, polish=false)
+    stats = (; converged=false, kkt=(1.0,), vtol=1e-13, vwarn=1e-10, nouter=3,
+             polish=(; certified=false, nsteps=5))
+    @test_logs (:warn, r"active-set finish .* did not certify") MatrixCovers._warn_unconverged(:symcover_min, stats, 32)
+end
+
 @testset "cover_min native AbsLog{2}" begin
     # Match HiGHS on a deterministic sample of the general corpus.
     idx_sub = Set(round.(Int, range(1, length(general_matrices), length=500)))
@@ -501,16 +543,26 @@ end
     @test ss.precond === :forest
     @test ss.nforest > 0
     @test ss.nforest + ss.ndiagonal <= ss.nsolves
-    @test as[Ai] .* as[Aj] ≈ af[Ai] .* af[Aj] rtol=1e-8
+    @test as[Ai] .* as[Aj] ≈ af[Ai] .* af[Aj] rtol=1e-12
     @test iscover(as, as, A)
-    # The symmetric solver has no active-set finish, so its objective is
-    # reproducible only to about the square of the scale accuracy, which varies
-    # with the rounding of the iterative solves.
-    @test cover_objective(AbsLog{2}(), as, as, A) ≈ cover_objective(AbsLog{2}(), af, af, A) rtol=1e-8
+    @test cover_objective(AbsLog{2}(), as, as, A) ≈ cover_objective(AbsLog{2}(), af, af, A) rtol=1e-12
     cfn = M -> MatrixCovers._symcover_min_abslog2(M; flopbudget=fb)[1]
     d = exp.(randn(rng, n))
     @test covaries(cfn, A, d; rtol=1e-6)
-    @test covaries_objective(AbsLog{2}(), cfn, A, d; rtol=1e-8)
+    @test covaries_objective(AbsLog{2}(), cfn, A, d; rtol=1e-10)
+
+    # The multiplier iteration alone stops short of the KKT tolerance on this
+    # matrix; the active-set finish on the bipartite double cover certifies the
+    # minimizer, which is also the minimizer of the asymmetric problem.
+    an, sn = MatrixCovers._symcover_min_abslog2(A; flopbudget=Inf, polish=false)
+    @test !sn.converged
+    @test sf.converged && sf.polish.certified
+    @test ss.converged && ss.polish.certified
+    @test cover_objective(AbsLog{2}(), af, af, A) <= cover_objective(AbsLog{2}(), an, an, A)
+    ga, gb, gs = MatrixCovers._cover_min_abslog2(A; flopbudget=Inf)
+    @test gs.converged
+    @test af[Ai] .* af[Aj] ≈ ga[Ai] .* gb[Aj] rtol=1e-12
+    @test cover_objective(AbsLog{2}(), af, af, A) ≈ cover_objective(AbsLog{2}(), ga, gb, A) rtol=1e-12
 
     # A flop budget just at what the forest factors need sends some patterns
     # to the diagonal preconditioner, and the cover is unchanged.
@@ -801,9 +853,9 @@ end
     @test sl.κs[end] <= 1e5
     @test sl.kkt[end] < 1e-8
 
-    # Stopping far short of convergence emits a warning.
+    # Stopping far short of convergence without the active-set finish emits a warning.
     @test_logs (:warn, r"may not minimize the objective") match_mode=:any begin
-        MatrixCovers._symcover_min_abslog2(A; maxouter=1, maxiter=1)
+        MatrixCovers._symcover_min_abslog2(A; maxouter=1, maxiter=1, polish=false)
     end
 
     # The initial κ must define a penalty.
@@ -847,9 +899,10 @@ end
     # Draining these multipliers needs a penalty above the `:lsqr` cap of 1e5.
     # With the penalty held at the cap they are zeroed directly; left to drain by
     # `2(κ-1)z` per update they hold the KKT residual at 2.6e-6.
+    # Without the active-set finish (`polish=false`), slack multipliers are zeroed.
     A = banded_sparse_sym(StableRNG(5), 10_000, 3, 1.0)
     for fillbudget in (MatrixCovers.LSQR_FILL_BUDGET, 0)
-        a, s = @test_nowarn MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, fillbudget)
+        a, s = @test_nowarn MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, fillbudget, polish=false)
         @test s.precond === (fillbudget == 0 ? :diagonal : :factor)
         @test s.nzeroed > 0
         @test maximum(s.κs) == 1e5

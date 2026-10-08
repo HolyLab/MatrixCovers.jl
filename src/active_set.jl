@@ -495,8 +495,9 @@ end
 Minimize `½ ∑ₑ (u[p] - u[q] - c[e])²` subject to every term being nonnegative,
 starting from the near-optimal `u0`. The constraints are those of `supp`, an
 `EdgeList` with `qsign = -1` or a `DiffGrid`, or the edges `(p, q)` with costs
-`cvals`. Constraints with `u0[p] - u0[q] - c[e] < τ` seed the active set, adding
-the tightest first and skipping any that would close a cycle. `certified`
+`cvals`. Constraints with `u0[p] - u0[q] - c[e] < max(τ, ptol)` seed the active
+set, where `ptol` is `1000 eps` times the largest magnitude in `c` and `u0`,
+adding the tightest first and skipping any that would close a cycle. `certified`
 reports that the returned `u` satisfies the KKT conditions to tolerances
 proportional to the largest magnitude in `c` and `u0`; when it is false, `u` is
 `u0`. Each step factors a graph Laplacian, and `maxsteps` bounds their number.
@@ -514,7 +515,7 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
     ptol = 1000 * eps(T) * scale
     dtol = ptol * max(1, _nsupported(s))
     # Seed: Kruskal's algorithm on the nearly tight edges, tightest first.
-    cand = _seed_candidates(u0, s, τ)
+    cand = _seed_candidates(u0, s, max(T(τ), ptol))
     sort!(cand; by=e -> _resid(u0, s, e))
     uf = collect(1:nV)
     find(x) = (while uf[x] != x; uf[x] = uf[uf[x]]; x = uf[x]; end; x)
@@ -683,3 +684,46 @@ function _polish_cover(x::Vector{T}, supp::Grid{T}, m::Int) where {T}
 end
 
 _polish_cover(x::Vector{T}, supp::DiffGrid{T}, m::Int) where {T} = _polish_difference_qp(supp, x)
+
+# Solve the `AbsLog{2}` problem of `_symcover_min_abslog2` exactly from its
+# augmented-Lagrangian iterate `x`, returning `(x, certified, nsteps)`. The
+# symmetric problem is the asymmetric one on the bipartite double cover: with
+# unknowns `u = (α; β)` and start `(x; -x)`, each stored entry `(p, q)` gives the
+# difference constraints `α[p] - β[q] ≥ c` and, off the diagonal, `α[q] - β[p] ≥ c`.
+# Exchanging `α` with `-β` maps that problem to itself, so its minimizer has
+# equal mirror residuals and `(α - β)/2` has those same residuals.
+# Unknowns without support keep their values in `x`.
+function _polish_symcover(x::Vector{T}, supp::EdgeList{T}) where {T}
+    n = length(x)
+    edges2 = Tuple{Int,Int}[]
+    cvals2 = T[]
+    sizehint!(edges2, 2 * length(supp.edges))
+    sizehint!(cvals2, 2 * length(supp.edges))
+    for (e, (p, q)) in pairs(supp.edges)
+        c = supp.cvals[e]
+        push!(edges2, (p, n + q))
+        push!(cvals2, c)
+        if p != q
+            push!(edges2, (q, n + p))
+            push!(cvals2, c)
+        end
+    end
+    return _unfold_symcover(x, _polish_difference_qp(EdgeList{T}(edges2, cvals2, -one(T)), [x; -x]))
+end
+
+# `supp.C` holds the upper triangle; the double cover needs both.
+function _polish_symcover(x::Vector{T}, supp::Grid{T}) where {T}
+    n = length(x)
+    C = copy(supp.C)
+    for j in axes(C, 2), i in first(axes(C, 1)):j-1
+        C[j, i] = C[i, j]
+    end
+    return _unfold_symcover(x, _polish_difference_qp(DiffGrid{T}(C, collect(1:n), collect(n+1:2n)), [x; -x]))
+end
+
+# Symmetric scales `(α - β)/2` from the double-cover solution `u = (α; β)`.
+function _unfold_symcover(x::Vector{T}, (u, certified, nsteps)) where {T}
+    n = length(x)
+    xnew = (u[1:n] .- u[n+1:2n]) ./ 2
+    return xnew, certified, nsteps
+end
