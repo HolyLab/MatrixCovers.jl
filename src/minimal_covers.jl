@@ -84,10 +84,10 @@ band. For the tridiagonal Toeplitz matrix with subdiagonal `s` and
 superdiagonal `u`, the `AbsLog{2}` minimizer has `a[i+1]/a[i] ≈ sqrt(s/u)`, so
 for `n = 1000` and `s/u = 1/2` the entries of `a` span about 150 decades. The
 products `a[i]*b[j]` are unaffected, but quantities that combine factors from
-distant rows or columns, such as `norm(a)` or [`gramcover`](@ref), inherit the
-spread. [`cover`](@ref) and [`soft_cover`](@ref) behave the same way. Factors
-outside the floating-point range throw an error; converting `A` to `BigFloat`
-extends the range.
+distant rows or columns, such as `norm(a)`, inherit the spread.
+[`cover`](@ref) and [`soft_cover`](@ref) behave the same way. Factors outside
+the floating-point range throw an error; converting `A` to `BigFloat` extends
+the range.
 
 Supported ϕ values:
 - `AbsLog{2}()`: native.
