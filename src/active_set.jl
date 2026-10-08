@@ -437,3 +437,15 @@ function _polish_cover(x::Vector{T}, supp::Grid{T}, m::Int) where {T}
     end
     return _polish_cover(x, EdgeList{T}(edges, cvals), m)
 end
+
+function _polish_cover(x::Vector{T}, supp::DiffGrid{T}, m::Int) where {T}
+    C = supp.C
+    edges = Tuple{Int,Int}[]
+    cvals = T[]
+    for j in axes(C, 2), i in axes(C, 1)
+        isfinite(C[i, j]) || continue
+        push!(edges, (supp.rowidx[i], supp.colidx[j]))
+        push!(cvals, C[i, j])
+    end
+    return _polish_difference_qp(edges, cvals, x)
+end
