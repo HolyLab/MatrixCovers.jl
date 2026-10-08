@@ -107,9 +107,10 @@ end
             uf[rp] = rq
             inW[e] = true
         end
-        F = MatrixCovers._Forest(nV, edges, cvals, inW)
-        idx1, L1 = MatrixCovers._tree_laplacian_triplets(F, edges)
-        idx2, L2 = MatrixCovers._tree_laplacian_dense(F, edges)
+        supp = MatrixCovers.EdgeList{Float64}(edges, cvals, -1.0)
+        F = MatrixCovers._Forest(nV, supp, findall(inW))
+        idx1, L1 = MatrixCovers._tree_laplacian_triplets(F, supp)
+        idx2, L2 = MatrixCovers._tree_laplacian_dense(F, supp)
         @test idx1 == idx2
         @test Matrix(L1) == L2
         @test count(iszero, idx1) >= 2   # at least one pinned tree per component
@@ -130,4 +131,58 @@ end
         @test all(>=(-1e-12), d1)
         @test d1 ≈ d2 atol=1e-10
     end
+end
+
+@testset "difference-grid active-set solver" begin
+    # The grid must reproduce the edge list of its supported entries, with rows
+    # and columns sharing unknowns and some entries outside the support.
+    rng = StableRNG(13)
+    ncert = 0
+    for trial in 1:20
+        nV, m, n = 10, 14, 12
+        rowidx = rand(rng, 1:nV, m)
+        colidx = rand(rng, 1:nV, n)
+        φ = randn(rng, nV)
+        C = [φ[rowidx[i]] - φ[colidx[j]] - abs(randn(rng)) * (rand(rng) < 0.5) for i in 1:m, j in 1:n]
+        C[randperm(rng, m * n)[1:10]] .= -Inf
+        for j in 1:n, i in 1:m
+            rowidx[i] == colidx[j] && (C[i, j] = -Inf)
+        end
+        grid = MatrixCovers.DiffGrid{Float64}(C, rowidx, colidx)
+        edges = [(rowidx[i], colidx[j]) for j in 1:n for i in 1:m if isfinite(C[i, j])]
+        cvals = [C[i, j] for j in 1:n for i in 1:m if isfinite(C[i, j])]
+        for (u0, τ) in ((φ, 1e-4), (randn(rng, nV), 10.0))
+            ug, cg, _ = _polish_difference_qp(grid, u0; τ)
+            ue, ce, _ = _polish_difference_qp(edges, cvals, u0; τ)
+            @test cg == ce
+            ncert += cg
+            dg = [ug[p] - ug[q] - cvals[e] for (e, (p, q)) in enumerate(edges)]
+            de = [ue[p] - ue[q] - cvals[e] for (e, (p, q)) in enumerate(edges)]
+            @test dg ≈ de atol=1e-10
+        end
+
+        # Dense and triplet tree Laplacians of the grid agree.
+        s = MatrixCovers._qp_support(grid)
+        inW = fill(false, m, n)
+        uf = collect(1:nV)
+        find(x) = (while uf[x] != x; x = uf[x]; end; x)
+        for e in randperm(rng, m * n)
+            (isfinite(C[e]) && rand(rng) < 0.5) || continue
+            p, q = MatrixCovers._edge(s, e)
+            rp, rq = find(p), find(q)
+            rp == rq && continue
+            uf[rp] = rq
+            inW[e] = true
+        end
+        F = MatrixCovers._Forest(nV, s, findall(vec(inW)))
+        idx1, L1 = MatrixCovers._tree_laplacian_triplets(F, s)
+        idx2, L2 = MatrixCovers._tree_laplacian_dense(F, s)
+        @test idx1 == idx2
+        @test Matrix(L1) == L2
+    end
+    @test ncert >= 30
+
+    # Only difference constraints are accepted.
+    supp = MatrixCovers.EdgeList{Float64}([(1, 2)], [0.0])
+    @test_throws "requires difference constraints" _polish_difference_qp(supp, zeros(2))
 end
