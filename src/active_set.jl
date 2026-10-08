@@ -23,9 +23,10 @@ struct _Forest{T}
 end
 
 function _Forest(nV::Int, edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, inW::BitVector) where {T}
+    W = findall(inW)
     ptr = zeros(Int, nV + 1)
-    for (e, (p, q)) in enumerate(edges)
-        inW[e] || continue
+    for e in W
+        p, q = edges[e]
         ptr[p+1] += 1
         ptr[q+1] += 1
     end
@@ -33,8 +34,8 @@ function _Forest(nV::Int, edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, inW::
     cumsum!(ptr, ptr)
     adj = zeros(Int, ptr[end] - 1)
     cursor = ptr[1:nV]
-    for (e, (p, q)) in enumerate(edges)
-        inW[e] || continue
+    for e in W
+        p, q = edges[e]
         adj[cursor[p]] = e
         cursor[p] += 1
         adj[cursor[q]] = e
@@ -104,6 +105,62 @@ end
 
 function _TreeLaplacian(F::_Forest{T}, edges) where {T}
     nt = F.ntree
+    # Each edge contributes to the Laplacian of the tree-contracted graph. When
+    # that graph has few vertices, accumulating it densely in one pass over the
+    # edges and factoring it densely is cheaper than sorting a triplet list of
+    # three entries per edge and analyzing the sparsity pattern.
+    if nt^2 <= length(edges)
+        idx, L = _tree_laplacian_dense(F, edges)
+    else
+        idx, L = _tree_laplacian_triplets(F, edges)
+    end
+    fac = _laplacian_factor(L)
+    return _TreeLaplacian{T,typeof(fac)}(idx, fac, size(L, 1))
+end
+
+# Upper triangle of the Laplacian of the free trees, as a dense matrix.
+function _tree_laplacian_dense(F::_Forest{T}, edges) where {T}
+    nt = F.ntree
+    Lfull = zeros(T, nt, nt)
+    deg = zeros(Int, nt)
+    for (p, q) in edges
+        tp, tq = F.tree[p], F.tree[q]
+        tp == tq && continue
+        deg[tp] += 1
+        deg[tq] += 1
+        Lfull[min(tp, tq), max(tp, tq)] -= one(T)
+    end
+    # Breadth-first search for the connected components; the smallest tree of
+    # each is pinned and the others are the unknowns, numbered in tree order.
+    seen = falses(nt)
+    pinned = falses(nt)
+    queue = Int[]
+    for r in 1:nt
+        seen[r] && continue
+        seen[r] = pinned[r] = true
+        push!(queue, r)
+        while !isempty(queue)
+            t = pop!(queue)
+            for w in 1:nt
+                (seen[w] || iszero(Lfull[min(w, t), max(w, t)])) && continue
+                seen[w] = true
+                push!(queue, w)
+            end
+        end
+    end
+    for t in 1:nt
+        Lfull[t, t] = deg[t]
+    end
+    free = findall(.!pinned)
+    idx = zeros(Int, nt)
+    for (i, t) in enumerate(free)
+        idx[t] = i
+    end
+    return idx, Lfull[free, free]
+end
+
+function _tree_laplacian_triplets(F::_Forest{T}, edges) where {T}
+    nt = F.ntree
     # Union-find over trees to pick one pinned tree per connected component.
     uf = collect(1:nt)
     find(x) = (while uf[x] != x; uf[x] = uf[uf[x]]; x = uf[x]; end; x)
@@ -133,9 +190,7 @@ function _TreeLaplacian(F::_Forest{T}, edges) where {T}
             push!(I, min(ip, iq)); push!(J, max(ip, iq)); push!(V, -one(T))
         end
     end
-    L = sparse(I, J, V, nfree, nfree)
-    fac = _laplacian_factor(L)
-    return _TreeLaplacian{T,typeof(fac)}(idx, fac, nfree)
+    return idx, sparse(I, J, V, nfree, nfree)
 end
 
 function _laplacian_factor(L::SparseMatrixCSC{Float64,Int})
@@ -146,7 +201,8 @@ function _laplacian_factor(L::SparseMatrixCSC{Float64,Int})
     return F
 end
 # Wider types: dense Cholesky of the upper triangle.
-_laplacian_factor(L::SparseMatrixCSC) = LinearAlgebra.cholesky(Symmetric(Matrix(L), :U))
+_laplacian_factor(L::SparseMatrixCSC) = _laplacian_factor(Matrix(L))
+_laplacian_factor(L::Matrix) = LinearAlgebra.cholesky!(Symmetric(L, :U))
 
 _laplacian_solve!(x::Vector{Float64}, F::SparseCholesky, b::Vector{Float64}) =
     isempty(b) ? x : solve!(x, F, CHOLMOD_A, b)
@@ -305,7 +361,9 @@ function _polish_difference_qp(edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, 
         u, nsteps = _dual_feasible!(inW, λ, edges, cvals, nV, dtol, nsteps, maxsteps)
     end
     certified || return u0, false, nsteps
-    # Restore each component's constant from `u0`.
+    # Restore each component's constant from `u0`. (`u` is reassigned above, so
+    # capturing it in a closure would box it; `ustar` is bound once.)
+    ustar = u
     uf .= 1:nV
     for (p, q) in edges
         rp, rq = find(p), find(q)
@@ -314,9 +372,9 @@ function _polish_difference_qp(edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, 
     shift = zeros(T, nV)
     for v in 1:nV
         rv = find(v)
-        rv == v && (shift[v] = u0[v] - u[v])
+        rv == v && (shift[v] = u0[v] - ustar[v])
     end
-    return [u[v] + shift[find(v)] for v in 1:nV], true, nsteps
+    return [ustar[v] + shift[find(v)] for v in 1:nV], true, nsteps
 end
 
 # Drop the edges of `W` with negative multipliers until none remain, and return

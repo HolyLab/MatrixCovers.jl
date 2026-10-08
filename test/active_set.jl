@@ -82,3 +82,52 @@ end
     @test !certified
     @test u == zeros(3)
 end
+
+@testset "tree Laplacian assembly" begin
+    # The dense and triplet assemblies of the tree-contracted Laplacian must
+    # agree, including the choice of pinned tree in each connected component.
+    rng = StableRNG(11)
+    for trial in 1:10
+        # Two blocks of nodes with edges only within a block, so the contracted
+        # graph has two components; a random forest `W` joins some nodes.
+        nb = 8
+        edges = Tuple{Int,Int}[]
+        for blk in 0:1, p in 1:nb, q in 1:nb
+            p != q && rand(rng) < 0.6 && push!(edges, (blk * nb + p, blk * nb + q))
+        end
+        nV = 2nb
+        cvals = randn(rng, length(edges))
+        inW = falses(length(edges))
+        uf = collect(1:nV)
+        find(x) = (while uf[x] != x; x = uf[x]; end; x)
+        for e in randperm(rng, length(edges))
+            rand(rng) < 0.5 || continue
+            rp, rq = find(edges[e][1]), find(edges[e][2])
+            rp == rq && continue
+            uf[rp] = rq
+            inW[e] = true
+        end
+        F = MatrixCovers._Forest(nV, edges, cvals, inW)
+        idx1, L1 = MatrixCovers._tree_laplacian_triplets(F, edges)
+        idx2, L2 = MatrixCovers._tree_laplacian_dense(F, edges)
+        @test idx1 == idx2
+        @test Matrix(L1) == L2
+        @test count(iszero, idx1) >= 2   # at least one pinned tree per component
+    end
+
+    # A complete directed graph has more edges than squared trees as soon as
+    # `W` is nonempty, so the polish runs on the dense assembly throughout.
+    for trial in 1:5
+        nV = 30
+        edges = [(p, q) for p in 1:nV for q in 1:nV if p != q]
+        φ = randn(rng, nV)
+        cvals = [φ[p] - φ[q] - abs(randn(rng)) * (rand(rng) < 0.5) for (p, q) in edges]
+        u1, c1, _ = _polish_difference_qp(edges, cvals, φ)
+        u2, c2, _ = _polish_difference_qp(edges, cvals, randn(rng, nV); τ=10.0)
+        @test c1 && c2
+        d1 = [u1[p] - u1[q] - cvals[e] for (e, (p, q)) in enumerate(edges)]
+        d2 = [u2[p] - u2[q] - cvals[e] for (e, (p, q)) in enumerate(edges)]
+        @test all(>=(-1e-12), d1)
+        @test d1 ≈ d2 atol=1e-10
+    end
+end
