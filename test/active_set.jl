@@ -70,12 +70,18 @@ end
         cvals = [φ[p] - φ[q] - abs(randn(rng)) * (rand(rng) < 0.5) for (p, q) in edges]
         u1, c1, _ = _polish_difference_qp(edges, cvals, φ)
         u2, c2, _ = _polish_difference_qp(edges, cvals, randn(rng, nV); τ=10.0)
-        @test c1 && c2
+        # Arbitrary nonnegative seed weights order the seed but not the result.
+        seed = rand(rng, length(edges)) .* (rand(rng, length(edges)) .< 0.5)
+        u3, c3, _ = _polish_difference_qp(edges, cvals, randn(rng, nV); seed)
+        @test c1 && c2 && c3
         d1 = [u1[p] - u1[q] - cvals[e] for (e, (p, q)) in enumerate(edges)]
         d2 = [u2[p] - u2[q] - cvals[e] for (e, (p, q)) in enumerate(edges)]
+        d3 = [u3[p] - u3[q] - cvals[e] for (e, (p, q)) in enumerate(edges)]
         @test all(>=(-1e-12), d1)
         @test d1 ≈ d2 atol=1e-10
+        @test d1 ≈ d3 atol=1e-10
     end
+    @test_throws "seed must have axes 1:3" _polish_difference_qp([(1, 2), (2, 3), (1, 3)], [0.0, 0.0, 0.0], zeros(3); seed=ones(2))
     # Infeasible constraints (a cycle with positive total cost) are not certified.
     edges = [(1, 2), (2, 3), (3, 1)]
     u, certified, _ = _polish_difference_qp(edges, [1.0, 1.0, 1.0], zeros(3))
@@ -159,6 +165,11 @@ end
             dg = [ug[p] - ug[q] - cvals[e] for (e, (p, q)) in enumerate(edges)]
             de = [ue[p] - ue[q] - cvals[e] for (e, (p, q)) in enumerate(edges)]
             @test dg ≈ de atol=1e-10
+            # Seed weights index `C` linearly; weights outside the support are ignored.
+            us, cs, _ = _polish_difference_qp(grid, u0; seed=vec(rand(rng, m, n)))
+            @test cs == cg
+            ds = [us[p] - us[q] - cvals[e] for (e, (p, q)) in enumerate(edges)]
+            cg && @test ds ≈ dg atol=1e-10
         end
 
         # Dense and triplet tree Laplacians of the grid agree.

@@ -1338,7 +1338,8 @@ _dense_factor_type(::Type{T}) where {T} = LinearAlgebra.LU{T,Matrix{T},Vector{In
 
 # `AbsLog{2}` augmented-Lagrangian iteration. `boost=true` applies a final
 # feasibility shift; the support layout selects the inner solver. Returns the
-# log scales and a statistics tuple: inner solve and iteration counts, the
+# log scales and a statistics tuple: the final multipliers (`multipliers`, laid
+# out by `_multiplier_storage`), inner solve and iteration counts, the
 # LSQR iterations of each solve (`lsqrtrace`), the per-update exits, drops, KKT
 # residuals (`kkt`) and penalty weights (`κs`), the convergence flag with its
 # tolerances, the `linsolve` and `precond` choices, the full Cholesky
@@ -1921,7 +1922,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
             x[p] += γ
         end
     end
-    return x, (; nsolves=nsolves[], lsqriters=nlsqr[], lsqrtrace=Tuple(lsqrtrace), cgiters=ncg[],
+    return x, (; multipliers=λ, nsolves=nsolves[], lsqriters=nlsqr[], lsqrtrace=Tuple(lsqrtrace), cgiters=ncg[],
                cholsolves=nchol[], nouter=length(exits), exits=Tuple(exits),
                drops=Tuple(drops), kkt=Tuple(viols), κs=Tuple(κtrace),
                converged, vtol, vwarn,
@@ -2042,7 +2043,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter:
          T[hassupp[ip] ? log(T(start[i])) : zero(T) for (ip, i) in enumerate(ax)]
     α, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve, boost, fillbudget, flopbudget, zeroslack)
     if polish && !stats.converged && maxouter > 0
-        α, certified, nsteps = _polish_symcover(α, supp)
+        α, certified, nsteps = _polish_symcover(α, supp; multipliers=stats.multipliers)
         stats = merge(stats, (; converged=certified, polish=(; certified, nsteps)))
     end
     _warn_unconverged(fname, stats, maxouter)
@@ -2300,7 +2301,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     x, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve,
                                boost=boost && !tt, fillbudget, flopbudget, zeroslack)
     if polish && !stats.converged && maxouter > 0
-        x, certified, nsteps = _polish_cover(x, supp, m)
+        x, certified, nsteps = _polish_cover(x, supp, m; multipliers=stats.multipliers)
         stats = merge(stats, (; converged=certified, polish=(; certified, nsteps)))
     end
     _warn_unconverged(fname, stats, maxouter)

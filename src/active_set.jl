@@ -489,18 +489,24 @@ function _most_violated(u::Vector{T}, inW::Matrix{Bool}, s::_DiffGridQP, de::T) 
 end
 
 """
-    u, certified, nsteps = _polish_difference_qp(supp, u0; τ, maxsteps)
-    u, certified, nsteps = _polish_difference_qp(edges, cvals, u0; τ, maxsteps)
+    u, certified, nsteps = _polish_difference_qp(supp, u0; τ, maxsteps, seed)
+    u, certified, nsteps = _polish_difference_qp(edges, cvals, u0; τ, maxsteps, seed)
 
 Minimize `½ ∑ₑ (u[p] - u[q] - c[e])²` subject to every term being nonnegative,
 starting from the near-optimal `u0`. The constraints are those of `supp`, an
 `EdgeList` with `qsign = -1` or a `DiffGrid`, or the edges `(p, q)` with costs
-`cvals`. Constraints with `u0[p] - u0[q] - c[e] < max(τ, ptol)` seed the active
-set, where `ptol` is `1000 eps` times the largest magnitude in `c` and `u0`,
-adding the tightest first and skipping any that would close a cycle. `certified`
-reports that the returned `u` satisfies the KKT conditions to tolerances
-proportional to the largest magnitude in `c` and `u0`; when it is false, `u` is
-`u0`. Each step factors a graph Laplacian, and `maxsteps` bounds their number.
+`cvals`. The active set is seeded by adding candidate constraints in order and
+skipping any that would close a cycle; `ptol` is `1000 eps` times the largest
+magnitude in `c` and `u0`. Without `seed`, the candidates are the constraints
+with `u0[p] - u0[q] - c[e] < max(τ, ptol)`, tightest first. With `seed`, a
+vector of nonnegative weights indexed like the constraints (edge positions of
+an `EdgeList`, linear indices of a `DiffGrid`'s `C`), such as the multipliers of
+an augmented-Lagrangian iteration, the candidates are the constraints with
+positive weight or residual below `ptol`, largest weight first and then
+tightest first. `certified` reports that the returned `u` satisfies the KKT
+conditions to tolerances proportional to the largest magnitude in `c` and `u0`;
+when it is false, `u` is `u0`. Each step factors a graph Laplacian, and
+`maxsteps` bounds their number.
 The constant on each connected component of the graph is taken from `u0`.
 """
 function _polish_difference_qp(edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, u0::Vector{T}; kwargs...) where {T}
@@ -508,15 +514,26 @@ function _polish_difference_qp(edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, 
 end
 
 function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{T};
-                               τ::Real=T(1e-4), maxsteps::Int=max(1000, 2 * length(u0))) where {T}
+                               τ::Real=T(1e-4), maxsteps::Int=max(1000, 2 * length(u0)),
+                               seed::Union{Nothing,AbstractVector}=nothing) where {T}
     s = _qp_support(supp)
     nV = length(u0)
     scale = max(oneunit(T), _cmax(s), maximum(abs, u0; init=zero(T)))
     ptol = 1000 * eps(T) * scale
     dtol = ptol * max(1, _nsupported(s))
-    # Seed: Kruskal's algorithm on the nearly tight edges, tightest first.
-    cand = _seed_candidates(u0, s, max(T(τ), ptol))
-    sort!(cand; by=e -> _resid(u0, s, e))
+    # Seed: Kruskal's algorithm on the candidate constraints, in the order the
+    # docstring describes.
+    if seed === nothing
+        cand = _seed_candidates(u0, s, max(T(τ), ptol))
+        sort!(cand; by=e -> _resid(u0, s, e))
+    else
+        axes(seed, 1) == Base.OneTo(_nconstraints(s)) ||
+            throw(DimensionMismatch("seed must have axes 1:$(_nconstraints(s)), one entry per constraint; got $(axes(seed, 1))"))
+        # Entries outside the support have residual `+Inf` and are never candidates.
+        cand = union([e for e in eachindex(seed) if seed[e] > 0 && isfinite(_resid(u0, s, e))],
+                     _seed_candidates(u0, s, ptol))
+        sort!(cand; by=e -> (-seed[e], _resid(u0, s, e)))
+    end
     uf = collect(1:nV)
     find(x) = (while uf[x] != x; uf[x] = uf[uf[x]]; x = uf[x]; end; x)
     inW = _active_flags(s)
@@ -664,26 +681,32 @@ end
 # augmented-Lagrangian iterate `x`, returning `(x, certified, nsteps)`. In the
 # stacked layout `(α; β)` an entry's residual is `α[i] + β[j] - c`, which is a
 # difference in `(α; -β)`; the transversal layout is a difference already.
-function _polish_cover(x::Vector{T}, supp::EdgeList{T}, m::Int) where {T}
-    supp.qsign < 0 && return _polish_difference_qp(supp, x)
+# `multipliers`, the iteration's multipliers in the layout of `supp`, seed the
+# active set (see `_polish_difference_qp`).
+function _polish_cover(x::Vector{T}, supp::EdgeList{T}, m::Int; multipliers=nothing) where {T}
+    supp.qsign < 0 && return _polish_difference_qp(supp, x; seed=multipliers)
     flip(u) = [k <= m ? u[k] : -u[k] for k in eachindex(u)]
-    u, certified, nsteps = _polish_difference_qp(EdgeList{T}(supp.edges, supp.cvals, -oneunit(T)), flip(x))
+    u, certified, nsteps = _polish_difference_qp(EdgeList{T}(supp.edges, supp.cvals, -oneunit(T)), flip(x);
+                                                 seed=multipliers)
     return flip(u), certified, nsteps
 end
 
-function _polish_cover(x::Vector{T}, supp::Grid{T}, m::Int) where {T}
+function _polish_cover(x::Vector{T}, supp::Grid{T}, m::Int; multipliers=nothing) where {T}
     C = supp.C
     edges = Tuple{Int,Int}[]
     cvals = T[]
+    seed = multipliers === nothing ? nothing : T[]
     for j in axes(C, 2), i in axes(C, 1)
         isfinite(C[i, j]) || continue
         push!(edges, (i, m + j))
         push!(cvals, C[i, j])
+        seed === nothing || push!(seed, multipliers[i, j])
     end
-    return _polish_cover(x, EdgeList{T}(edges, cvals), m)
+    return _polish_cover(x, EdgeList{T}(edges, cvals), m; multipliers=seed)
 end
 
-_polish_cover(x::Vector{T}, supp::DiffGrid{T}, m::Int) where {T} = _polish_difference_qp(supp, x)
+_polish_cover(x::Vector{T}, supp::DiffGrid{T}, m::Int; multipliers=nothing) where {T} =
+    _polish_difference_qp(supp, x; seed=multipliers === nothing ? nothing : vec(multipliers))
 
 # Solve the `AbsLog{2}` problem of `_symcover_min_abslog2` exactly from its
 # augmented-Lagrangian iterate `x`, returning `(x, certified, nsteps)`. The
@@ -692,33 +715,46 @@ _polish_cover(x::Vector{T}, supp::DiffGrid{T}, m::Int) where {T} = _polish_diffe
 # difference constraints `α[p] - β[q] ≥ c` and, off the diagonal, `α[q] - β[p] ≥ c`.
 # Exchanging `α` with `-β` maps that problem to itself, so its minimizer has
 # equal mirror residuals and `(α - β)/2` has those same residuals.
-# Unknowns without support keep their values in `x`.
-function _polish_symcover(x::Vector{T}, supp::EdgeList{T}) where {T}
+# Unknowns without support keep their values in `x`. `multipliers`, the
+# iteration's multipliers in the layout of `supp`, seed the active set, each
+# entry's value going to both of its constraints.
+function _polish_symcover(x::Vector{T}, supp::EdgeList{T}; multipliers=nothing) where {T}
     n = length(x)
     edges2 = Tuple{Int,Int}[]
     cvals2 = T[]
+    seed = multipliers === nothing ? nothing : T[]
     sizehint!(edges2, 2 * length(supp.edges))
     sizehint!(cvals2, 2 * length(supp.edges))
     for (e, (p, q)) in pairs(supp.edges)
         c = supp.cvals[e]
         push!(edges2, (p, n + q))
         push!(cvals2, c)
+        seed === nothing || push!(seed, multipliers[e])
         if p != q
             push!(edges2, (q, n + p))
             push!(cvals2, c)
+            seed === nothing || push!(seed, multipliers[e])
         end
     end
-    return _unfold_symcover(x, _polish_difference_qp(EdgeList{T}(edges2, cvals2, -one(T)), [x; -x]))
+    return _unfold_symcover(x, _polish_difference_qp(EdgeList{T}(edges2, cvals2, -one(T)), [x; -x]; seed))
 end
 
 # `supp.C` holds the upper triangle; the double cover needs both.
-function _polish_symcover(x::Vector{T}, supp::Grid{T}) where {T}
+function _polish_symcover(x::Vector{T}, supp::Grid{T}; multipliers=nothing) where {T}
     n = length(x)
     C = copy(supp.C)
     for j in axes(C, 2), i in first(axes(C, 1)):j-1
         C[j, i] = C[i, j]
     end
-    return _unfold_symcover(x, _polish_difference_qp(DiffGrid{T}(C, collect(1:n), collect(n+1:2n)), [x; -x]))
+    seed = nothing
+    if multipliers !== nothing
+        S = copy(multipliers)
+        for j in axes(S, 2), i in first(axes(S, 1)):j-1
+            S[j, i] = S[i, j]
+        end
+        seed = vec(S)
+    end
+    return _unfold_symcover(x, _polish_difference_qp(DiffGrid{T}(C, collect(1:n), collect(n+1:2n)), [x; -x]; seed))
 end
 
 # Symmetric scales `(α - β)/2` from the double-cover solution `u = (α; β)`.
