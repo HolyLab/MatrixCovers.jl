@@ -17,7 +17,8 @@
 # The heuristic approximately minimizes `∑ (u[h] - u[t] - d)²` subject to these
 # constraints:
 #   1. a layer-average start (`_tt_layer_start!`);
-#   2. CG iterations on the unconstrained least-squares problem (`_tt_cg!`);
+#   2. Jacobi-preconditioned CG iterations on the unconstrained least-squares
+#      problem (`_tt_cg!`);
 #   3. a deficit-splitting boost (`_tt_boost!`), then the least feasible point
 #      above the result (`_tt_raise!`);
 #   4. projected Gauss–Seidel sweeps within each unknown's feasible interval
@@ -138,39 +139,49 @@ function _tt_dot(x::Vector{T}, y::Vector{T}) where {T}
     return acc
 end
 
-# Up to `maxiter` CG iterations on the normal equations `L u = rhs` of
-# `∑ (u[h] - u[t] - d)²`, stopping once the residual falls below a fixed
-# fraction of `rhs`. `L` is singular, with each component's constants in its
-# null space; the system is consistent, so CG stays in the range of `L`.
+# Up to `maxiter` Jacobi-preconditioned CG iterations on the normal equations
+# `L u = rhs` of `∑ (u[h] - u[t] - d)²`, stopping once the residual, measured
+# in the inverse of the preconditioner, falls below a fixed fraction of `rhs`.
+# The preconditioner is the diagonal of `L` (the vertex degrees). Degrees can
+# span orders of magnitude, and without it truncated CG amplifies roundoff
+# enough to break scale-covariance; it depends only on the support, so the
+# iteration remains covariant in exact arithmetic. `L` is singular, with each
+# component's constants in its null space; the system is consistent, and the
+# iterates keep each component's degree-weighted sum of `u`.
 function _tt_cg!(u::Vector{T}, Gg::_GroupGraph{T}, maxiter::Int) where {T}
     maxiter == 0 && return u
     nc = length(u)
     rhs = zeros(T, nc)
+    dinv = zeros(T, nc)   # inverse degrees; zero on isolated groups
     for v in 1:nc
-        for s in _tt_slots(Gg, v)
+        slots = _tt_slots(Gg, v)
+        isempty(slots) || (dinv[v] = inv(T(length(slots))))
+        for s in slots
             rhs[v] += Gg.off[s]
         end
     end
     r = similar(u)
     _tt_laplacian!(r, Gg, u)
     r .= rhs .- r
-    p = copy(r)
+    z = dinv .* r
+    p = copy(z)
     q = similar(u)
-    rr = _tt_dot(r, r)
+    rz = _tt_dot(r, z)
     # A test relative to `rhs` stays meaningful once the iterates have converged;
     # continuing past that point amplifies roundoff.
-    tol = (eps(T)^(T(3) / 4) * sqrt(_tt_dot(rhs, rhs)))^2
+    tol = eps(T)^(T(3) / 2) * _tt_dot(rhs, dinv .* rhs)
     for _ in 1:maxiter
-        rr <= tol && break
+        rz <= tol && break
         _tt_laplacian!(q, Gg, p)
         pq = _tt_dot(p, q)
         pq > zero(T) || break
-        γ = rr / pq
+        γ = rz / pq
         u .+= γ .* p
         r .-= γ .* q
-        rrnew = _tt_dot(r, r)
-        p .= r .+ (rrnew / rr) .* p
-        rr = rrnew
+        z .= dinv .* r
+        rznew = _tt_dot(r, z)
+        p .= z .+ (rznew / rz) .* p
+        rz = rznew
     end
     return u
 end

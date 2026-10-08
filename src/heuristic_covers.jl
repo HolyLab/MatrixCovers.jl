@@ -819,10 +819,14 @@ function covariant_start!(a::AbstractVector, b::AbstractVector, sup::FlatSupport
     return a, b
 end
 
-# Refine the log scales by CG on the normal equations for
+# Refine the log scales by Jacobi-preconditioned CG on the normal equations for
 # ∑_{ij ∈ support} (lα[i] + lβ[j] - log|A_ij|)².
 # `foreach_entries(f)` calls `f(i, j, log|A_ij|)` over the support.
-# Updates preserve the initial gauge and leave unsupported log scales at -Inf.
+# The preconditioner is the diagonal of the normal equations, the support counts
+# of each row and column; it depends only on the support, so the iteration
+# remains scale-covariant in exact arithmetic. Updates preserve each support
+# component's count-weighted gauge `∑ na[i] lα[i] - ∑ nb[j] lβ[j]` and leave
+# unsupported log scales at -Inf.
 function _cg_refine!(lα::AbstractVector{T}, lβ::AbstractVector{T}, foreach_entries::F, maxiter::Int) where {T,F}
     maxiter > 0 || return lα, lβ
     axa, axb = eachindex(lα), eachindex(lβ)
@@ -837,13 +841,16 @@ function _cg_refine!(lα::AbstractVector{T}, lβ::AbstractVector{T}, foreach_ent
         ra[i] += lv - lβ[j]
         rb[j] += lv - lα[i]
     end
-    rr = zero(T)     # squared residual norm
+    za = fill!(similar(lα, T), zero(T))
+    zb = fill!(similar(lβ, T), zero(T))
+    rz = zero(T)     # residual norm squared in the inverse preconditioner
     for i in axa
         if iszero(na[i])
             ra[i] = zero(T)
         else
             ra[i] -= na[i] * lα[i]
-            rr += ra[i]^2
+            za[i] = ra[i] / na[i]
+            rz += ra[i] * za[i]
         end
     end
     for j in axb
@@ -851,43 +858,54 @@ function _cg_refine!(lα::AbstractVector{T}, lβ::AbstractVector{T}, foreach_ent
             rb[j] = zero(T)
         else
             rb[j] -= nb[j] * lβ[j]
-            rr += rb[j]^2
+            zb[j] = rb[j] / nb[j]
+            rz += rb[j] * zb[j]
         end
     end
     # Relative residuals give a scale-invariant stopping rule.
-    tol = eps(T) * rr
-    # Use the largest diagonal entry as the curvature scale; stop when a search
-    # direction lies numerically in the gauge null space.
-    qmax = T(max(maximum(na; init=0), maximum(nb; init=0)))
-    pa = copy(ra)
-    pb = copy(rb)
+    tol = eps(T) * rz
+    pa = copy(za)
+    pb = copy(zb)
     Apa = similar(ra)
     Apb = similar(rb)
     for _ in 1:maxiter
-        rr <= tol && break
+        rz <= tol && break
+        pMp = zero(T)
         for i in axa
             Apa[i] = na[i] * pa[i]
+            pMp += pa[i] * Apa[i]
         end
         for j in axb
             Apb[j] = nb[j] * pb[j]
+            pMp += pb[j] * Apb[j]
         end
         foreach_entries() do i, j, _
             Apa[i] += pb[j]
             Apb[j] += pa[i]
         end
         pAp = LinearAlgebra.dot(pa, Apa) + LinearAlgebra.dot(pb, Apb)
-        pp = LinearAlgebra.dot(pa, pa) + LinearAlgebra.dot(pb, pb)
-        pAp > eps(T) * qmax * pp || break
-        γ = rr / pAp
+        # Stop when a search direction lies numerically in the gauge null space.
+        pAp > eps(T) * pMp || break
+        γ = rz / pAp
         lα .+= γ .* pa
         lβ .+= γ .* pb
         ra .-= γ .* Apa
         rb .-= γ .* Apb
-        rr2 = LinearAlgebra.dot(ra, ra) + LinearAlgebra.dot(rb, rb)
-        δ = rr2 / rr
-        pa .= ra .+ δ .* pa
-        pb .= rb .+ δ .* pb
-        rr = rr2
+        rz2 = zero(T)
+        for i in axa
+            iszero(na[i]) && continue
+            za[i] = ra[i] / na[i]
+            rz2 += ra[i] * za[i]
+        end
+        for j in axb
+            iszero(nb[j]) && continue
+            zb[j] = rb[j] / nb[j]
+            rz2 += rb[j] * zb[j]
+        end
+        δ = rz2 / rz
+        pa .= za .+ δ .* pa
+        pb .= zb .+ δ .* pb
+        rz = rz2
     end
     return lα, lβ
 end
