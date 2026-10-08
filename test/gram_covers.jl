@@ -247,11 +247,12 @@ end
                 @test maximum(col ./ (a .* b[j])) ≈ 1 rtol = 4eps()
             end
         end
-        # With `a` from a full cover, `b` is no looser than that cover's.
+        # With `a` from a full cover, `b` is no looser than that cover's, up to
+        # the rounding guard `cover(A, a)` applies to each quotient.
         a0, b0 = cover(B)
         _, b1 = cover(B, a0)
         @test iscover(a0, b1, B)
-        @test all(b1 .<= b0)
+        @test all(b1 .<= b0 .* (1 + 8eps()))
     end
 
     # Unsupported rows may have a zero scale; supported rows may not.
