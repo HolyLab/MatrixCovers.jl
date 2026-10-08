@@ -111,7 +111,7 @@ refinement.
   [`cover_transversal`](@ref). `A` must be square and structurally
   nonsingular. Defaults: `cgiter=20`, `maxiter=5`.
 - `:covariant` ensures the result is scale-covariant (typically at the cost of
-  permutation-equivariance). Defaults: `cgiter=4`, `maxiter=3`.
+  permutation-equivariance). Defaults: `cgiter=16`, `maxiter=3`.
 - `:geomean` makes the result permutation-equivariant up to floating-point
   round-off (typically at the cost of scale-covariance). Defaults as for
   `:covariant`.
@@ -146,10 +146,10 @@ With `start=:transversal` or `:covariant` the cover products are
 scale-covariant on the support: for positive diagonal `D1`, `D2`, covering
 `D1 * A * D2` multiplies each supported product by `D1[i, i] * D2[j, j]`. This
 holds in exact arithmetic for every `cgiter` and `maxiter`. In floating point,
-the products are covariant only to within the truncation error of the
-conjugate-gradient iterations, which can greatly amplify roundoff on
-ill-conditioned problems; raising `cgiter` until the iterations converge
-restores covariance to near roundoff.
+the products are covariant to within the roundoff accumulated by the
+conjugate-gradient iterations: typically near machine precision, and no worse
+than about `1e-9` on ill-conditioned supports. `cgiter` caps the iterations,
+which stop earlier once the residual is at roundoff.
 
 For square `A`, every hard cover has `prod(a) * prod(b) >= π*`, where `π*` is
 the largest product `∏ᵢ |A[i,σ(i)]|` over permutations `σ`; equality holds
@@ -237,7 +237,7 @@ function _cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
         end
         start = :covariant
     end
-    cgiter = something(cgiter, 4)
+    cgiter = something(cgiter, 16)
     maxiter = something(maxiter, 3)
     cgiter >= 0 || throw(ArgumentError("cgiter must be nonnegative, got $cgiter"))
     # The geometric-mean start propagates scales only locally.
