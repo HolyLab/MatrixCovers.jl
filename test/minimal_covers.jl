@@ -431,11 +431,11 @@ function banded_sparse_sym(rng, n, hw, σ)
     return L + L' + D
 end
 
-# The rule that chooses between the factor and diagonal preconditioners weighs
-# predicted refactorization cost, not just storage: a banded matrix has cheap
-# fill-in and stays on the factor path even at large `n`, while a matrix with
-# the same density but random sparsity fills in enough to cost more to
-# refactorize than the diagonal path's extra LSQR iterations.
+# The rule that chooses the full-factor preconditioner weighs predicted
+# refactorization cost, not just storage: a banded matrix has cheap fill-in and
+# stays on the factor path even at large `n`, while a matrix with the same
+# density but random sparsity fills in enough to cost more to refactorize than
+# the heavy-forest preconditioner it falls back to.
 @testset "MMC :lsqr preconditioner cost rule" begin
     rngb = StableRNG(31)
     Aband = banded_sparse_sym(rngb, 2000, 3, 1.0)
@@ -445,7 +445,7 @@ end
     rngr = StableRNG(37)
     Arand = lognormal_sparse_sym(rngr, 4000, 1.0; p=6/4000)
     ad, sd = MatrixCovers._symcover_min_abslog2(Arand; linsolve=:lsqr)
-    @test sd.precond === :diagonal
+    @test sd.precond === :forest
     af, sf = MatrixCovers._symcover_min_abslog2(Arand; linsolve=:lsqr, flopbudget=Inf)
     @test sf.precond === :factor
     @test ad ≈ af rtol=1e-6
@@ -455,12 +455,71 @@ end
     # The in-solver ratio of predicted flops to stored support entries matches
     # `factor_flops / nnz(A)` of the input for a symmetric matrix with both
     # triangles stored: a flop budget just above that ratio selects the factor
-    # path, and just below it selects the diagonal path.
+    # path, and just below it selects the heavy-forest path.
     ratio = sf.factor_flops / nnz(Arand)
     @test MatrixCovers._symcover_min_abslog2(Arand; linsolve=:lsqr, flopbudget=1.01 * ratio)[2].precond === :factor
-    @test MatrixCovers._symcover_min_abslog2(Arand; linsolve=:lsqr, flopbudget=0.99 * ratio)[2].precond === :diagonal
+    @test MatrixCovers._symcover_min_abslog2(Arand; linsolve=:lsqr, flopbudget=0.99 * ratio)[2].precond === :forest
 
     @test MatrixCovers._symcover_min_abslog2(Arand; linsolve=:lsqr, flopbudget=0)[2].precond === :diagonal
+end
+
+# Random sparse supports have expensive full factors. The heavy-forest
+# preconditioner (violated entries with their couplings, the other entries on
+# the diagonal) must reach the same cover as the full factor, and fall back to
+# the diagonal for patterns whose forest factor is over budget.
+@testset "MMC :lsqr heavy-forest preconditioner" begin
+    rng = MersenneTwister(5)
+    n = 400
+    S = sprand(rng, n, n, 5 / n) + sparse(randperm(rng, n), 1:n, ones(n), n, n)
+    G = SparseMatrixCSC(size(S)..., S.colptr, S.rowval, exp.(randn(rng, nnz(S))))
+    Gi, Gj, _ = findnz(G)
+    # Over budget for the full factor, within budget for the forest factors,
+    # whose predicted flops are close to one per stored entry.
+    fb = 50.0
+    for kw in ((;), (; transversal=true, fname=:cover_transversal))
+        gf, hf, tf = MatrixCovers._cover_min_abslog2(G; flopbudget=Inf, kw...)
+        gs, hs, ts = MatrixCovers._cover_min_abslog2(G; flopbudget=fb, kw...)
+        @test tf.precond === :factor
+        @test ts.precond === :forest
+        @test ts.nforest > 0
+        @test ts.nforest + ts.ndiagonal <= ts.nsolves
+        @test ts.nrefactor >= 1
+        @test gs[Gi] .* hs[Gj] ≈ gf[Gi] .* hf[Gj] rtol=1e-8
+        @test iscover(gs, hs, G)
+        @test cover_objective(AbsLog{2}(), gs, hs, G) ≈ cover_objective(AbsLog{2}(), gf, hf, G) rtol=1e-10
+        cfn = M -> MatrixCovers._cover_min_abslog2(M; flopbudget=fb, kw...)[1:2]
+        dr, dc = exp.(randn(rng, n)), exp.(randn(rng, n))
+        @test covaries(cfn, G, dr, dc; rtol=1e-6)
+        @test covaries_objective(AbsLog{2}(), cfn, G, dr, dc; rtol=1e-10)
+    end
+
+    A = lognormal_sparse_sym(rng, n, 1.0)
+    Ai, Aj, _ = findnz(A)
+    af, sf = MatrixCovers._symcover_min_abslog2(A; flopbudget=Inf)
+    as, ss = MatrixCovers._symcover_min_abslog2(A; flopbudget=fb)
+    @test sf.precond === :factor
+    @test ss.precond === :forest
+    @test ss.nforest > 0
+    @test ss.nforest + ss.ndiagonal <= ss.nsolves
+    @test as[Ai] .* as[Aj] ≈ af[Ai] .* af[Aj] rtol=1e-8
+    @test iscover(as, as, A)
+    # The symmetric solver has no active-set finish, so its objective is
+    # reproducible only to about the square of the scale accuracy, which varies
+    # with the rounding of the iterative solves.
+    @test cover_objective(AbsLog{2}(), as, as, A) ≈ cover_objective(AbsLog{2}(), af, af, A) rtol=1e-8
+    cfn = M -> MatrixCovers._symcover_min_abslog2(M; flopbudget=fb)[1]
+    d = exp.(randn(rng, n))
+    @test covaries(cfn, A, d; rtol=1e-6)
+    @test covaries_objective(AbsLog{2}(), cfn, A, d; rtol=1e-8)
+
+    # A flop budget just at what the forest factors need sends some patterns
+    # to the diagonal preconditioner, and the cover is unchanged.
+    gf, hf, _ = MatrixCovers._cover_min_abslog2(G; flopbudget=Inf)
+    gm, hm, tm = MatrixCovers._cover_min_abslog2(G; flopbudget=1.0)
+    @test tm.nforest > 0 && tm.ndiagonal > 0
+    @test tm.nforest + tm.ndiagonal <= tm.nsolves
+    @test gm[Gi] .* hm[Gj] ≈ gf[Gi] .* hf[Gj] rtol=1e-8
+    @test MatrixCovers._cover_min_abslog2(G; flopbudget=0)[3].nforest == 0
 end
 
 # LSQR continuation starts from the heuristic cover.
@@ -820,6 +879,29 @@ end
     @test sh.nzeroed == 0
 end
 
+@testset "MMC asymmetric solves stop at a stall when the polish follows" begin
+    # On this matrix the multiplier iteration stalls at the penalty cap with
+    # positive multipliers on slack entries. With `zeroslack` it zeroes them and
+    # continues; by default the asymmetric worker stops there and leaves the
+    # finish to the active-set method, reaching the same cover in fewer solves.
+    A = exp.(randn(StableRNG(4), 600, 600))
+    a0, b0, s0 = MatrixCovers._cover_min_abslog2(A; zeroslack=true)
+    @test s0.nzeroed > 0
+    @test s0.converged
+    a1, b1, s1 = MatrixCovers._cover_min_abslog2(A)
+    @test s1.nzeroed == 0
+    @test s1.converged
+    @test s1.nsolves < s0.nsolves
+    # The objective is flat at the minimizer, so the products agree only to
+    # about the square root of the objective tolerance.
+    @test cover_objective(AbsLog{2}(), a1, b1, A) ≈ cover_objective(AbsLog{2}(), a0, b0, A) rtol=1e-10
+    @test a1 .* b1' ≈ a0 .* b0' rtol=1e-7
+    @test iscover(a1, b1, A)
+    # Without the polish the iteration keeps zeroing.
+    _, _, s2 = MatrixCovers._cover_min_abslog2(A; polish=false)
+    @test s2.nzeroed > 0
+end
+
 @testset "MMC multiplier update is exact on an analytic problem" begin
     # A = [1 e; e 1]: the (1,2) constraint is active with multiplier λ* = 2, and
     # the violation contracts by exactly 2/(κ+1) per multiplier update.
@@ -889,4 +971,65 @@ end
 
     @test_throws "cover requires finite entries, got abs(A[1, 1]) = Inf" cover(sparse([Inf 1; 1 1]))
     @test_throws "cover requires finite entries, got abs(A[1, 1]) = NaN" cover([NaN 1; 1 1])
+end
+
+@testset "MMC transversal-tight difference grid" begin
+    MC = MatrixCovers
+    rng = StableRNG(3)
+    # The `:woodbury` path solves the difference grid; `:dense` the edge list.
+    A = exp.(randn(rng, 12, 12))
+    A[2, 5] = A[7, 1] = A[9, 9] = 0
+    a1, b1, s1 = MC._cover_min_abslog2(A; transversal=true, linsolve=:woodbury)
+    a2, b2, s2 = MC._cover_min_abslog2(A; transversal=true, linsolve=:dense)
+    @test s1.linsolve === :woodbury && s2.linsolve === :dense
+    @test a1 .* b1' ≈ a2 .* b2' rtol=1e-8
+    @test iscover(a1, b1, A) && iscover(a2, b2, A)
+
+    # Kernels agree with those of the equivalent edge list.
+    m, n, N = 7, 5, 9
+    C = randn(rng, m, n)
+    C[1, 2] = C[4, 4] = C[6, 1] = -Inf
+    # Unknown 3 is both a row and a column unknown; the entry pairing it with
+    # itself lies outside the support.
+    rowidx = [1, 2, 3, 4, 5, 1, 2]
+    colidx = [6, 7, 8, 9, 3]
+    C[3, 5] = -Inf
+    grid = MC.DiffGrid{Float64}(C, rowidx, colidx)
+    pos = [(i, j) for j in 1:n for i in 1:m if isfinite(C[i, j])]
+    elist = MC.EdgeList{Float64}([(rowidx[i], colidx[j]) for (i, j) in pos],
+                                 [C[i, j] for (i, j) in pos], -1.0)
+    x = randn(rng, N)
+    λg = zeros(m, n)
+    for (i, j) in pos
+        λg[i, j] = rand(rng) < 0.5 ? 0.0 : rand(rng)
+    end
+    λe = [λg[i, j] for (i, j) in pos]
+    κ = 10.0
+    sscale, bscale = inv(2κ), inv(2(κ - 1))
+    @test MC._fal(x, κ, λg, sscale, bscale, grid, false) ≈ MC._fal(x, κ, λe, sscale, bscale, elist, false)
+    patg = falses(m, n)
+    pate = falses(length(pos))
+    fg = zeros(N)
+    fe = zeros(N)
+    MC._assemble_difference!(fg, patg, x, κ, λg, bscale, true, grid)
+    MC._assemble_difference!(fe, pate, x, κ, λe, bscale, true, elist)
+    @test fg ≈ fe
+    @test [patg[i, j] for (i, j) in pos] == pate && count(patg) == count(pate)
+    @test MC._violated_pairs!(Tuple{Int,Int}[], patg, grid) == MC._violated_pairs!(Tuple{Int,Int}[], pate, elist)
+    patg = Matrix(patg)
+    vg, okg = MC._falpat(x, κ, λg, sscale, bscale, patg, grid, false)
+    ve, oke = MC._falpat(x, κ, λe, sscale, bscale, pate, elist, false)
+    @test vg ≈ ve && okg && oke
+    patg[1, 1] = !patg[1, 1]
+    pate[1] = !pate[1]
+    @test !MC._falpat(x, κ, λg, sscale, bscale, patg, grid, false)[2]
+    @test !MC._falpat(x, κ, λe, sscale, bscale, pate, elist, false)[2]
+    @test MC._update_multipliers!(λg, x, κ, 1e-3, grid, false) == MC._update_multipliers!(λe, x, κ, 1e-3, elist, false)
+    @test [λg[i, j] for (i, j) in pos] == λe
+    @test all(iszero, λg[.!isfinite.(C)])
+    @test MC._zero_slack_multipliers!(λg, x, 1e-3, grid, false) == MC._zero_slack_multipliers!(λe, x, 1e-3, elist, false)
+    @test [λg[i, j] for (i, j) in pos] == λe
+    @test MC._mark_supported!(falses(N), grid) == MC._mark_supported!(falses(N), elist)
+    @test_throws "a difference grid has no symmetric layout" MC._fal(x, κ, λg, sscale, bscale, grid, true)
+    @test_throws "a uniform shift cannot restore feasibility" MC._boost_shift(x, grid, false)
 end

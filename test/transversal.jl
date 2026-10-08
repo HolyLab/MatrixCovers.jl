@@ -171,5 +171,73 @@ end
     @test_throws "structurally nonsingular" cover_transversal([1.0 1; 0 0])
     @test_throws "structurally nonsingular" cover_transversal(sparse([1.0 1 1; 1 0 0; 1 0 0]))
     @test_throws "finite entries" cover_transversal([1.0 Inf; 1 1])
-    @test_throws "linsolve must be :auto, :dense, or :lsqr" cover_transversal(A; linsolve=:woodbury)
+    @test_throws "linsolve must be :auto, :dense, :lsqr, or :woodbury" cover_transversal(A; linsolve=:bad)
+end
+
+@testset "cover_transversal, linsolve=:woodbury" begin
+    tt(A; kw...) = _cover_min_abslog2(A; transversal=true, fname=:cover_transversal, kw...)
+    # Zeros in bands off the diagonal, within the limits of `:woodbury`: at most
+    # `n ÷ 4` per row and column and `4n` in total.
+    function addzeros(A)
+        n = size(A, 1)
+        B = copy(A)
+        for s in 1:min(4, n ÷ 4), i in 1:n
+            B[i, mod1(i + s, n)] = 0
+        end
+        return B
+    end
+    function compare(A)
+        ad, bd, sd = tt(A; linsolve=:dense)
+        aw, bw, sw = tt(A; linsolve=:woodbury)
+        @test sd.linsolve === :dense
+        @test sw.linsolve === :woodbury
+        @test sw.converged
+        # The objective is stationary at the minimizer, so it agrees far more
+        # tightly than the products.
+        mask = A .!= 0
+        @test (aw .* bw')[mask] ≈ (ad .* bd')[mask] rtol=1e-7
+        @test cover_objective(AbsLog{2}(), aw, bw, A) ≈ cover_objective(AbsLog{2}(), ad, bd, A) rtol=1e-10
+        @test iscover(aw, bw, A)
+        @test isbalanced(aw, bw, A)
+    end
+    rng = StableRNG(11)
+    for n in (5, 20, 60, 150)
+        A = exp.(randn(rng, n, n))
+        compare(A)
+        compare(addzeros(A))
+        dr = exp.(2 .* randn(rng, n))
+        dc = exp.(2 .* randn(rng, n))
+        @test covaries(M -> tt(M; linsolve=:woodbury)[1:2], addzeros(A), dr, dc; rtol=1e-6)
+    end
+    # Every transversal through the leading 3×3 block attains the maximum, so
+    # its rows form one tight component.
+    for n in (6, 20, 60)
+        A = exp.(randn(rng, n, n))
+        A[1:3, 1:3] .= 100
+        compare(A)
+        B = addzeros(A)
+        B[1:3, 1:3] .= 100
+        compare(B)
+    end
+
+    # Selection by `:auto`, and the limits of `:woodbury`.
+    A = exp.(randn(rng, 20, 20))
+    @test tt(A)[3].linsolve === :woodbury
+    S = sprand(rng, 40, 40, 0.1) + 5I
+    @test tt(S)[3].linsolve === :lsqr
+    Z = copy(A)
+    Z[1:6, 20] .= 0
+    @test tt(Z)[3].linsolve === :dense
+    @test_throws "at most min(m, n) ÷ 4 = 5 zeros; got 6" tt(Z; linsolve=:woodbury)
+    # Narrow types compute in Float64 and so take the same path; wider ones cannot.
+    a32, b32, s32 = tt(Float32.(A); linsolve=:woodbury)
+    @test s32.linsolve === :woodbury
+    @test eltype(a32) === Float32
+    @test iscover(a32, b32, Float32.(A))
+    @test_throws "requires Float64 arithmetic" tt(Double64.(A); linsolve=:woodbury)
+
+    # A large penalty weight pushes the condition estimate past the CG
+    # threshold, reaching the sparse Cholesky solve.
+    _, _, sc = tt(A; linsolve=:woodbury, κ=1e7, maxouter=2)
+    @test sc.cholsolves > 0
 end

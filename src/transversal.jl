@@ -33,11 +33,15 @@ augmented-Lagrangian solver of [`cover_min`](@ref) solves it, starting from the
 dual variables of the transversal, which are a hard cover tight on `σ`.
 
 The keywords `κ`, `maxouter`, `maxiter`, `fillbudget`, `flopbudget`, and
-`linsolve` are as for [`cover_min`](@ref), except that `linsolve=:woodbury` is
-not supported; `:auto` chooses `:lsqr` when the stored support fills at most a
-quarter of the grid and `:dense` otherwise. Sparse matrices default to `:lsqr`.
-As for [`cover_min`](@ref), an active-set method finishes a solve whose
-multiplier iteration stops early.
+`linsolve` are as for [`cover_min`](@ref). `linsolve=:woodbury` solves the
+row-scale system as a sparse matrix (conjugate gradients, or sparse Cholesky
+when poorly conditioned). For `n×n` `A`, it requires at most `n ÷ 4` zeros in
+every row and column, at most `4n` zeros in total, and `Float64` arithmetic
+(narrower types promote to `Float64`), and throws an `ArgumentError` otherwise.
+`:auto` chooses `:lsqr` when the stored support fills at most a quarter of the
+grid, `:woodbury` when its requirements hold, and `:dense` otherwise. Sparse
+matrices default to `:lsqr`. As for [`cover_min`](@ref), an active-set method
+finishes a solve whose multiplier iteration stops early.
 
 See also: [`cover_transversal!`](@ref), [`cover_min`](@ref).
 """

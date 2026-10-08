@@ -12,6 +12,114 @@
 # the edges of a tree tight fixes the differences of `u` along it, so each
 # linear solve is a graph Laplacian with one unknown per tree.
 
+# Constraint supports. Constraint `e` is a position in an `EdgeList`, or a
+# linear index into the matrix `C` of a difference grid; grid entries outside
+# the support are never seeded, never violated, and never active.
+
+# Difference grid with the per-row and per-column sums used to evaluate sums
+# over all of its entries in O(m + n + #entries outside the support).
+struct _DiffGridQP{T}
+    C::Matrix{T}
+    rowidx::Vector{Int}
+    colidx::Vector{Int}
+    outside::Vector{Tuple{Int,Int}}   # `(i, j)` of each entry outside the support
+    nfr::Vector{Int}                  # number of supported entries in each row
+    sr::Vector{T}                     # sum of the supported `C[i, j]` in each row
+    nfc::Vector{Int}                  # number of supported entries in each column
+    sc::Vector{T}                     # sum of the supported `C[i, j]` in each column
+    cmax::T                           # largest supported `|C[i, j]|`
+end
+
+function _qp_support(supp::EdgeList{T}) where {T}
+    supp.qsign == -oneunit(T) ||
+        throw(ArgumentError("the active-set polish requires difference constraints (an `EdgeList` with `qsign = -1`), got `qsign = $(string(supp.qsign))`"))
+    return supp
+end
+
+function _qp_support(supp::DiffGrid{T}) where {T}
+    C = supp.C
+    m, n = size(C)
+    outside = Tuple{Int,Int}[]
+    nfr, sr = zeros(Int, m), zeros(T, m)
+    nfc, sc = zeros(Int, n), zeros(T, n)
+    cmax = zero(T)
+    for j in axes(C, 2), i in axes(C, 1)
+        c = C[i, j]
+        if isfinite(c)
+            nfr[i] += 1
+            sr[i] += c
+            nfc[j] += 1
+            sc[j] += c
+            cmax = max(cmax, abs(c))
+        else
+            push!(outside, (i, j))
+        end
+    end
+    return _DiffGridQP{T}(C, supp.rowidx, supp.colidx, outside, nfr, sr, nfc, sc, cmax)
+end
+
+_nconstraints(s::EdgeList) = length(s.edges)
+_nconstraints(s::_DiffGridQP) = length(s.C)
+_nsupported(s::EdgeList) = length(s.edges)
+_nsupported(s::_DiffGridQP) = length(s.C) - length(s.outside)
+_cmax(s::EdgeList{T}) where {T} = maximum(abs, s.cvals; init=zero(T))
+_cmax(s::_DiffGridQP) = s.cmax
+
+_edge(s::EdgeList, e::Int) = s.edges[e]
+function _edge(s::_DiffGridQP, e::Int)
+    ij = CartesianIndices(s.C)[e]
+    return (s.rowidx[ij[1]], s.colidx[ij[2]])
+end
+_cval(s::EdgeList, e::Int) = s.cvals[e]
+_cval(s::_DiffGridQP, e::Int) = s.C[e]
+
+function _resid(u, s, e::Int)
+    pq = _edge(s, e)
+    return u[pq[1]] - u[pq[2]] - _cval(s, e)
+end
+
+# Flags marking the active constraints. The grid's flags are read inside a
+# vectorized sweep, which a `BitArray` would prevent.
+_active_flags(s::EdgeList) = falses(length(s.edges))
+_active_flags(s::_DiffGridQP) = fill(false, size(s.C))
+
+# Call `f(p, q)` for every supported constraint.
+function _foreach_constraint(f, s::EdgeList)
+    for pq in s.edges
+        f(pq[1], pq[2])
+    end
+    return nothing
+end
+function _foreach_constraint(f, s::_DiffGridQP)
+    C = s.C
+    for j in axes(C, 2)
+        q = s.colidx[j]
+        for i in axes(C, 1)
+            isfinite(C[i, j]) && f(s.rowidx[i], q)
+        end
+    end
+    return nothing
+end
+
+# Constraints with `u[p] - u[q] - c < τ`.
+function _seed_candidates(u, s::EdgeList, τ)
+    return [e for e in 1:_nconstraints(s) if _resid(u, s, e) < τ]
+end
+function _seed_candidates(u, s::_DiffGridQP, τ)
+    C = s.C
+    L = LinearIndices(C)
+    ur = u[s.rowidx]
+    cand = Int[]
+    for j in axes(C, 2)
+        uj = u[s.colidx[j]]
+        for i in eachindex(ur, view(C, :, j))
+            # Entries outside the support have residual `+Inf`.
+            ur[i] - uj - C[i, j] < τ && push!(cand, L[i, j])
+        end
+    end
+    return cand
+end
+
 # Trees of the forest `W`, each rooted at its smallest node.
 struct _Forest{T}
     tree::Vector{Int}     # tree of each node
@@ -22,10 +130,11 @@ struct _Forest{T}
     ntree::Int
 end
 
-function _Forest(nV::Int, edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, inW::BitVector) where {T}
+# `W` lists the active constraints in increasing order.
+function _Forest(nV::Int, supp::Union{EdgeList{T},_DiffGridQP{T}}, W::Vector{Int}) where {T}
     ptr = zeros(Int, nV + 1)
-    for (e, (p, q)) in enumerate(edges)
-        inW[e] || continue
+    for e in W
+        p, q = _edge(supp, e)
         ptr[p+1] += 1
         ptr[q+1] += 1
     end
@@ -33,8 +142,8 @@ function _Forest(nV::Int, edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, inW::
     cumsum!(ptr, ptr)
     adj = zeros(Int, ptr[end] - 1)
     cursor = ptr[1:nV]
-    for (e, (p, q)) in enumerate(edges)
-        inW[e] || continue
+    for e in W
+        p, q = _edge(supp, e)
         adj[cursor[p]] = e
         cursor[p] += 1
         adj[cursor[q]] = e
@@ -59,14 +168,15 @@ function _Forest(nV::Int, edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, inW::
             for s in ptr[v]:ptr[v+1]-1
                 e = adj[s]
                 e == pedge[v] && continue
-                p, q = edges[e]
+                p, q = _edge(supp, e)
                 w = p == v ? q : p
                 tree[w] == 0 || error("internal error: the active constraints contain a cycle")
                 tree[w] = ntree
                 parent[w] = v
                 pedge[w] = e
                 # Tight: `u[p] - u[q] == c[e]`.
-                off[w] = p == v ? off[v] - cvals[e] : off[v] + cvals[e]
+                c = _cval(supp, e)
+                off[w] = p == v ? off[v] - c : off[v] + c
                 push!(order, w)
             end
         end
@@ -74,11 +184,10 @@ function _Forest(nV::Int, edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, inW::
     return _Forest{T}(tree, order, parent, pedge, off, ntree)
 end
 
-# Flows `f` on the edges of `F` with `∑_w f[w] (e_p - e_q) = s`, written into `f`
-# (entries off the forest are zeroed). `s` must sum to zero on every tree; the
-# largest per-tree imbalance is returned.
-function _route!(f::Vector{T}, s::Vector{T}, F::_Forest{T}, edges) where {T}
-    fill!(f, zero(T))
+# Flows `f` on the edges of `F` with `∑_w f[w] (e_p - e_q) = s`, written into the
+# entries of `f` on the forest (other entries are left unchanged). `s` must sum
+# to zero on every tree; the largest per-tree imbalance is returned.
+function _route!(f::Vector{T}, s::Vector{T}, F::_Forest{T}, supp) where {T}
     S = copy(s)
     imbalance = zero(T)
     for k in length(F.order):-1:1
@@ -88,7 +197,7 @@ function _route!(f::Vector{T}, s::Vector{T}, F::_Forest{T}, edges) where {T}
             imbalance = max(imbalance, abs(S[v]))
             continue
         end
-        f[w] = edges[w][1] == v ? S[v] : -S[v]
+        f[w] = _edge(supp, w)[1] == v ? S[v] : -S[v]
         S[F.parent[v]] += S[v]
     end
     return imbalance
@@ -102,16 +211,113 @@ struct _TreeLaplacian{T,Fac}
     nfree::Int
 end
 
-function _TreeLaplacian(F::_Forest{T}, edges) where {T}
+function _TreeLaplacian(F::_Forest{T}, supp) where {T}
     nt = F.ntree
+    # When the tree-contracted graph has few vertices, accumulating its
+    # Laplacian densely and factoring it densely is cheaper than sorting a
+    # triplet list of three entries per edge and analyzing the sparsity pattern.
+    if nt^2 <= _nsupported(supp)
+        idx, L = _tree_laplacian_dense(F, supp)
+    else
+        idx, L = _tree_laplacian_triplets(F, supp)
+    end
+    fac = _laplacian_factor(L)
+    return _TreeLaplacian{T,typeof(fac)}(idx, fac, size(L, 1))
+end
+
+# Upper triangle of the Laplacian of the free trees, as a dense matrix.
+function _tree_laplacian_dense(F::_Forest{T}, supp::EdgeList) where {T}
+    nt = F.ntree
+    Lfull = zeros(T, nt, nt)
+    deg = zeros(Int, nt)
+    for (p, q) in supp.edges
+        tp, tq = F.tree[p], F.tree[q]
+        tp == tq && continue
+        deg[tp] += 1
+        deg[tq] += 1
+        Lfull[min(tp, tq), max(tp, tq)] -= one(T)
+    end
+    return _pin_tree_laplacian!(Lfull, deg)
+end
+
+# With `hr[t]` rows and `hc[t]` columns mapped into tree `t`, the grid has
+# `hr[t]·hc[t'] + hr[t']·hc[t]` entries joining trees `t ≠ t'`, less those
+# outside the support.
+function _tree_laplacian_dense(F::_Forest{T}, s::_DiffGridQP) where {T}
+    nt = F.ntree
+    trow = F.tree[s.rowidx]
+    tcol = F.tree[s.colidx]
+    hr = zeros(Int, nt)
+    hc = zeros(Int, nt)
+    for t in trow
+        hr[t] += 1
+    end
+    for t in tcol
+        hc[t] += 1
+    end
+    nr, nc = length(trow), length(tcol)
+    deg = [hr[t] * (nc - hc[t]) + hc[t] * (nr - hr[t]) for t in 1:nt]
+    Lfull = zeros(T, nt, nt)
+    for t2 in 1:nt, t1 in 1:t2-1
+        Lfull[t1, t2] = -T(hr[t1] * hc[t2] + hr[t2] * hc[t1])
+    end
+    for (i, j) in s.outside
+        tp, tq = trow[i], tcol[j]
+        tp == tq && continue
+        deg[tp] -= 1
+        deg[tq] -= 1
+        Lfull[min(tp, tq), max(tp, tq)] += one(T)
+    end
+    return _pin_tree_laplacian!(Lfull, deg)
+end
+
+# Given the strict upper triangle of the tree Laplacian in `Lfull` and the tree
+# degrees, pin the smallest tree of each connected component and return the
+# unknown of each tree with the upper triangle of the free block.
+function _pin_tree_laplacian!(Lfull::Matrix{T}, deg::Vector{Int}) where {T}
+    nt = length(deg)
+    # Breadth-first search for the connected components; the smallest tree of
+    # each is pinned and the others are the unknowns, numbered in tree order.
+    seen = falses(nt)
+    pinned = falses(nt)
+    queue = Int[]
+    for r in 1:nt
+        seen[r] && continue
+        seen[r] = pinned[r] = true
+        push!(queue, r)
+        while !isempty(queue)
+            t = pop!(queue)
+            for w in 1:nt
+                (seen[w] || iszero(Lfull[min(w, t), max(w, t)])) && continue
+                seen[w] = true
+                push!(queue, w)
+            end
+        end
+    end
+    for t in 1:nt
+        Lfull[t, t] = deg[t]
+    end
+    free = findall(.!pinned)
+    idx = zeros(Int, nt)
+    for (i, t) in enumerate(free)
+        idx[t] = i
+    end
+    return idx, Lfull[free, free]
+end
+
+function _tree_laplacian_triplets(F::_Forest{T}, supp) where {T}
+    nt = F.ntree
+    tree = F.tree
     # Union-find over trees to pick one pinned tree per connected component.
     uf = collect(1:nt)
     find(x) = (while uf[x] != x; uf[x] = uf[uf[x]]; x = uf[x]; end; x)
-    for (p, q) in edges
-        tp, tq = F.tree[p], F.tree[q]
-        tp == tq && continue
-        rp, rq = find(tp), find(tq)
-        rp == rq || (uf[max(rp, rq)] = min(rp, rq))
+    _foreach_constraint(supp) do p, q
+        tp, tq = tree[p], tree[q]
+        if tp != tq
+            rp, rq = find(tp), find(tq)
+            rp == rq || (uf[max(rp, rq)] = min(rp, rq))
+        end
+        return nothing
     end
     idx = zeros(Int, nt)
     nfree = 0
@@ -124,18 +330,18 @@ function _TreeLaplacian(F::_Forest{T}, edges) where {T}
     I = Int[]
     J = Int[]
     V = T[]
-    for (p, q) in edges
-        ip, iq = idx[F.tree[p]], idx[F.tree[q]]
-        F.tree[p] == F.tree[q] && continue
+    _foreach_constraint(supp) do p, q
+        tp, tq = tree[p], tree[q]
+        tp == tq && return nothing
+        ip, iq = idx[tp], idx[tq]
         ip > 0 && (push!(I, ip); push!(J, ip); push!(V, one(T)))
         iq > 0 && (push!(I, iq); push!(J, iq); push!(V, one(T)))
         if ip > 0 && iq > 0
             push!(I, min(ip, iq)); push!(J, max(ip, iq)); push!(V, -one(T))
         end
+        return nothing
     end
-    L = sparse(I, J, V, nfree, nfree)
-    fac = _laplacian_factor(L)
-    return _TreeLaplacian{T,typeof(fac)}(idx, fac, nfree)
+    return idx, sparse(I, J, V, nfree, nfree)
 end
 
 function _laplacian_factor(L::SparseMatrixCSC{Float64,Int})
@@ -146,7 +352,8 @@ function _laplacian_factor(L::SparseMatrixCSC{Float64,Int})
     return F
 end
 # Wider types: dense Cholesky of the upper triangle.
-_laplacian_factor(L::SparseMatrixCSC) = LinearAlgebra.cholesky(Symmetric(Matrix(L), :U))
+_laplacian_factor(L::SparseMatrixCSC) = _laplacian_factor(Matrix(L))
+_laplacian_factor(L::Matrix) = LinearAlgebra.cholesky!(Symmetric(L, :U))
 
 _laplacian_solve!(x::Vector{Float64}, F::SparseCholesky, b::Vector{Float64}) =
     isempty(b) ? x : solve!(x, F, CHOLMOD_A, b)
@@ -169,12 +376,12 @@ function _tree_solve(K::_TreeLaplacian, rhs::Vector{T}) where {T}
 end
 
 # Minimizer of the objective with every edge of `F` tight.
-function _tight_minimizer(F::_Forest{T}, K::_TreeLaplacian, edges, cvals::Vector{T}) where {T}
+function _tight_minimizer(F::_Forest{T}, K::_TreeLaplacian, supp::EdgeList) where {T}
     rhs = zeros(T, F.ntree)
-    for (e, (p, q)) in enumerate(edges)
+    for (e, (p, q)) in enumerate(supp.edges)
         tp, tq = F.tree[p], F.tree[q]
         tp == tq && continue
-        k = F.off[p] - F.off[q] - cvals[e]
+        k = F.off[p] - F.off[q] - supp.cvals[e]
         rhs[tp] -= k
         rhs[tq] += k
     end
@@ -182,92 +389,183 @@ function _tight_minimizer(F::_Forest{T}, K::_TreeLaplacian, edges, cvals::Vector
     return [y[F.tree[v]] + F.off[v] for v in eachindex(F.tree)]
 end
 
-# Objective gradient `∑ₑ dₑ gₑ` at `u`.
-function _difference_gradient(u::Vector{T}, edges, cvals::Vector{T}) where {T}
-    g = zeros(T, length(u))
-    for (e, (p, q)) in enumerate(edges)
-        d = u[p] - u[q] - cvals[e]
+function _tight_minimizer(F::_Forest{T}, K::_TreeLaplacian, s::_DiffGridQP) where {T}
+    # Edges within a tree contribute `-k` and `+k` to the same entry, so the
+    # sum may run over every constraint.
+    g = _difference_sums!(zeros(T, length(F.off)), F.off, s, true)
+    rhs = zeros(T, F.ntree)
+    for v in eachindex(F.tree, g)
+        rhs[F.tree[v]] -= g[v]
+    end
+    y = _tree_solve(K, rhs)
+    return [y[F.tree[v]] + F.off[v] for v in eachindex(F.tree)]
+end
+
+# Add `∑ₑ dₑ gₑ` to `g`, where `dₑ = v[p] - v[q] - c[e]` when `withc` and
+# `dₑ = v[p] - v[q]` otherwise.
+function _difference_sums!(g::Vector{T}, v::Vector{T}, s::EdgeList, withc::Bool) where {T}
+    cvals = s.cvals
+    for (e, (p, q)) in enumerate(s.edges)
+        d = withc ? v[p] - v[q] - cvals[e] : v[p] - v[q]
         g[p] += d
         g[q] -= d
     end
     return g
 end
 
+# Row `i` contributes `∑ⱼ (v[rowidx[i]] - v[colidx[j]] - C[i, j])` over its
+# supported entries, which is `nfr[i]·v[rowidx[i]]` less the sum of `v` over all
+# columns, plus that sum over the row's unsupported entries, less `sr[i]`;
+# columns are analogous.
+function _difference_sums!(g::Vector{T}, v::Vector{T}, s::_DiffGridQP, withc::Bool) where {T}
+    rowidx, colidx = s.rowidx, s.colidx
+    # A uniform shift of `v` changes no difference; centering limits cancellation.
+    vref = isempty(v) ? zero(T) : sum(v) / length(v)
+    vr = [v[p] - vref for p in rowidx]
+    vc = [v[q] - vref for q in colidx]
+    Svr, Svc = sum(vr), sum(vc)
+    rcorr = zeros(T, length(vr))
+    ccorr = zeros(T, length(vc))
+    for (i, j) in s.outside
+        rcorr[i] += vc[j]
+        ccorr[j] += vr[i]
+    end
+    for i in eachindex(rowidx, vr)
+        d = s.nfr[i] * vr[i] - (Svc - rcorr[i])
+        withc && (d -= s.sr[i])
+        g[rowidx[i]] += d
+    end
+    for j in eachindex(colidx, vc)
+        d = (Svr - ccorr[j]) - s.nfc[j] * vc[j]
+        withc && (d -= s.sc[j])
+        g[colidx[j]] -= d
+    end
+    return g
+end
+
+# Objective gradient `∑ₑ dₑ gₑ` at `u`.
+_difference_gradient(u::Vector{T}, supp) where {T} = _difference_sums!(zeros(T, length(u)), u, supp, true)
+
+# Most violated constraint outside `W` with residual below `de`, as `(e, de)`;
+# `e == 0` when there is none.
+function _most_violated(u::Vector{T}, inW, s::EdgeList, de::T) where {T}
+    e = 0
+    for k in 1:_nconstraints(s)
+        inW[k] && continue
+        dk = _resid(u, s, k)
+        if dk < de
+            e, de = k, dk
+        end
+    end
+    return e, de
+end
+
+function _most_violated(u::Vector{T}, inW::Matrix{Bool}, s::_DiffGridQP, de::T) where {T}
+    C = s.C
+    ur = u[s.rowidx]
+    jbest = 0
+    # Column minima of the residuals, with active and unsupported entries at `+Inf`.
+    for j in axes(C, 2)
+        uj = u[s.colidx[j]]
+        cj = view(C, :, j)
+        wj = view(inW, :, j)
+        mj = T(Inf)
+        @simd for i in _eachindex(cj, wj, ur)
+            d = ifelse(wj[i], T(Inf), ur[i] - uj - cj[i])
+            mj = ifelse(d < mj, d, mj)
+        end
+        if mj < de
+            jbest, de = j, mj
+        end
+    end
+    jbest == 0 && return 0, de
+    uj = u[s.colidx[jbest]]
+    for i in axes(C, 1)
+        if !inW[i, jbest] && ur[i] - uj - C[i, jbest] == de
+            return LinearIndices(C)[i, jbest], de
+        end
+    end
+    error("internal error: the most violated constraint was not found")
+end
+
 """
+    u, certified, nsteps = _polish_difference_qp(supp, u0; τ, maxsteps)
     u, certified, nsteps = _polish_difference_qp(edges, cvals, u0; τ, maxsteps)
 
-Minimize `½ ∑ₑ (u[p] - u[q] - cvals[e])²` subject to every term being
-nonnegative, starting from the near-optimal `u0`. Edges with
-`u0[p] - u0[q] - cvals[e] < τ` seed the active set, adding the tightest first and
-skipping any that would close a cycle. `certified` reports that the returned `u`
-satisfies the KKT conditions to tolerances proportional to the largest magnitude
-in `cvals` and `u0`; when it is false, `u` is `u0`. Each step factors a graph
-Laplacian, and `maxsteps` bounds their number. The constant on each connected component of the graph is
-taken from `u0`.
+Minimize `½ ∑ₑ (u[p] - u[q] - c[e])²` subject to every term being nonnegative,
+starting from the near-optimal `u0`. The constraints are those of `supp`, an
+`EdgeList` with `qsign = -1` or a `DiffGrid`, or the edges `(p, q)` with costs
+`cvals`. Constraints with `u0[p] - u0[q] - c[e] < τ` seed the active set, adding
+the tightest first and skipping any that would close a cycle. `certified`
+reports that the returned `u` satisfies the KKT conditions to tolerances
+proportional to the largest magnitude in `c` and `u0`; when it is false, `u` is
+`u0`. Each step factors a graph Laplacian, and `maxsteps` bounds their number.
+The constant on each connected component of the graph is taken from `u0`.
 """
-function _polish_difference_qp(edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, u0::Vector{T};
+function _polish_difference_qp(edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, u0::Vector{T}; kwargs...) where {T}
+    return _polish_difference_qp(EdgeList{T}(edges, cvals, -oneunit(T)), u0; kwargs...)
+end
+
+function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{T};
                                τ::Real=T(1e-4), maxsteps::Int=max(1000, 2 * length(u0))) where {T}
+    s = _qp_support(supp)
     nV = length(u0)
-    E = length(edges)
-    scale = max(oneunit(T), maximum(abs, cvals; init=zero(T)), maximum(abs, u0; init=zero(T)))
+    scale = max(oneunit(T), _cmax(s), maximum(abs, u0; init=zero(T)))
     ptol = 1000 * eps(T) * scale
-    dtol = ptol * max(1, E)
-    resid(u, e) = u[edges[e][1]] - u[edges[e][2]] - cvals[e]
+    dtol = ptol * max(1, _nsupported(s))
     # Seed: Kruskal's algorithm on the nearly tight edges, tightest first.
-    cand = [e for e in 1:E if resid(u0, e) < τ]
-    sort!(cand; by=e -> resid(u0, e))
+    cand = _seed_candidates(u0, s, τ)
+    sort!(cand; by=e -> _resid(u0, s, e))
     uf = collect(1:nV)
     find(x) = (while uf[x] != x; uf[x] = uf[uf[x]]; x = uf[x]; end; x)
-    inW = falses(E)
+    inW = _active_flags(s)
+    W = Int[]   # the active constraints, in increasing order
     for e in cand
-        rp, rq = find(edges[e][1]), find(edges[e][2])
+        p, q = _edge(s, e)
+        rp, rq = find(p), find(q)
         rp == rq && continue
         uf[rp] = rq
         inW[e] = true
+        push!(W, e)
     end
+    sort!(W)
+    # Multipliers and their rates; only the entries in `W` are meaningful.
+    E = _nconstraints(s)
     λ = zeros(T, E)
+    r = zeros(T, E)
     nsteps = 0
     u = u0
-    u, nsteps = _dual_feasible!(inW, λ, edges, cvals, nV, dtol, nsteps, maxsteps)
-    r = zeros(T, E)
+    u, nsteps = _dual_feasible!(inW, W, λ, s, nV, dtol, nsteps, maxsteps)
     certified = false
     while nsteps <= maxsteps
-        # Most violated constraint outside `W`.
-        e = 0
-        de = -ptol
-        for k in 1:E
-            inW[k] && continue
-            dk = resid(u, k)
-            if dk < de
-                e, de = k, dk
-            end
-        end
+        e, de = _most_violated(u, inW, s, -ptol)
         if e == 0
-            certified = all(k -> !inW[k] || λ[k] >= -dtol, 1:E)
+            certified = all(k -> λ[k] >= -dtol, W)
             break
         end
-        p, q = edges[e]
+        p, q = _edge(s, e)
         λe = zero(T)
         added = false
         while !added && nsteps <= maxsteps
             nsteps += 1
-            F = _Forest(nV, edges, cvals, inW)
+            F = _Forest(nV, s, W)
             if F.tree[p] == F.tree[q]
                 # `gₑ` is a combination of the tree path from `p` to `q`: shift
                 # multiplier weight onto `e` until one on the path reaches zero.
-                s = zeros(T, nV)
-                s[p] -= one(T)
-                s[q] += one(T)
-                _route!(r, s, F, edges)
-                t, wb = _ratio_test(λ, r, inW)
+                sv = zeros(T, nV)
+                sv[p] -= one(T)
+                sv[q] += one(T)
+                _route!(r, sv, F, s)
+                t, wb = _ratio_test(λ, r, W)
                 wb == 0 && return u0, false, nsteps   # the constraints are infeasible
-                @. λ += t * r
+                for w in W
+                    λ[w] += t * r[w]
+                end
                 λe += t
-                λ[wb] = zero(T)
-                inW[wb] = false
+                _deactivate!(inW, W, λ, wb)
                 continue
             end
-            K = _TreeLaplacian(F, edges)
+            K = _TreeLaplacian(F, s)
             rhs = zeros(T, F.ntree)
             rhs[F.tree[p]] += one(T)
             rhs[F.tree[q]] -= one(T)
@@ -276,77 +574,81 @@ function _polish_difference_qp(edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, 
             a = z[p] - z[q]
             a > 0 || return u0, false, nsteps
             # Rates of the multipliers in `W`: route `L z - gₑ` onto the forest.
-            s = zeros(T, nV)
-            for (k, (pk, qk)) in enumerate(edges)
-                δ = z[pk] - z[qk]
-                s[pk] += δ
-                s[qk] -= δ
-            end
-            s[p] -= one(T)
-            s[q] += one(T)
-            _route!(r, s, F, edges)
-            tf = -resid(u, e) / a
-            tp, wb = _ratio_test(λ, r, inW)
+            sv = _difference_sums!(zeros(T, nV), z, s, false)
+            sv[p] -= one(T)
+            sv[q] += one(T)
+            _route!(r, sv, F, s)
+            tf = -_resid(u, s, e) / a
+            tp, wb = _ratio_test(λ, r, W)
             t = min(tf, tp)
             u = u .+ t .* z
-            @. λ += t * r
+            for w in W
+                λ[w] += t * r[w]
+            end
             λe += t
             if tf <= tp
                 inW[e] = true
+                insert!(W, searchsortedfirst(W, e), e)
                 λ[e] = λe
                 added = true
             else
-                λ[wb] = zero(T)
-                inW[wb] = false
+                _deactivate!(inW, W, λ, wb)
             end
         end
         added || break
         # Recompute from `W` alone, so rounding does not accumulate.
-        u, nsteps = _dual_feasible!(inW, λ, edges, cvals, nV, dtol, nsteps, maxsteps)
+        u, nsteps = _dual_feasible!(inW, W, λ, s, nV, dtol, nsteps, maxsteps)
     end
     certified || return u0, false, nsteps
-    # Restore each component's constant from `u0`.
+    # Restore each component's constant from `u0`. (`u` is reassigned above, so
+    # capturing it in a closure would box it; `ustar` is bound once.)
+    ustar = u
     uf .= 1:nV
-    for (p, q) in edges
+    _foreach_constraint(s) do p, q
         rp, rq = find(p), find(q)
         rp == rq || (uf[max(rp, rq)] = min(rp, rq))
+        return nothing
     end
     shift = zeros(T, nV)
     for v in 1:nV
         rv = find(v)
-        rv == v && (shift[v] = u0[v] - u[v])
+        rv == v && (shift[v] = u0[v] - ustar[v])
     end
-    return [u[v] + shift[find(v)] for v in 1:nV], true, nsteps
+    return [ustar[v] + shift[find(v)] for v in 1:nV], true, nsteps
+end
+
+function _deactivate!(inW, W::Vector{Int}, λ, w::Int)
+    λ[w] = zero(eltype(λ))
+    inW[w] = false
+    deleteat!(W, searchsortedfirst(W, w))
+    return nothing
 end
 
 # Drop the edges of `W` with negative multipliers until none remain, and return
 # the tight minimizer of `W` with the step count; `λ` holds the multipliers.
-function _dual_feasible!(inW::BitVector, λ::Vector{T}, edges, cvals::Vector{T}, nV::Int, dtol,
+function _dual_feasible!(inW, W::Vector{Int}, λ::Vector{T}, supp, nV::Int, dtol,
                          nsteps::Int, maxsteps::Int) where {T}
     while true
-        F = _Forest(nV, edges, cvals, inW)
-        K = _TreeLaplacian(F, edges)
-        u = _tight_minimizer(F, K, edges, cvals)
-        _route!(λ, _difference_gradient(u, edges, cvals), F, edges)
-        dropped = false
-        for e in eachindex(λ)
-            if inW[e] && λ[e] < -dtol
-                inW[e] = false
-                dropped = true
-            end
+        F = _Forest(nV, supp, W)
+        K = _TreeLaplacian(F, supp)
+        u = _tight_minimizer(F, K, supp)
+        _route!(λ, _difference_gradient(u, supp), F, supp)
+        nW = length(W)
+        for e in W
+            λ[e] < -dtol && (inW[e] = false)
         end
-        (dropped && nsteps < maxsteps) || return u, nsteps
+        filter!(e -> inW[e], W)
+        (length(W) < nW && nsteps < maxsteps) || return u, nsteps
         nsteps += 1
     end
 end
 
 # Largest step `t` keeping `λ + t r ≥ 0` on `W`, and the edge that blocks it
 # (0 when none does).
-function _ratio_test(λ::Vector{T}, r::Vector{T}, inW::BitVector) where {T}
+function _ratio_test(λ::Vector{T}, r::Vector{T}, W::Vector{Int}) where {T}
     t = T(Inf)
     wb = 0
-    for w in eachindex(λ)
-        inW[w] || continue
+    for w in W
         if r[w] < 0
             tw = max(λ[w], zero(T)) / -r[w]
             if tw < t
@@ -362,9 +664,9 @@ end
 # stacked layout `(α; β)` an entry's residual is `α[i] + β[j] - c`, which is a
 # difference in `(α; -β)`; the transversal layout is a difference already.
 function _polish_cover(x::Vector{T}, supp::EdgeList{T}, m::Int) where {T}
-    supp.qsign < 0 && return _polish_difference_qp(supp.edges, supp.cvals, x)
+    supp.qsign < 0 && return _polish_difference_qp(supp, x)
     flip(u) = [k <= m ? u[k] : -u[k] for k in eachindex(u)]
-    u, certified, nsteps = _polish_difference_qp(supp.edges, supp.cvals, flip(x))
+    u, certified, nsteps = _polish_difference_qp(EdgeList{T}(supp.edges, supp.cvals, -oneunit(T)), flip(x))
     return flip(u), certified, nsteps
 end
 
@@ -379,3 +681,5 @@ function _polish_cover(x::Vector{T}, supp::Grid{T}, m::Int) where {T}
     end
     return _polish_cover(x, EdgeList{T}(edges, cvals), m)
 end
+
+_polish_cover(x::Vector{T}, supp::DiffGrid{T}, m::Int) where {T} = _polish_difference_qp(supp, x)
