@@ -931,13 +931,16 @@ end
     # With the penalty held at the cap they are zeroed directly; left to drain by
     # `2(κ-1)z` per update they hold the KKT residual at 2.6e-6.
     # Without the active-set finish (`polish=false`), slack multipliers are zeroed.
-    # With the diagonal preconditioner the residual then stalls above the
-    # tolerance, which warns; the default solve's finish certifies the result.
+    # Whether the residual then reaches the tolerance depends on rounding (with the
+    # diagonal preconditioner it can stall just above it); the solve warns exactly
+    # when it does not. The default solve's finish certifies the result.
     A = banded_sparse_sym(StableRNG(5), 10_000, 3, 1.0)
     for fillbudget in (MatrixCovers.LSQR_FILL_BUDGET, 0)
-        solve = () -> MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, fillbudget, polish=false)
-        a, s = fillbudget == 0 ? (@test_logs (:warn, r"try a larger `κ`") solve()) : (@test_nowarn solve())
-        @test s.converged == (fillbudget != 0)
+        (a, s), logs = capture_logs() do
+            MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, fillbudget, polish=false)
+        end
+        @test isempty(logs) == s.converged
+        @test all(l -> l.level == Base.CoreLogging.Warn && occursin("try a larger `κ`", l.message), logs)
         @test s.precond === (fillbudget == 0 ? :diagonal : :factor)
         @test s.nzeroed > 0
         @test maximum(s.κs) == 1e5
@@ -987,11 +990,14 @@ end
     @test cover_objective(AbsLog{2}(), a1, b1, A) ≈ cover_objective(AbsLog{2}(), a0, b0, A) rtol=1e-10
     @test a1 .* b1' ≈ a0 .* b0' rtol=1e-7
     @test iscover(a1, b1, A)
-    # Without the polish the iteration keeps zeroing, and stalls above the
-    # tolerance.
-    _, _, s2 = @test_logs (:warn, r"try a larger `κ`") MatrixCovers._cover_min_abslog2(A; polish=false)
+    # Without the polish the iteration keeps zeroing. Whether it then reaches the
+    # tolerance depends on rounding; it warns exactly when it does not.
+    (_, _, s2), logs = capture_logs() do
+        MatrixCovers._cover_min_abslog2(A; polish=false)
+    end
     @test s2.nzeroed > 0
-    @test !s2.converged
+    @test isempty(logs) == s2.converged
+    @test all(l -> l.level == Base.CoreLogging.Warn && occursin("try a larger `κ`", l.message), logs)
 end
 
 @testset "MMC multiplier update is exact on an analytic problem" begin

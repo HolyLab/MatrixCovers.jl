@@ -234,13 +234,14 @@ function symcover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=SYMCOVER_MIN_
     isempty(strategies) &&
         throw(ArgumentError("symcover_min: `strategies` must name at least one starting cover"))
     T = float(real(eltype(A)))
-    starts = [similar(Array{T}, ax) for _ in strategies]
+    a0 = similar(Array{T}, ax)
+    starts = [similar(a0) for _ in strategies]
     # Skip strategies that cannot produce a start for `A`.
     built = [_initialize_symcover!(a, A, strategy, :inflate) for (a, strategy) in zip(starts, strategies)]
     any(built) ||
         throw(ArgumentError("symcover_min: no strategy in $(string(strategies)) yields a starting cover of `A`"))
     labels = Symbol[strategy for (strategy, ok) in zip(strategies, built) if ok]
-    covers = [a for (a, ok) in zip(starts, built) if ok]
+    covers = starts[built]
     stats = [last(symcover_min!(ϕ, a, A))::ExternalSolverStats for a in covers]
     objs = [cover_objective(ϕ, a, A) for a in covers]
     k = _multistart_select(objs)

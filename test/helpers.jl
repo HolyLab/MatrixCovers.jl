@@ -13,6 +13,14 @@ scales(r::Tuple{AbstractVector,MatrixCovers.AbstractCoverStats}) = r[1]
 scales(r::Tuple{AbstractVector,AbstractVector}) = r
 scales(r::Tuple{AbstractVector,AbstractVector,MatrixCovers.AbstractCoverStats}) = (r[1], r[2])
 
+# `f()` and the log records it emits, for checks where whether a warning is
+# expected depends on rounding.
+function capture_logs(f)
+    logger = Test.TestLogger()
+    value = Base.CoreLogging.with_logger(f, logger)
+    return value, logger.logs
+end
+
 """
     isbalanced(a, b, A)
 

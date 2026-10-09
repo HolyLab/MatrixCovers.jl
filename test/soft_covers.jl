@@ -331,7 +331,8 @@ end
         x[1] == bad && throw(MatrixCovers.SolverFailure("refinement failed"))
         return ESS(:Ipopt, [:LOCALLY_SOLVED], [x[1]], [1], [0.0])
     end
-    run(bad) = MatrixCovers._multistart_run(ESS, builder, (x, A) -> refine!(x, A, bad), objective,
+    run(bad) = MatrixCovers._multistart_run(MatrixCovers.ExternalSolverStats, builder,
+                                            (x, A) -> refine!(x, A, bad), objective,
                                             ones(1, 1), 4, 2.0, nothing)
     # A failed random start is excluded from the selection, even when its start is best.
     x, stats = @inferred run(0.5)
