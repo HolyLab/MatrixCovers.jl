@@ -1171,13 +1171,16 @@ end
 const AL_PENALTY = 1e2
 const AL_MAXOUTER = 32
 
-# Warn when the outer iteration ends with a KKT residual well above the
-# inner solver's accuracy floor and no active-set finish certified the result.
+# Warn when the returned scales may not minimize the objective: an active-set
+# finish ran and did not certify a minimizer, or none ran and the outer
+# iteration ended with a KKT residual well above the inner solver's accuracy
+# floor. With `maxouter = 0` there is no iteration and no warning.
 function _warn_unconverged(fname::Symbol, stats, maxouter::Int)
-    stats.converged && return nothing
+    (stats.converged || maxouter == 0) && return nothing
     v = isempty(stats.kkt) ? oftype(stats.vwarn, NaN) : stats.kkt[end]
-    v > stats.vwarn || return nothing
-    advice = haskey(stats, :polish) && !stats.polish.certified ?
+    uncertified = haskey(stats, :polish) && !stats.polish.certified
+    uncertified || v > stats.vwarn || return nothing
+    advice = uncertified ?
              "The active-set finish that follows the multiplier iteration did not certify a minimizer, so the result is the multiplier iterate." :
              stats.nouter < maxouter ? "The residual stopped contracting before the update limit, so a larger `maxouter` will not help; try a larger `κ`." :
                                        "Increase `maxouter` or `κ`."
@@ -1343,11 +1346,12 @@ _dense_factor_type(::Type{T}) where {T} = LinearAlgebra.LU{T,Matrix{T},Vector{In
 # log scales and a statistics tuple: the final multipliers (`multipliers`, laid
 # out by `_multiplier_storage`), inner solve and iteration counts, the
 # LSQR iterations of each solve (`lsqrtrace`), the per-update exits, drops, KKT
-# residuals (`kkt`) and penalty weights (`κs`), the convergence flag with its
-# tolerances, the `linsolve` and `precond` choices, the full Cholesky
-# preconditioner's predicted entry count `fill_entries` and flop count
-# `factor_flops` (`0` and `0.0` without a factor), the number of numeric
-# factorizations `nrefactor` (full or heavy-forest), the numbers of LSQR solves
+# residuals (`kkt`) and penalty weights (`κs`), the convergence flag
+# (`kkt[end] <= vtol`; always `false` for `maxouter = 0`) with its tolerances,
+# the `linsolve` and `precond` choices, the full Cholesky preconditioner's
+# predicted entry count `fill_entries` and flop count `factor_flops` (`0` and
+# `0.0` without a factor), the number of numeric factorizations `nrefactor`
+# (full or heavy-forest), the numbers of LSQR solves
 # preconditioned by the heavy-forest factor (`nforest`) and by the diagonal
 # (`ndiagonal`) when the full factor is over budget, and the number `nzeroed`
 # of positive multipliers zeroed directly on entries with slack while the
@@ -1835,7 +1839,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     drops = T[]
     viols = T[]
     κtrace = T[]
-    converged = maxouter == 0
+    converged = false
     vprev = T(Inf)
     nstall = 0
     vbest = T(Inf)   # residual that the next tenfold contraction is measured from
@@ -1938,7 +1942,11 @@ end
 # With `polish`, the active-set solver of `_polish_symcover` finishes a
 # multiplier iteration that stops before converging, and the iteration then
 # stops at its first stall at the penalty cap rather than zeroing slack
-# multipliers (`zeroslack`, which defaults to `!polish`).
+# multipliers (`zeroslack`, which defaults to `!polish`). When the finish runs,
+# `stats.polish` holds `certified`, the step count `nsteps`, and the KKT check of
+# `_polish_difference_qp` (`primal`, `ptol`, `dual`, `dtol`), and
+# `stats.converged == stats.polish.certified`. A certified finish replaces the
+# multiplier iterate, so `stats.kkt` then describes the iterate, not the result.
 function _symcover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
                                maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
                                boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET,
@@ -2045,9 +2053,9 @@ function _symcover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter:
          T[hassupp[ip] ? log(T(start[i])) : zero(T) for (ip, i) in enumerate(ax)]
     α, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve, boost, fillbudget, flopbudget, zeroslack)
     if polish && !stats.converged && maxouter > 0
-        α, certified, nsteps = _polish_symcover(α, supp; multipliers=stats.multipliers,
-                                                budgets=(; fillbudget, flopbudget))
-        stats = merge(stats, (; converged=certified, polish=(; certified, nsteps)))
+        α, certified, nsteps, kkt = _polish_symcover(α, supp; multipliers=stats.multipliers,
+                                                     budgets=(; fillbudget, flopbudget))
+        stats = merge(stats, (; converged=certified, polish=(; certified, nsteps, kkt...)))
     end
     _warn_unconverged(fname, stats, maxouter)
     _check_representable(α, ip -> hassupp[ip], nothing, nothing, T, fname; gauge=false)
@@ -2068,7 +2076,8 @@ end
 # transversal. With `polish`, the active-set solver of `_polish_cover` finishes
 # a multiplier iteration that stops before converging, and the iteration then
 # stops at its first stall at the penalty cap rather than zeroing slack
-# multipliers (`zeroslack`, which defaults to `!polish`).
+# multipliers (`zeroslack`, which defaults to `!polish`). `stats` is as for
+# `_symcover_min_abslog2`.
 function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
                             maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
                             boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET,
@@ -2304,9 +2313,9 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     x, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve,
                                boost=boost && !tt, fillbudget, flopbudget, zeroslack)
     if polish && !stats.converged && maxouter > 0
-        x, certified, nsteps = _polish_cover(x, supp, m; multipliers=stats.multipliers,
-                                             budgets=(; fillbudget, flopbudget))
-        stats = merge(stats, (; converged=certified, polish=(; certified, nsteps)))
+        x, certified, nsteps, kkt = _polish_cover(x, supp, m; multipliers=stats.multipliers,
+                                                  budgets=(; fillbudget, flopbudget))
+        stats = merge(stats, (; converged=certified, polish=(; certified, nsteps, kkt...)))
     end
     _warn_unconverged(fname, stats, maxouter)
     if tt

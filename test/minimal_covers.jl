@@ -85,6 +85,17 @@ end
     stats = (; converged=false, kkt=(1.0,), vtol=1e-13, vwarn=1e-10, nouter=3,
              polish=(; certified=false, nsteps=5))
     @test_logs (:warn, r"active-set finish .* did not certify") MatrixCovers._warn_unconverged(:symcover_min, stats, 32)
+    # An uncertified finish warns even when the residual is below `vwarn`.
+    stats = merge(stats, (; kkt=(1e-12,)))
+    @test_logs (:warn, r"active-set finish .* did not certify") MatrixCovers._warn_unconverged(:symcover_min, stats, 32)
+    # A certified finish reports a KKT check that meets its tolerances.
+    _, s = MatrixCovers._symcover_min_abslog2(A; maxouter=3)
+    @test s.converged && s.polish.certified
+    @test s.polish.primal <= s.polish.ptol && s.polish.dual <= s.polish.dtol
+    # With no outer iteration nothing is checked, so the result is not
+    # reported as converged, and there is no warning.
+    _, s0 = @test_logs MatrixCovers._symcover_min_abslog2(A; maxouter=0, boost=false, fname=:soft_symcover)
+    @test !s0.converged && s0.nouter == 0 && !haskey(s0, :polish)
 end
 
 @testset "cover_min native AbsLog{2}" begin
