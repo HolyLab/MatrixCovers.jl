@@ -4,7 +4,7 @@
 
     @testset "Float32 flows through the family" begin
         A = Float32[4 1.5; 1.5 1]
-        for a in (symcover(A), soft_symcover(A), soft_symcover(AbsLog{1}(), A),
+        for a in (symcover(A), first(soft_symcover(A)), soft_symcover(AbsLog{1}(), A),
                   soft_symcover(AbsLinear{1}(), A), first(symcover_min(AbsLog{2}(), A)),
                   first(soft_symcover(AbsLog{2}(), A)))
             @test eltype(a) === Float32
@@ -77,7 +77,7 @@
 
     @testset "BigFloat flows through the family" begin
         A = BigFloat[4 1.5; 1.5 1]
-        for a in (symcover(A), soft_symcover(A), first(symcover_min(AbsLog{2}(), A)),
+        for a in (symcover(A), first(soft_symcover(A)), first(symcover_min(AbsLog{2}(), A)),
                   first(soft_symcover(AbsLog{2}(), A)))
             @test eltype(a) === BigFloat
             @test all(isfinite, a)

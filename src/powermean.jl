@@ -43,15 +43,29 @@ _powermean_type(Ts::Type...) = float(promote_type(Ts..., Float64))
 # Public methods
 # ============================================================
 
-soft_cover(ϕ::PowerMean, A::AbstractMatrix; kwargs...) =
-    _soft_cover_powermean(ϕ, A, :soft_cover; kwargs...)
-soft_cover!(ϕ::PowerMean, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
-    _soft_cover_powermean!(ϕ, a, b, A, :soft_cover!; kwargs...)
+function soft_cover(ϕ::PowerMean, A::AbstractMatrix; tol::Union{Real,Nothing}=nothing,
+                    maxiter::Integer=POWERMEAN_MAXITER, newton::Bool=true,
+                    maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto)
+    return _soft_cover_powermean(ϕ, A, :soft_cover; tol, maxiter, newton, maxnewton, linsolve)
+end
 
-soft_symcover(ϕ::PowerMean, A::AbstractMatrix; kwargs...) =
-    _soft_symcover_powermean(ϕ, A, :soft_symcover; kwargs...)
-soft_symcover!(ϕ::PowerMean, a::AbstractVector, A::AbstractMatrix; kwargs...) =
-    _soft_symcover_powermean!(ϕ, a, A, :soft_symcover!; kwargs...)
+function soft_cover!(ϕ::PowerMean, a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
+                     tol::Union{Real,Nothing}=nothing, maxiter::Integer=POWERMEAN_MAXITER,
+                     newton::Bool=true, maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto)
+    return _soft_cover_powermean!(ϕ, a, b, A, :soft_cover!; tol, maxiter, newton, maxnewton, linsolve)
+end
+
+function soft_symcover(ϕ::PowerMean, A::AbstractMatrix; tol::Union{Real,Nothing}=nothing,
+                       maxiter::Integer=POWERMEAN_MAXITER, newton::Bool=true,
+                       maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto)
+    return _soft_symcover_powermean(ϕ, A, :soft_symcover; tol, maxiter, newton, maxnewton, linsolve)
+end
+
+function soft_symcover!(ϕ::PowerMean, a::AbstractVector, A::AbstractMatrix;
+                        tol::Union{Real,Nothing}=nothing, maxiter::Integer=POWERMEAN_MAXITER,
+                        newton::Bool=true, maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto)
+    return _soft_symcover_powermean!(ϕ, a, A, :soft_symcover!; tol, maxiter, newton, maxnewton, linsolve)
+end
 
 # ============================================================
 # Drivers
@@ -64,8 +78,8 @@ soft_symcover!(ϕ::PowerMean, a::AbstractVector, A::AbstractMatrix; kwargs...) =
 # The `:covariant` start makes a truncated iteration scale-covariant as well.
 function _soft_cover_powermean(ϕ::PowerMean, A::AbstractMatrix, fname::Symbol; kwargs...)
     if _abs_symmetric_exact(A)
-        a = _soft_symcover_powermean(ϕ, A, fname; kwargs...)
-        return a, copy(a)
+        a, stats = _soft_symcover_powermean(ϕ, A, fname; kwargs...)
+        return a, copy(a), stats
     end
     T = float(real(eltype(A)))
     a = similar(Array{T}, axes(A, 1))
@@ -77,14 +91,14 @@ end
 
 function _soft_cover_powermean!(::PowerMean{p}, a::AbstractVector, b::AbstractVector,
                                 A::AbstractMatrix, fname::Symbol;
-                                tol::Union{Real,Nothing}=nothing, kwargs...) where p
+                                tol, maxiter, newton, maxnewton, linsolve) where p
     _prepare_soft_cover_start!(a, b, A, fname)
     T = _powermean_type(eltype(a), eltype(b), real(eltype(A)))
     rtol = _powermean_tol(T, tol)
     R, C = _log_support(_row_support(A, T)), _log_support(_col_support(A, T))
     α = map(x -> x > 0 ? log(T(x)) : zero(T), a)
     β = map(x -> x > 0 ? log(T(x)) : zero(T), b)
-    stats = _powermean_solve!(α, β, R, C, T(p), rtol; kwargs...)
+    stats = _powermean_solve!(α, β, R, C, T(p), rtol; maxiter, newton, maxnewton, linsolve)
     _warn_powermean_unconverged(fname, stats, :sweeps)
     _check_representable(α, i -> !isempty(_slots(R, i)), β, j -> !isempty(_slots(C, j)), T, fname; gauge=true)
     for i in eachindex(a, α)
@@ -93,7 +107,8 @@ function _soft_cover_powermean!(::PowerMean{p}, a::AbstractVector, b::AbstractVe
     for j in eachindex(b, β)
         b[j] = isempty(_slots(C, j)) ? zero(eltype(b)) : exp(β[j])
     end
-    return _balance_cover!(a, b, A)
+    _balance_cover!(a, b, A)
+    return a, b, PowerMeanStats{T}(stats)
 end
 
 function _soft_symcover_powermean(ϕ::PowerMean, A::AbstractMatrix, fname::Symbol; kwargs...)
@@ -106,20 +121,20 @@ function _soft_symcover_powermean(ϕ::PowerMean, A::AbstractMatrix, fname::Symbo
 end
 
 function _soft_symcover_powermean!(::PowerMean{p}, a::AbstractVector, A::AbstractMatrix, fname::Symbol;
-                                   tol::Union{Real,Nothing}=nothing, kwargs...) where p
+                                   tol, maxiter, newton, maxnewton, linsolve) where p
     _prepare_soft_symcover_start!(a, A, fname)
     T = _powermean_type(eltype(a), real(eltype(A)))
     rtol = _powermean_tol(T, tol)
     S = _log_support(_sym_support(A, T))
     α = map(x -> x > 0 ? log(T(x)) : zero(T), a)
-    stats = _powermean_symsolve!(α, S, T(p), rtol; kwargs...)
+    stats = _powermean_symsolve!(α, S, T(p), rtol; maxiter, newton, maxnewton, linsolve)
     _warn_powermean_unconverged(fname, stats, :updates)
     _balance_bipartite_sym!(α, S)
     _check_representable(α, i -> !isempty(_slots(S, i)), nothing, nothing, T, fname; gauge=false)
     for i in eachindex(a, α)
         a[i] = isempty(_slots(S, i)) ? zero(eltype(a)) : exp(α[i])
     end
-    return a
+    return a, PowerMeanStats{T}(stats)
 end
 
 # Whether `axes(A, 1) == axes(A, 2)` and `abs(A[i,j]) == abs(A[j,i])` for all `i, j`.

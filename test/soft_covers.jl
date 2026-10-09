@@ -76,7 +76,7 @@ end
 
     # Default dispatch uses PowerMean{2}
     A = [2.0 1.0; 1.0 3.0]
-    @test soft_symcover(A) == soft_symcover(PowerMean{2}(), A)
+    @test first(soft_symcover(A)) == first(soft_symcover(PowerMean{2}(), A))
 end
 
 @testset "soft_cover" begin
@@ -96,7 +96,7 @@ end
 
     # Default dispatch uses PowerMean{2}
     A = [1.0 2.0 3.0; 6.0 5.0 4.0]
-    @test soft_cover(A) == soft_cover(PowerMean{2}(), A)
+    @test scales(soft_cover(A)) == scales(soft_cover(PowerMean{2}(), A))
 
     # The returned objective never exceeds that of the geometric-mean start.
     for A in ([1.0 2.0 3.0; 6.0 5.0 4.0],
@@ -491,10 +491,10 @@ end
 
     @testset "no-ϕ form defaults to PowerMean{2}" begin
         a1, a2 = initialize_symcover(Asym; strategy=:geomean, feasible=:none), initialize_symcover(Asym; strategy=:geomean, feasible=:none)
-        @test soft_symcover!(a1, Asym) == soft_symcover!(PowerMean{2}(), a2, Asym)
+        @test first(soft_symcover!(a1, Asym)) == first(soft_symcover!(PowerMean{2}(), a2, Asym))
         b1, c1 = initialize_cover(Agen; strategy=:geomean, feasible=:none)
         b2, c2 = initialize_cover(Agen; strategy=:geomean, feasible=:none)
-        @test soft_cover!(b1, c1, Agen) == soft_cover!(PowerMean{2}(), b2, c2, Agen)
+        @test scales(soft_cover!(b1, c1, Agen)) == scales(soft_cover!(PowerMean{2}(), b2, c2, Agen))
     end
 
     # Convex refiners ignore the basin; nonconvex refiners do not.
@@ -604,7 +604,7 @@ MatrixCovers.require_abs_symmetric(::HookOnlyMatrix, fname) = nothing
         end
     end
 
-    @test soft_symcover(PowerMean{2}(), M) ≈ soft_symcover(PowerMean{2}(), dense) rtol=1e-12
+    @test first(soft_symcover(PowerMean{2}(), M)) ≈ first(soft_symcover(PowerMean{2}(), dense)) rtol=1e-12
     for ϕ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{1}(), AbsLog{2}())
         @test symcover(ϕ, M) ≈ symcover(ϕ, dense) rtol=1e-10
         @test scales(soft_symcover(ϕ, M)) ≈ scales(soft_symcover(ϕ, dense)) rtol=1e-6

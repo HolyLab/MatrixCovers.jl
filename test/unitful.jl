@@ -239,11 +239,11 @@
         @test unit.(a) == unit.(b) == UA
 
         a = initialize_symcover(A)
-        @test soft_symcover!(a, A) === a
+        @test first(soft_symcover!(a, A)) === a
         @test unit.(a) == UA
 
         a, b = initialize_cover(A)
-        @test soft_cover!(a, b, A) == (a, b)
+        @test scales(soft_cover!(a, b, A)) == (a, b)
         @test unit.(a) == unit.(b) == UA
 
         a = initialize_symcover(A)
@@ -255,11 +255,11 @@
         @test unit.(a) == unit.(b) == UA
 
         a = initialize_symcover(A)
-        @test soft_symcover!(PowerMean{1}(), a, A) === a
+        @test first(soft_symcover!(PowerMean{1}(), a, A)) === a
         @test unit.(a) == UA
 
         a, b = initialize_cover(A)
-        @test soft_cover!(PowerMean{1}(), a, b, A) == (a, b)
+        @test scales(soft_cover!(PowerMean{1}(), a, b, A)) == (a, b)
         @test unit.(a) == unit.(b) == UA
 
         # A start in a dimensionally equivalent spelling is converted, not rejected.

@@ -189,3 +189,56 @@ end
 LeastSquaresStats(nt::NamedTuple) =
     LeastSquaresStats(nt.linsolve, nt.lsqriters, nt.cgiters, nt.cholsolves, nt.precond,
                       nt.fill_entries, nt.factor_flops)
+
+"""
+    PowerMeanStats{T} <: AbstractCoverStats
+
+Statistics of the `PowerMean` soft covers ([`soft_symcover`](@ref),
+[`soft_cover`](@ref), and their mutating forms with a `PowerMean` penalty or no
+penalty).
+
+The imbalance of a nonzero row (or column) is `|mean(r^p) - 1|`, the mean taken
+over the ratios `r` of its nonzero entries. The solve stops when the largest
+imbalance is at most `tol`. Power-mean updates run first; when they are slow,
+Newton steps finish the solve. `converged`, `residual`, and `tolerance` return
+the fields of the same names (`residual` returns `imbalance`); `iterations`
+returns `nsweeps + nnewton`.
+
+# Fields
+
+- `converged::Bool`: `imbalance <= tol`.
+- `tol::T`: the stopping tolerance.
+- `imbalance::T`: the largest imbalance of the returned cover.
+- `nsweeps::Int`: power-mean updates. For the asymmetric solver each counts an
+  update of all rows and then all columns (a sweep); for the symmetric solver,
+  one simultaneous update of all scales.
+- `newton::Bool`: whether Newton steps ran.
+- `nnewton::Int`: Newton steps.
+- The remaining fields count the work of the Newton stage; their names and
+  meanings may change between releases: `npasses` (passes over the support),
+  `nfactor` (factorizations), and `linsolve` (the solver for the Newton
+  equations: `:dense`, `:cholesky`, or `:cg`, and `:none` when Newton did not
+  run).
+"""
+struct PowerMeanStats{T} <: AbstractCoverStats
+    converged::Bool
+    tol::T
+    imbalance::T
+    nsweeps::Int
+    newton::Bool
+    nnewton::Int
+    npasses::Int
+    nfactor::Int
+    linsolve::Symbol
+end
+
+converged(s::PowerMeanStats) = s.converged
+iterations(s::PowerMeanStats) = s.nsweeps + s.nnewton
+residual(s::PowerMeanStats) = s.imbalance
+tolerance(s::PowerMeanStats) = s.tol
+
+# Conversion from the statistics tuple of `_powermean_solve!` and
+# `_powermean_symsolve!`; `T` is their working type.
+PowerMeanStats{T}(nt::NamedTuple) where {T} =
+    PowerMeanStats{T}(nt.converged, nt.tol, nt.imbalance, nt.nsweeps, nt.newton, nt.nnewton,
+                      nt.npasses, nt.nfactor, nt.linsolve)
