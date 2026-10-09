@@ -169,6 +169,25 @@ end
     @test MatrixCovers._laplacian_solve!(zeros(nV - 1), Fcg, 2b) ≈ 2xch rtol=1e-13
 end
 
+@testset "active-set finish with conjugate-gradient Laplacian solves" begin
+    # `flopbudget=0` puts every sparse Laplacian of the finish over budget, so
+    # the finish solves them by CG; its result must match the finish that
+    # factors them. Two multiplier updates leave the solve to the finish.
+    rng = StableRNG(17)
+    n = 600
+    R = sprandn(rng, n, n, 3 / n)
+    Asym = abs.(R + R') + spdiagm(0 => exp.(randn(rng, n)))
+    Aasym = abs.(sprandn(rng, n, n, 5 / n)) + spdiagm(0 => exp.(randn(rng, n)))
+    aref, sref = MatrixCovers._symcover_min_abslog2(Asym; linsolve=:lsqr, maxouter=2, flopbudget=Inf)
+    acg, scg = MatrixCovers._symcover_min_abslog2(Asym; linsolve=:lsqr, maxouter=2, flopbudget=0)
+    @test sref.polish.certified && scg.polish.certified
+    @test acg ≈ aref rtol=1e-10
+    aref, bref, sref = _cover_min_abslog2(Aasym; linsolve=:lsqr, maxouter=2, flopbudget=Inf)
+    acg, bcg, scg = _cover_min_abslog2(Aasym; linsolve=:lsqr, maxouter=2, flopbudget=0)
+    @test sref.polish.certified && scg.polish.certified
+    @test acg .* bcg' ≈ aref .* bref' rtol=1e-10
+end
+
 @testset "difference-grid active-set solver" begin
     # The grid must reproduce the edge list of its supported entries, with rows
     # and columns sharing unknowns and some entries outside the support.
