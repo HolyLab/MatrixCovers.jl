@@ -1,7 +1,7 @@
 # Transversal-tight minimal covers and the maximum-product transversal they rest on.
 
 """
-    a, b = cover_transversal(A; kwargs...)
+    a, b, stats = cover_transversal(A; kwargs...)
 
 Return the transversal-tight minimal cover of the square matrix `A`: the hard
 cover minimizing `∑ log(a[i]*b[j]/|A[i,j]|)^2` over the support of `A`, among
@@ -23,6 +23,10 @@ balance convention of [`cover_min`](@ref).
 `A` must be square and structurally nonsingular, i.e., have at least one
 transversal of nonzero entries; otherwise an `ArgumentError` is thrown.
 
+`stats` is an [`AugmentedLagrangianStats`](@ref MatrixCovers.AugmentedLagrangianStats);
+as for [`cover_min`](@ref), the solver warns when
+[`MatrixCovers.converged(stats)`](@ref MatrixCovers.converged) is `false`.
+
 # Extended help
 
 A maximum-product transversal `σ` is found by shortest augmenting paths on the
@@ -32,7 +36,7 @@ row scales alone, with one constraint per entry off the transversal. The
 augmented-Lagrangian solver of [`cover_min`](@ref) solves it, starting from the
 dual variables of the transversal, which are a hard cover tight on `σ`.
 
-The keywords `κ`, `maxouter`, `maxiter`, `fillbudget`, `flopbudget`, and
+The keywords `κ`, `maxouter`, `maxiter`, `tol`, `fillbudget`, `flopbudget`, and
 `linsolve` are as for [`cover_min`](@ref). `linsolve=:woodbury` solves the
 row-scale system as a sparse matrix (conjugate gradients, or sparse Cholesky
 when poorly conditioned). For `n×n` `A`, it requires at most `n ÷ 4` zeros in
@@ -55,12 +59,12 @@ function cover_transversal(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int
 end
 
 """
-    a, b = cover_transversal!(a, b, A; kwargs...)
+    a, b, stats = cover_transversal!(a, b, A; kwargs...)
 
 Mutating counterpart of [`cover_transversal`](@ref): writes the cover into `a`
-and `b` and returns them. The initial contents of `a` and `b` are ignored.
-`eachindex(a)` must match `axes(A, 1)` and `eachindex(b)` must match
-`axes(A, 2)`.
+and `b` and returns them with the solver's statistics. The initial contents of
+`a` and `b` are ignored. `eachindex(a)` must match `axes(A, 1)` and
+`eachindex(b)` must match `axes(A, 2)`.
 """
 function cover_transversal!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
     axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))

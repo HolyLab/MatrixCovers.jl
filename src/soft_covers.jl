@@ -5,37 +5,41 @@
 # ============================================================
 
 """
-    a = soft_symcover(ϕ, A; kwargs...)
-    a = soft_symcover(A; kwargs...)
+    a, stats = soft_symcover(ϕ, A; kwargs...)
+    a, stats = soft_symcover(A; kwargs...)
 
 Minimize `∑ ϕ(|A[i,j]|/(a[i]*a[j]))` for symmetric `A`, without a hard coverage
 constraint. The default penalty is `PowerMean{2}()`.
 
 Supported penalties and their keywords are:
 
-- `PowerMean{p}()` (default): the convex minimum, computed by damped
-  simultaneous power-mean updates `a[k] ← sqrt(a[k] * M_p(|A[k,j]|/a[j]))`, where
-  `M_p` is the `p`-power mean over the nonzeros of row `k`, followed when they
-  are slow by Newton steps with backtracking on the objective. Every update
+- `PowerMean{p}()` (default): the convex minimum, computed by damped simultaneous power-mean updates
+  `a[k] ← sqrt(a[k] * M_p(|A[k,j]|/a[j]))`, where `M_p` is the `p`-power mean
+  over the nonzeros of row `k`, followed when they are slow by Newton steps
+  with backtracking on the objective. Every update
   decreases the objective. The iteration stops when, in every nonzero row, the mean of `r^p`
   over the ratios `r = |A[k,j]|/(a[k]*a[j])` of the nonzero entries is within
   `tol` of one. It computes in at least `Float64`, and `tol` defaults to
   `4096*eps` of that type, and a warning reports an iteration that ends without
   reaching it. The keywords `maxiter`, `newton`, `maxnewton`, and `linsolve` are
   described in the extended help.
-- `AbsLog{2}()`: the convex minimum, computed by one linear solve; `linsolve` has
-  the same meaning as in [`symcover_min`](@ref).
+- `AbsLog{2}()`: the convex minimum, computed by one linear solve; `linsolve`
+  has the same meaning as in [`symcover_min`](@ref).
 - `AbsLog{1}()`: the convex minimum, computed as a linear program; requires JuMP
   and HiGHS. The minimizer need not be unique, and among the minimizers the one
   with the least `AbsLog{2}` objective is returned.
-- `AbsLinear{1}()`, `AbsLinear{2}()`: the objective is not convex. Several starts
-  are each refined to a local minimum, and the one with the least objective is
-  returned; requires JuMP and Ipopt. `starts` (default 5) is the number of
-  starts: a few deterministic starts, then log-normal perturbations of the
-  first deterministic start with spread `σ` (default 2.0; `sigma` is an
-  alias), drawn from `rng` (default `MersenneTwister(0)`). A perturbed start
-  whose refinement throws a [`SolverFailure`](@ref) is left out of the
-  selection; a failing deterministic start throws.
+- `AbsLinear{1}()`, `AbsLinear{2}()`: the objective is not convex. Several starts are each refined to a local minimum, and the one with
+  the least objective is returned; requires JuMP and Ipopt. `starts`
+  (default 5) is the number of starts: a few deterministic starts, then
+  log-normal perturbations of the first deterministic start with spread `σ`
+  (default 2.0; `sigma` is an alias), drawn from `rng` (default
+  `MersenneTwister(0)`). A perturbed start whose refinement throws a
+  [`SolverFailure`](@ref) is left out of the selection; a failing
+  deterministic start throws.
+
+`stats` is an [`AbstractCoverStats`](@ref MatrixCovers.AbstractCoverStats).
+The JuMP-backed solves (`AbsLog{1}`, `AbsLinear`) throw a `SolverFailure` when
+the external solver fails.
 
 Unsupported rows receive zero scale. When a connected component of the support
 is bipartite with no diagonal entry, the products on the support do not
@@ -49,7 +53,10 @@ See also: [`symcover`](@ref), [`cover_objective`](@ref), [`soft_symcover!`](@ref
 ```jldoctest
 julia> A = [4 -1; -1 1];
 
-julia> a = soft_symcover(A);
+julia> a, stats = soft_symcover(A);
+
+julia> MatrixCovers.converged(stats)
+true
 
 julia> R = abs.(A) ./ (a .* a');
 
@@ -58,7 +65,7 @@ julia> round.(sum(R .^ 2; dims=2); digits=8)   # each row's mean square ratio is
  2.0
  2.0
 
-julia> round.(soft_symcover([0 1; 1 0]); digits=4)
+julia> round.(first(soft_symcover([0 1; 1 0])); digits=4)
 2-element Vector{Float64}:
  1.0
  1.0
@@ -107,8 +114,8 @@ function soft_symcover(ϕ::AbsLinear, A::AbstractMatrix; starts::Int=5,
 end
 
 """
-    a = soft_symcover!(ϕ, a, A; kwargs...)
-    a = soft_symcover!(a, A; kwargs...)
+    a, stats = soft_symcover!(ϕ, a, A; kwargs...)
+    a, stats = soft_symcover!(a, A; kwargs...)
 
 Refine one symmetric soft-cover start in place. The no-ϕ form uses
 `PowerMean{2}()`. Build a start with [`initialize_symcover`](@ref) and
@@ -136,12 +143,13 @@ function soft_symcover!(::AbsLog{2}, a::AbstractVector, A::AbstractMatrix; kwarg
 end
 
 """
-    a, b = soft_cover(ϕ, A; kwargs...)
-    a, b = soft_cover(A; kwargs...)
+    a, b, stats = soft_cover(ϕ, A; kwargs...)
+    a, b, stats = soft_cover(A; kwargs...)
 
 Minimize `∑ ϕ(|A[i,j]|/(a[i]*b[j]))` without a hard coverage constraint. This is
 the asymmetric form of [`soft_symcover`](@ref). The default penalty is
-`PowerMean{2}()`.
+`PowerMean{2}()`. `stats` and the failure behavior are as for
+`soft_symcover`.
 
 Supported penalties and their keywords are:
 
@@ -161,8 +169,8 @@ Supported penalties and their keywords are:
   `abs.(A)` is exactly symmetric, the minimizer has `b == a` under the balance
   convention, and `soft_cover` instead computes `a` by the algorithm of
   [`soft_symcover`](@ref) (with the same keywords; `maxiter` then counts its
-  updates) and returns `(a, copy(a))`. The in-place [`soft_cover!`](@ref) always
-  uses the alternating iteration.
+  updates) and returns `(a, copy(a), stats)`. The in-place
+  [`soft_cover!`](@ref) always uses the alternating iteration.
 - `AbsLog{2}()`: the convex minimum, computed by one linear solve; `linsolve` has
   the same meaning as in [`cover_min`](@ref).
 - `AbsLog{1}()`: the convex minimum, computed as a linear program; requires JuMP
@@ -188,7 +196,7 @@ See also: [`cover`](@ref), [`soft_symcover`](@ref), [`soft_cover!`](@ref), [`cov
 ```jldoctest; filter = r"(\\d+\\.\\d{4})\\d+" => s"\\1"
 julia> A = [1 2 3; 6 5 4];
 
-julia> a, b = soft_cover(A);
+julia> a, b, stats = soft_cover(A);
 
 julia> a * b'
 2×3 Matrix{Float64}:
@@ -212,8 +220,8 @@ function soft_cover(ϕ::AbsLinear, A::AbstractMatrix; starts::Int=4,
 end
 
 """
-    a, b = soft_cover!(ϕ, a, b, A; kwargs...)
-    a, b = soft_cover!(a, b, A; kwargs...)
+    a, b, stats = soft_cover!(ϕ, a, b, A; kwargs...)
+    a, b, stats = soft_cover!(a, b, A; kwargs...)
 
 Refine the starting point `(a, b)` into a soft cover of `A` in place. Scales must
 be finite and positive on supported rows and columns; unsupported scales are

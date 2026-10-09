@@ -6,8 +6,8 @@
 # ============================================================
 
 """
-    a = symcover_min(ϕ, A; kwargs...)
-    a = symcover_min(A; kwargs...)
+    a, stats = symcover_min(ϕ, A; kwargs...)
+    a, stats = symcover_min(A; kwargs...)
 
 Return the ϕ-minimal symmetric hard cover of `A`: the vector `a` minimizing
 `∑ ϕ(|A[i,j]|/(a[i]*a[j]))` subject to `a[i]*a[j] >= |A[i,j]|`. The
@@ -22,11 +22,19 @@ Supported ϕ values:
 `AbsLog` is convex in the log scales. If `AbsLog{1}` has multiple minima, the
 method selects the one with the smallest `AbsLog{2}` objective.
 
+`stats` is an [`AbstractCoverStats`](@ref MatrixCovers.AbstractCoverStats);
+[`MatrixCovers.converged(stats)`](@ref MatrixCovers.converged) reports whether
+`a` meets the solver's stopping criterion. The native solver warns when it does
+not, and returns a cover of `A` that may not minimize the objective. JuMP-backed
+solves throw a [`SolverFailure`](@ref MatrixCovers.SolverFailure) instead.
+
 # Extended help
 
 The native solver accepts `κ` (initial augmented-Lagrangian penalty, default
 `1e2`), `maxouter` (multiplier updates, default `32`; `0` returns the
-unconstrained fit), `maxiter` (Newton steps per update), `fillbudget` and
+unconstrained fit, shifted to cover `A`, with `converged(stats) == false` and no
+warning), `maxiter` (Newton steps per update), `tol` (the tolerance
+on the KKT residual, default `1000*eps` of the working type), `fillbudget` and
 `flopbudget` (see below), and `linsolve`:
 
 - `:dense` factorizes dense normal equations at O(n³) per Newton step.
@@ -56,9 +64,12 @@ exceed them are solved by conjugate gradients instead.
 
 If the solver warns that the result may not minimize the objective, follow the
 advice in the warning: increase `maxouter` when the update limit was reached,
-and `κ` when the residual stopped contracting before the limit.
+and `κ` when the residual stopped contracting before the limit. A caller who
+accepts a larger residual can pass a larger `tol`, or compare
+[`MatrixCovers.residual(stats)`](@ref MatrixCovers.residual) with its own
+threshold.
 
-Without a warning, the result typically matches the exact minimizer to a
+When `converged(stats)` is `true`, the result typically matches the exact minimizer to a
 relative accuracy of about `1e-8`, and occasionally only `1e-7`: the stopping
 test measures feasibility and complementary slackness but not stationarity.
 Scale covariance holds to the same accuracy. For a diagonal rescaling
@@ -74,8 +85,8 @@ function symcover_min end
 symcover_min(A::AbstractMatrix; kwargs...) = symcover_min(AbsLog{2}(), A; kwargs...)
 
 """
-    a, b = cover_min(ϕ, A)
-    a, b = cover_min(A)
+    a, b, stats = cover_min(ϕ, A; kwargs...)
+    a, b, stats = cover_min(A; kwargs...)
 
 Return the ϕ-minimal asymmetric hard cover of `A`: vectors `a`, `b` minimizing
 `∑ ϕ(|A[i,j]|/(a[i]*b[j]))` subject to `a[i]*b[j] >= |A[i,j]|`. The
@@ -94,7 +105,8 @@ distant rows or columns, such as `norm(a)`, inherit the spread.
 the floating-point range throw an error; converting `A` to `BigFloat` extends
 the range.
 
-Supported ϕ values:
+Supported ϕ values, `stats`, and the failure behavior are as for
+[`symcover_min`](@ref):
 - `AbsLog{2}()`: native.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
 - `AbsLinear{1}()` and `AbsLinear{2}()`: require JuMP and Ipopt and return the
@@ -105,8 +117,8 @@ method selects the one with the smallest `AbsLog{2}` objective.
 
 # Extended help
 
-The native solver accepts the same `κ`, `maxouter`, `maxiter`, `fillbudget`,
-`flopbudget`, and `linsolve` keywords as [`symcover_min`](@ref). For
+The native solver accepts the same `κ`, `maxouter`, `maxiter`, `tol`,
+`fillbudget`, `flopbudget`, and `linsolve` keywords as [`symcover_min`](@ref). For
 `:woodbury`, an `m × n` matrix may omit at most
 `min(m,n) ÷ 4` entries per row or column and `4 * max(m,n)` entries in total.
 `:dense` costs O((m+n)³) per Newton step; sparse matrices default to `:lsqr`.
@@ -120,7 +132,8 @@ continues from its result. The entries that are tight at the solution form a
 graph, and each step solves the objective with a spanning forest of them held
 tight, a sparse graph Laplacian with one unknown per tree. The method ends when
 the KKT conditions hold to rounding error, which makes the result the exact
-minimizer; only when it fails does the solver warn.
+minimizer; `stats.polish` records it. When it fails, the solver returns the
+multiplier iterate and warns.
 
 See also: [`symcover_min`](@ref), [`cover`](@ref), [`cover_min!`](@ref).
 """
@@ -128,11 +141,12 @@ function cover_min end
 cover_min(A::AbstractMatrix; kwargs...) = cover_min(AbsLog{2}(), A; kwargs...)
 
 """
-    a = symcover_min!(ϕ, a, A; kwargs...)
-    a = symcover_min!(a, A; kwargs...)
+    a, stats = symcover_min!(ϕ, a, A; kwargs...)
+    a, stats = symcover_min!(a, A; kwargs...)
 
 Refine the symmetric hard cover `a` in place. The no-ϕ form uses `AbsLog{2}()`;
-supported penalties and keywords match [`symcover_min`](@ref).
+supported penalties, keywords, `stats`, and failure behavior match
+[`symcover_min`](@ref).
 
 `a` must cover `A` and be positive on supported rows. Unsupported scales are
 ignored on input and set to zero. Use [`initialize_symcover`](@ref) or
@@ -149,13 +163,13 @@ symcover_min!(a::AbstractVector, A::AbstractMatrix; kwargs...) =
     symcover_min!(AbsLog{2}(), a, A; kwargs...)
 
 """
-    a, b = cover_min!(ϕ, a, b, A; kwargs...)
-    a, b = cover_min!(a, b, A; kwargs...)
+    a, b, stats = cover_min!(ϕ, a, b, A; kwargs...)
+    a, b, stats = cover_min!(a, b, A; kwargs...)
 
 Refine the asymmetric hard cover `(a, b)` in place. The start must cover `A` and
 be positive on supported rows and columns; unsupported scales are zeroed. The
-no-ϕ form uses `AbsLog{2}()`; supported penalties and keywords match
-[`cover_min`](@ref).
+no-ϕ form uses `AbsLog{2}()`; supported penalties, keywords, `stats`, and
+failure behavior match [`cover_min`](@ref).
 
 Equivalent starts `(c*a, b/c)` give the same balanced result.
 
@@ -2439,11 +2453,18 @@ function cover_transversal_jump end
 """
     SolverFailure(msg)
 
-Thrown when an external solver (Ipopt or HiGHS) stops without reaching a usable
-local minimum: it reports a status other than solved, or it returns scales that
-diverge on a plateau of the objective. A different start may succeed. The
-`AbsLinear` multistarts of [`soft_cover`](@ref) and [`soft_symcover`](@ref)
-leave out perturbed starts that throw this.
+Thrown by the `AbsLog{1}` and `AbsLinear` forms of [`symcover_min`](@ref),
+[`cover_min`](@ref), [`soft_symcover`](@ref), [`soft_cover`](@ref), and their
+mutating forms when the external solver (HiGHS or Ipopt) stops without reaching
+a usable local minimum: it reports a status other than solved, or it returns
+scales that diverge on a plateau of the objective. A different start may
+succeed. The `AbsLinear` multistarts of `soft_cover` and `soft_symcover` leave
+out perturbed starts that throw this and record them in
+[`MultistartStats`](@ref MatrixCovers.MultistartStats).
+
+The native solvers do not throw this: one that stops before meeting its
+stopping criterion warns and returns a result whose statistics report
+`converged(stats) == false`.
 """
 struct SolverFailure <: Exception
     msg::String
