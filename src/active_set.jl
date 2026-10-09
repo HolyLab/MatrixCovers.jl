@@ -203,8 +203,9 @@ function _route!(f::Vector{T}, s::Vector{T}, F::_Forest{T}, supp) where {T}
     return imbalance
 end
 
-# Factorization of the Laplacian of the edges joining different trees of `F`,
-# with one tree pinned to zero in each connected component of that graph.
+# Factorization (or, over budget, a CG solver; see `_LaplacianCG`) of the
+# Laplacian of the edges joining different trees of `F`, with one tree pinned to
+# zero in each connected component of that graph.
 struct _TreeLaplacian{T,Fac}
     idx::Vector{Int}   # unknown of each tree; 0 when pinned
     fac::Fac
@@ -344,10 +345,28 @@ function _tree_laplacian_triplets(F::_Forest{T}, supp) where {T}
     return idx, sparse(I, J, V, nfree, nfree)
 end
 
-function _laplacian_factor(L::SparseMatrixCSC{Float64,Int})
+# Jacobi-preconditioned CG on a pinned tree Laplacian whose sparse Cholesky
+# factor would exceed the fill or flop budget. Such Laplacians arise from
+# expander-like supports, which fill in under elimination but are well
+# conditioned, so CG converges in few iterations. A solve that CG does not
+# finish falls back to the factorization.
+struct _LaplacianCG
+    L::SparseMatrixCSC{Float64,Int}   # upper triangle, as analyzed
+    S::SparseMatrixCSC{Float64,Int}   # both triangles, for products
+    dg::Vector{Float64}
+    F::SparseCholesky
+    factored::Base.RefValue{Bool}
+end
+
+function _laplacian_factor(L::SparseMatrixCSC{Float64,Int}; fillbudget::Real=LSQR_FILL_BUDGET,
+                           flopbudget::Real=LSQR_FLOP_BUDGET)
     F = SparseCholesky()
     size(L, 1) == 0 && return F
     analyze!(F, L)
+    if sizeof(Float64) * factor_entries(F) > fillbudget || factor_flops(F) > flopbudget * nnz(L)
+        S = L + triu(L, 1)'
+        return _LaplacianCG(L, S, Vector(diag(S)), F, Ref(false))
+    end
     factorize!(F, L)
     return F
 end
@@ -358,6 +377,26 @@ _laplacian_factor(L::Matrix) = LinearAlgebra.cholesky!(Symmetric(L, :U))
 _laplacian_solve!(x::Vector{Float64}, F::SparseCholesky, b::Vector{Float64}) =
     isempty(b) ? x : solve!(x, F, CHOLMOD_A, b)
 _laplacian_solve!(x, F::Cholesky, b) = ldiv!(x, F, b)
+
+function _laplacian_solve!(x::Vector{Float64}, C::_LaplacianCG, b::Vector{Float64})
+    if !C.factored[]
+        n = length(b)
+        fill!(x, 0.0)
+        work = ntuple(_ -> zeros(n), 4)
+        # The multipliers are routed sums of the solution along the trees, so
+        # certification needs a normwise backward error of a few units of
+        # roundoff, as from a factorization. `2 max(dg)` bounds `‖S‖₂` for a
+        # Laplacian; the first pass estimates `‖x‖`.
+        Smul! = (y, v) -> mul!(y, C.S, v)
+        _pcg!(Smul!, x, C.dg, b, work..., 10 * n + 100, sqrt(eps(Float64)) * norm(b))
+        tol = 8 * eps(Float64) * (2 * maximum(C.dg) * norm(x) + norm(b))
+        _, ok = _pcg!(Smul!, x, C.dg, b, work..., 10 * n + 100, tol)
+        ok && return x
+        factorize!(C.F, C.L)
+        C.factored[] = true
+    end
+    return solve!(x, C.F, CHOLMOD_A, b)
+end
 
 # Per-tree values `y` minimizing `½‖L y - rhs‖` with pinned trees at zero; `rhs`
 # is indexed by tree.
@@ -505,7 +544,7 @@ an augmented-Lagrangian iteration, the candidates are the constraints with
 positive weight or residual below `ptol`, largest weight first and then
 tightest first. `certified` reports that the returned `u` satisfies the KKT
 conditions to tolerances proportional to the largest magnitude in `c` and `u0`;
-when it is false, `u` is `u0`. Each step factors a graph Laplacian, and
+when it is false, `u` is `u0`. Each step solves a graph-Laplacian system, and
 `maxsteps` bounds their number.
 The constant on each connected component of the graph is taken from `u0`.
 """

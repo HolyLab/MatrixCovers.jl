@@ -137,6 +137,29 @@ end
         @test all(>=(-1e-12), d1)
         @test d1 ≈ d2 atol=1e-10
     end
+
+    # Over the fill or flop budget, the pinned Laplacian is solved by CG, to the
+    # accuracy of the factorization.
+    nV = 200
+    edges = unique!([(min(p, q), max(p, q)) for (p, q) in zip(rand(rng, 1:nV, 6nV), rand(rng, 1:nV, 6nV)) if p != q])
+    rows = [first.(edges); last.(edges); 1:nV-1]
+    cols = [last.(edges); first.(edges); 1:nV-1]
+    vals = [fill(-1.0, 2 * length(edges)); zeros(nV - 1)]
+    S = sparse(rows, cols, vals, nV, nV)[2:nV, 2:nV]   # pin node 1
+    for k in 1:nV-1
+        S[k, k] = count(e -> k + 1 in e, edges)
+    end
+    L = sparse(triu(S))
+    Fch = MatrixCovers._laplacian_factor(L)
+    Fcg = MatrixCovers._laplacian_factor(L; flopbudget=0)
+    @test Fch isa MatrixCovers.SparseCholesky
+    @test Fcg isa MatrixCovers._LaplacianCG
+    b = randn(rng, nV - 1)
+    xch = MatrixCovers._laplacian_solve!(zeros(nV - 1), Fch, b)
+    xcg = MatrixCovers._laplacian_solve!(zeros(nV - 1), Fcg, b)
+    @test !Fcg.factored[]
+    @test xcg ≈ xch rtol=1e-13
+    @test norm(S * xcg - b) <= 8 * eps() * (opnorm(Matrix(S)) * norm(xcg) + norm(b))
 end
 
 @testset "difference-grid active-set solver" begin
