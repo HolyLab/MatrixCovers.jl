@@ -356,16 +356,17 @@ struct _LaplacianCG
     dg::Vector{Float64}
     F::SparseCholesky
     factored::Base.RefValue{Bool}
+    maxiter::Int                      # CG iterations per pass
 end
 
 function _laplacian_factor(L::SparseMatrixCSC{Float64,Int}; fillbudget::Real=LSQR_FILL_BUDGET,
-                           flopbudget::Real=LSQR_FLOP_BUDGET)
+                           flopbudget::Real=LSQR_FLOP_BUDGET, cgmaxiter::Int=10 * size(L, 1) + 100)
     F = SparseCholesky()
     size(L, 1) == 0 && return F
     analyze!(F, L)
     if sizeof(Float64) * factor_entries(F) > fillbudget || factor_flops(F) > flopbudget * nnz(L)
         S = L + triu(L, 1)'
-        return _LaplacianCG(L, S, Vector(diag(S)), F, Ref(false))
+        return _LaplacianCG(L, S, Vector(diag(S)), F, Ref(false), cgmaxiter)
     end
     factorize!(F, L)
     return F
@@ -388,9 +389,9 @@ function _laplacian_solve!(x::Vector{Float64}, C::_LaplacianCG, b::Vector{Float6
         # roundoff, as from a factorization. `2 max(dg)` bounds `‖S‖₂` for a
         # Laplacian; the first pass estimates `‖x‖`.
         Smul! = (y, v) -> mul!(y, C.S, v)
-        _pcg!(Smul!, x, C.dg, b, work..., 10 * n + 100, sqrt(eps(Float64)) * norm(b))
+        _pcg!(Smul!, x, C.dg, b, work..., C.maxiter, sqrt(eps(Float64)) * norm(b))
         tol = 8 * eps(Float64) * (2 * maximum(C.dg) * norm(x) + norm(b))
-        _, ok = _pcg!(Smul!, x, C.dg, b, work..., 10 * n + 100, tol)
+        _, ok = _pcg!(Smul!, x, C.dg, b, work..., C.maxiter, tol)
         ok && return x
         factorize!(C.F, C.L)
         C.factored[] = true

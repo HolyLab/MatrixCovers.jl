@@ -160,6 +160,13 @@ end
     @test !Fcg.factored[]
     @test xcg ≈ xch rtol=1e-13
     @test norm(S * xcg - b) <= 8 * eps() * (opnorm(Matrix(S)) * norm(xcg) + norm(b))
+    # A solve that CG does not finish falls back to the factorization, which
+    # later solves reuse.
+    Fcg = MatrixCovers._laplacian_factor(L; flopbudget=0, cgmaxiter=0)
+    xfb = MatrixCovers._laplacian_solve!(zeros(nV - 1), Fcg, b)
+    @test Fcg.factored[]
+    @test xfb ≈ xch rtol=1e-13
+    @test MatrixCovers._laplacian_solve!(zeros(nV - 1), Fcg, 2b) ≈ 2xch rtol=1e-13
 end
 
 @testset "difference-grid active-set solver" begin
