@@ -272,8 +272,9 @@ A stage that does not end with a solved status throws a
   models work in log scales and may include slack variables or constant terms,
   so this need not equal [`cover_objective`](@ref) of the returned cover.
 - `niters::Vector{Int}`: the iterations of each stage as the solver reports them
-  (for HiGHS, its simplex, interior-point, and QP iterations; for Ipopt, its
-  interior-point iterations).
+  through MathOptInterface: for HiGHS, its simplex and interior-point iterations
+  (its quadratic-program iterations are not reported, so the second stage
+  counts 0); for Ipopt, its interior-point iterations.
 - `solvetime::Vector{Float64}`: the solver's run time of each stage, in seconds.
 
 `niters` and `solvetime` may change meaning between releases.

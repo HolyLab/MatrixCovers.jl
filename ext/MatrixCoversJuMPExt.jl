@@ -12,20 +12,8 @@ check_solved(model, fname) =
 
 _highs_stats() = ExternalSolverStats(:HiGHS, Symbol[], Float64[], Int[], Float64[])
 
-# HiGHS reports its simplex, interior-point (with crossover), and QP iterations
-# separately, and MOI exposes only the first two.
-function _highs_iterations(model)
-    opt = JuMP.unsafe_backend(model)
-    n = 0
-    for key in ("simplex_iteration_count", "ipm_iteration_count", "crossover_iteration_count",
-                "qp_iteration_count")
-        r = Ref{Cint}(0)
-        HiGHS.Highs_getIntInfoValue(opt, key, r) == HiGHS.kHighsStatusOk ||
-            error("HiGHS did not report $key")
-        n += r[]
-    end
-    return n
-end
+# Iterations reported through MathOptInterface; HiGHS's QP iterations are not among them.
+_highs_iterations(model) = JuMP.simplex_iterations(model) + JuMP.barrier_iterations(model)
 
 # Check that the last solve of `model` succeeded and append it to `stats` as a stage.
 function record_solved!(stats::ExternalSolverStats, model, fname)
