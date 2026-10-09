@@ -203,15 +203,17 @@ function _route!(f::Vector{T}, s::Vector{T}, F::_Forest{T}, supp) where {T}
     return imbalance
 end
 
-# Factorization of the Laplacian of the edges joining different trees of `F`,
-# with one tree pinned to zero in each connected component of that graph.
+# Factorization (or, over budget, a CG solver; see `_LaplacianCG`) of the
+# Laplacian of the edges joining different trees of `F`, with one tree pinned to
+# zero in each connected component of that graph.
 struct _TreeLaplacian{T,Fac}
     idx::Vector{Int}   # unknown of each tree; 0 when pinned
     fac::Fac
     nfree::Int
 end
 
-function _TreeLaplacian(F::_Forest{T}, supp) where {T}
+# `budgets` holds the `fillbudget` and `flopbudget` keywords of `_laplacian_factor`.
+function _TreeLaplacian(F::_Forest{T}, supp; budgets::NamedTuple=(;)) where {T}
     nt = F.ntree
     # When the tree-contracted graph has few vertices, accumulating its
     # Laplacian densely and factoring it densely is cheaper than sorting a
@@ -221,7 +223,7 @@ function _TreeLaplacian(F::_Forest{T}, supp) where {T}
     else
         idx, L = _tree_laplacian_triplets(F, supp)
     end
-    fac = _laplacian_factor(L)
+    fac = L isa SparseMatrixCSC{Float64,Int} ? _laplacian_factor(L; budgets...) : _laplacian_factor(L)
     return _TreeLaplacian{T,typeof(fac)}(idx, fac, size(L, 1))
 end
 
@@ -344,10 +346,29 @@ function _tree_laplacian_triplets(F::_Forest{T}, supp) where {T}
     return idx, sparse(I, J, V, nfree, nfree)
 end
 
-function _laplacian_factor(L::SparseMatrixCSC{Float64,Int})
+# Jacobi-preconditioned CG on a pinned tree Laplacian whose sparse Cholesky
+# factor would exceed the fill or flop budget. Such Laplacians arise from
+# expander-like supports, which fill in under elimination but are well
+# conditioned, so CG converges in few iterations. A solve that CG does not
+# finish falls back to the factorization.
+struct _LaplacianCG
+    L::SparseMatrixCSC{Float64,Int}   # upper triangle, as analyzed
+    S::SparseMatrixCSC{Float64,Int}   # both triangles, for products
+    dg::Vector{Float64}
+    F::SparseCholesky
+    factored::Base.RefValue{Bool}
+    maxiter::Int                      # CG iterations per pass
+end
+
+function _laplacian_factor(L::SparseMatrixCSC{Float64,Int}; fillbudget::Real=LSQR_FILL_BUDGET,
+                           flopbudget::Real=LSQR_FLOP_BUDGET, cgmaxiter::Int=10 * size(L, 1) + 100)
     F = SparseCholesky()
     size(L, 1) == 0 && return F
     analyze!(F, L)
+    if sizeof(Float64) * factor_entries(F) > fillbudget || factor_flops(F) > flopbudget * nnz(L)
+        S = L + triu(L, 1)'
+        return _LaplacianCG(L, S, Vector(diag(S)), F, Ref(false), cgmaxiter)
+    end
     factorize!(F, L)
     return F
 end
@@ -358,6 +379,26 @@ _laplacian_factor(L::Matrix) = LinearAlgebra.cholesky!(Symmetric(L, :U))
 _laplacian_solve!(x::Vector{Float64}, F::SparseCholesky, b::Vector{Float64}) =
     isempty(b) ? x : solve!(x, F, CHOLMOD_A, b)
 _laplacian_solve!(x, F::Cholesky, b) = ldiv!(x, F, b)
+
+function _laplacian_solve!(x::Vector{Float64}, C::_LaplacianCG, b::Vector{Float64})
+    if !C.factored[]
+        n = length(b)
+        fill!(x, 0.0)
+        work = ntuple(_ -> zeros(n), 4)
+        # The multipliers are routed sums of the solution along the trees, so
+        # certification needs a normwise backward error of a few units of
+        # roundoff, as from a factorization. `2 max(dg)` bounds `‖S‖₂` for a
+        # Laplacian; the first pass estimates `‖x‖`.
+        Smul! = (y, v) -> mul!(y, C.S, v)
+        _pcg!(Smul!, x, C.dg, b, work..., C.maxiter, sqrt(eps(Float64)) * norm(b))
+        tol = 8 * eps(Float64) * (2 * maximum(C.dg) * norm(x) + norm(b))
+        _, ok = _pcg!(Smul!, x, C.dg, b, work..., C.maxiter, tol)
+        ok && return x
+        factorize!(C.F, C.L)
+        C.factored[] = true
+    end
+    return solve!(x, C.F, CHOLMOD_A, b)
+end
 
 # Per-tree values `y` minimizing `½‖L y - rhs‖` with pinned trees at zero; `rhs`
 # is indexed by tree.
@@ -489,8 +530,8 @@ function _most_violated(u::Vector{T}, inW::Matrix{Bool}, s::_DiffGridQP, de::T) 
 end
 
 """
-    u, certified, nsteps = _polish_difference_qp(supp, u0; τ, maxsteps, seed)
-    u, certified, nsteps = _polish_difference_qp(edges, cvals, u0; τ, maxsteps, seed)
+    u, certified, nsteps = _polish_difference_qp(supp, u0; τ, maxsteps, seed, budgets)
+    u, certified, nsteps = _polish_difference_qp(edges, cvals, u0; τ, maxsteps, seed, budgets)
 
 Minimize `½ ∑ₑ (u[p] - u[q] - c[e])²` subject to every term being nonnegative,
 starting from the near-optimal `u0`. The constraints are those of `supp`, an
@@ -505,8 +546,10 @@ an augmented-Lagrangian iteration, the candidates are the constraints with
 positive weight or residual below `ptol`, largest weight first and then
 tightest first. `certified` reports that the returned `u` satisfies the KKT
 conditions to tolerances proportional to the largest magnitude in `c` and `u0`;
-when it is false, `u` is `u0`. Each step factors a graph Laplacian, and
-`maxsteps` bounds their number.
+when it is false, `u` is `u0`. Each step solves a graph-Laplacian system, and
+`maxsteps` bounds their number. `budgets`, a `NamedTuple` with fields
+`fillbudget` and/or `flopbudget`, sets the limits above which these systems are
+solved by conjugate gradients rather than a sparse Cholesky factorization.
 The constant on each connected component of the graph is taken from `u0`.
 """
 function _polish_difference_qp(edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, u0::Vector{T}; kwargs...) where {T}
@@ -515,7 +558,8 @@ end
 
 function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{T};
                                τ::Real=T(1e-4), maxsteps::Int=max(1000, 2 * length(u0)),
-                               seed::Union{Nothing,AbstractVector}=nothing) where {T}
+                               seed::Union{Nothing,AbstractVector}=nothing,
+                               budgets::NamedTuple=(;)) where {T}
     s = _qp_support(supp)
     nV = length(u0)
     scale = max(oneunit(T), _cmax(s), maximum(abs, u0; init=zero(T)))
@@ -553,7 +597,7 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
     r = zeros(T, E)
     nsteps = 0
     u = u0
-    u, nsteps = _dual_feasible!(inW, W, λ, s, nV, dtol, nsteps, maxsteps)
+    u, nsteps = _dual_feasible!(inW, W, λ, s, nV, dtol, nsteps, maxsteps; budgets)
     certified = false
     while nsteps <= maxsteps
         e, de = _most_violated(u, inW, s, -ptol)
@@ -583,7 +627,7 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
                 _deactivate!(inW, W, λ, wb)
                 continue
             end
-            K = _TreeLaplacian(F, s)
+            K = _TreeLaplacian(F, s; budgets)
             rhs = zeros(T, F.ntree)
             rhs[F.tree[p]] += one(T)
             rhs[F.tree[q]] -= one(T)
@@ -615,7 +659,7 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
         end
         added || break
         # Recompute from `W` alone, so rounding does not accumulate.
-        u, nsteps = _dual_feasible!(inW, W, λ, s, nV, dtol, nsteps, maxsteps)
+        u, nsteps = _dual_feasible!(inW, W, λ, s, nV, dtol, nsteps, maxsteps; budgets)
     end
     certified || return u0, false, nsteps
     # Restore each component's constant from `u0`. (`u` is reassigned above, so
@@ -645,10 +689,10 @@ end
 # Drop the edges of `W` with negative multipliers until none remain, and return
 # the tight minimizer of `W` with the step count; `λ` holds the multipliers.
 function _dual_feasible!(inW, W::Vector{Int}, λ::Vector{T}, supp, nV::Int, dtol,
-                         nsteps::Int, maxsteps::Int) where {T}
+                         nsteps::Int, maxsteps::Int; budgets::NamedTuple=(;)) where {T}
     while true
         F = _Forest(nV, supp, W)
-        K = _TreeLaplacian(F, supp)
+        K = _TreeLaplacian(F, supp; budgets)
         u = _tight_minimizer(F, K, supp)
         _route!(λ, _difference_gradient(u, supp), F, supp)
         nW = length(W)
@@ -682,16 +726,18 @@ end
 # stacked layout `(α; β)` an entry's residual is `α[i] + β[j] - c`, which is a
 # difference in `(α; -β)`; the transversal layout is a difference already.
 # `multipliers`, the iteration's multipliers in the layout of `supp`, seed the
-# active set (see `_polish_difference_qp`).
-function _polish_cover(x::Vector{T}, supp::EdgeList{T}, m::Int; multipliers=nothing) where {T}
-    supp.qsign < 0 && return _polish_difference_qp(supp, x; seed=multipliers)
+# active set (see `_polish_difference_qp`, which also describes `budgets`).
+function _polish_cover(x::Vector{T}, supp::EdgeList{T}, m::Int; multipliers=nothing,
+                       budgets::NamedTuple=(;)) where {T}
+    supp.qsign < 0 && return _polish_difference_qp(supp, x; seed=multipliers, budgets)
     flip(u) = [k <= m ? u[k] : -u[k] for k in eachindex(u)]
     u, certified, nsteps = _polish_difference_qp(EdgeList{T}(supp.edges, supp.cvals, -oneunit(T)), flip(x);
-                                                 seed=multipliers)
+                                                 seed=multipliers, budgets)
     return flip(u), certified, nsteps
 end
 
-function _polish_cover(x::Vector{T}, supp::Grid{T}, m::Int; multipliers=nothing) where {T}
+function _polish_cover(x::Vector{T}, supp::Grid{T}, m::Int; multipliers=nothing,
+                       budgets::NamedTuple=(;)) where {T}
     C = supp.C
     edges = Tuple{Int,Int}[]
     cvals = T[]
@@ -702,11 +748,11 @@ function _polish_cover(x::Vector{T}, supp::Grid{T}, m::Int; multipliers=nothing)
         push!(cvals, C[i, j])
         seed === nothing || push!(seed, multipliers[i, j])
     end
-    return _polish_cover(x, EdgeList{T}(edges, cvals), m; multipliers=seed)
+    return _polish_cover(x, EdgeList{T}(edges, cvals), m; multipliers=seed, budgets)
 end
 
-_polish_cover(x::Vector{T}, supp::DiffGrid{T}, m::Int; multipliers=nothing) where {T} =
-    _polish_difference_qp(supp, x; seed=multipliers === nothing ? nothing : vec(multipliers))
+_polish_cover(x::Vector{T}, supp::DiffGrid{T}, m::Int; multipliers=nothing, budgets::NamedTuple=(;)) where {T} =
+    _polish_difference_qp(supp, x; seed=multipliers === nothing ? nothing : vec(multipliers), budgets)
 
 # Solve the `AbsLog{2}` problem of `_symcover_min_abslog2` exactly from its
 # augmented-Lagrangian iterate `x`, returning `(x, certified, nsteps)`. The
@@ -717,8 +763,10 @@ _polish_cover(x::Vector{T}, supp::DiffGrid{T}, m::Int; multipliers=nothing) wher
 # equal mirror residuals and `(α - β)/2` has those same residuals.
 # Unknowns without support keep their values in `x`. `multipliers`, the
 # iteration's multipliers in the layout of `supp`, seed the active set, each
-# entry's value going to both of its constraints.
-function _polish_symcover(x::Vector{T}, supp::EdgeList{T}; multipliers=nothing) where {T}
+# entry's value going to both of its constraints. `budgets` is passed to
+# `_polish_difference_qp`.
+function _polish_symcover(x::Vector{T}, supp::EdgeList{T}; multipliers=nothing,
+                          budgets::NamedTuple=(;)) where {T}
     n = length(x)
     edges2 = Tuple{Int,Int}[]
     cvals2 = T[]
@@ -736,11 +784,12 @@ function _polish_symcover(x::Vector{T}, supp::EdgeList{T}; multipliers=nothing) 
             seed === nothing || push!(seed, multipliers[e])
         end
     end
-    return _unfold_symcover(x, _polish_difference_qp(EdgeList{T}(edges2, cvals2, -one(T)), [x; -x]; seed))
+    return _unfold_symcover(x, _polish_difference_qp(EdgeList{T}(edges2, cvals2, -one(T)), [x; -x]; seed, budgets))
 end
 
 # `supp.C` holds the upper triangle; the double cover needs both.
-function _polish_symcover(x::Vector{T}, supp::Grid{T}; multipliers=nothing) where {T}
+function _polish_symcover(x::Vector{T}, supp::Grid{T}; multipliers=nothing,
+                          budgets::NamedTuple=(;)) where {T}
     n = length(x)
     C = copy(supp.C)
     for j in axes(C, 2), i in first(axes(C, 1)):j-1
@@ -754,7 +803,8 @@ function _polish_symcover(x::Vector{T}, supp::Grid{T}; multipliers=nothing) wher
         end
         seed = vec(S)
     end
-    return _unfold_symcover(x, _polish_difference_qp(DiffGrid{T}(C, collect(1:n), collect(n+1:2n)), [x; -x]; seed))
+    return _unfold_symcover(x, _polish_difference_qp(DiffGrid{T}(C, collect(1:n), collect(n+1:2n)), [x; -x];
+                                                     seed, budgets))
 end
 
 # Symmetric scales `(α - β)/2` from the double-cover solution `u = (α; β)`.

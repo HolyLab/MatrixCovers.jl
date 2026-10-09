@@ -2,7 +2,7 @@ module MatrixCovers
 
 using LinearAlgebra: LinearAlgebra, Adjoint, Bidiagonal, Cholesky, Diagonal, Hermitian,
                      SymTridiagonal, Symmetric, Transpose, Tridiagonal, bunchkaufman!,
-                     dot, ldiv!, lmul!, lu!, mul!, norm
+                     diag, dot, ldiv!, lmul!, lu!, mul!, norm, triu
 using PrecompileTools: PrecompileTools, @compile_workload
 using Random: Random, AbstractRNG, MersenneTwister
 using SparseArrays: SparseArrays, SparseMatrixCSC, nnz, nonzeros, nzrange, rowvals, sparse, spzeros

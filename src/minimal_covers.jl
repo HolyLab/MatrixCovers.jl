@@ -50,7 +50,9 @@ constraints are active and the diagonal contributions of the rest; whenever
 that factor also exceeds the budgets, it uses a diagonal preconditioner.
 `fillbudget=Inf` and `flopbudget=Inf` together always select the full Cholesky
 preconditioner; `fillbudget=0` or `flopbudget=0` always select the diagonal
-one.
+one. The same budgets apply to the active-set method that finishes an
+unconverged solve: graph-Laplacian systems whose sparse Cholesky factor would
+exceed them are solved by conjugate gradients instead.
 
 If the solver warns that the result may not minimize the objective, follow the
 advice in the warning: increase `maxouter` when the update limit was reached,
@@ -2043,7 +2045,8 @@ function _symcover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter:
          T[hassupp[ip] ? log(T(start[i])) : zero(T) for (ip, i) in enumerate(ax)]
     α, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve, boost, fillbudget, flopbudget, zeroslack)
     if polish && !stats.converged && maxouter > 0
-        α, certified, nsteps = _polish_symcover(α, supp; multipliers=stats.multipliers)
+        α, certified, nsteps = _polish_symcover(α, supp; multipliers=stats.multipliers,
+                                                budgets=(; fillbudget, flopbudget))
         stats = merge(stats, (; converged=certified, polish=(; certified, nsteps)))
     end
     _warn_unconverged(fname, stats, maxouter)
@@ -2301,7 +2304,8 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     x, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve,
                                boost=boost && !tt, fillbudget, flopbudget, zeroslack)
     if polish && !stats.converged && maxouter > 0
-        x, certified, nsteps = _polish_cover(x, supp, m; multipliers=stats.multipliers)
+        x, certified, nsteps = _polish_cover(x, supp, m; multipliers=stats.multipliers,
+                                             budgets=(; fillbudget, flopbudget))
         stats = merge(stats, (; converged=certified, polish=(; certified, nsteps)))
     end
     _warn_unconverged(fname, stats, maxouter)

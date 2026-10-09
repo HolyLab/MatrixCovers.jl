@@ -551,18 +551,25 @@ end
     @test covaries(cfn, A, d; rtol=1e-6)
     @test covaries_objective(AbsLog{2}(), cfn, A, d; rtol=1e-10)
 
-    # The multiplier iteration alone stops short of the KKT tolerance on this
-    # matrix; the active-set finish on the bipartite double cover certifies the
-    # minimizer, which is also the minimizer of the asymmetric problem.
-    an, sn = MatrixCovers._symcover_min_abslog2(A; flopbudget=Inf, polish=false)
+    # Three multiplier updates leave the KKT residual far above its tolerance,
+    # so the result rests on the active-set finish on the bipartite double
+    # cover. With either preconditioner it certifies the minimizer, which is also
+    # the minimizer of the asymmetric problem. (Whether the full multiplier
+    # iteration converges on its own here depends on rounding, so the test
+    # does not rely on it.)
+    an, sn = @test_logs (:warn, r"Increase `maxouter` or `κ`") MatrixCovers._symcover_min_abslog2(A; flopbudget=Inf, maxouter=3,
+                                                                                                    polish=false)
     @test !sn.converged
-    @test sf.converged && sf.polish.certified
-    @test ss.converged && ss.polish.certified
-    @test cover_objective(AbsLog{2}(), af, af, A) <= cover_objective(AbsLog{2}(), an, an, A)
     ga, gb, gs = MatrixCovers._cover_min_abslog2(A; flopbudget=Inf)
     @test gs.converged
+    for budget in (Inf, fb)
+        ap, sp = MatrixCovers._symcover_min_abslog2(A; flopbudget=budget, maxouter=3)
+        @test sp.converged && sp.polish.certified
+        @test cover_objective(AbsLog{2}(), ap, ap, A) <= cover_objective(AbsLog{2}(), an, an, A)
+        @test ap[Ai] .* ap[Aj] ≈ ga[Ai] .* gb[Aj] rtol=1e-12
+        @test cover_objective(AbsLog{2}(), ap, ap, A) ≈ cover_objective(AbsLog{2}(), ga, gb, A) rtol=1e-12
+    end
     @test af[Ai] .* af[Aj] ≈ ga[Ai] .* gb[Aj] rtol=1e-12
-    @test cover_objective(AbsLog{2}(), af, af, A) ≈ cover_objective(AbsLog{2}(), ga, gb, A) rtol=1e-12
 
     # A flop budget just at what the forest factors need sends some patterns
     # to the diagonal preconditioner, and the cover is unchanged.
