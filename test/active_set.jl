@@ -37,6 +37,7 @@ using MatrixCovers: _cover_min_abslog2, _polish_difference_qp
         @test sr.converged
         a, b, s = _cover_min_abslog2(A; maxouter=2)
         @test s.polish.certified
+        @test s.converged && s.polish.primal <= s.polish.ptol && s.polish.dual <= s.polish.dtol
         @test logproduct_gap(a, b, ar, br, A) <= 1e-8
         at, bt, _ = _cover_min_abslog2(A; transversal=true, fname=:cover_transversal)
         a, b, s = _cover_min_abslog2(A; transversal=true, maxouter=1, fname=:cover_transversal)
@@ -84,9 +85,10 @@ end
     @test_throws "seed must have axes 1:3" _polish_difference_qp([(1, 2), (2, 3), (1, 3)], [0.0, 0.0, 0.0], zeros(3); seed=ones(2))
     # Infeasible constraints (a cycle with positive total cost) are not certified.
     edges = [(1, 2), (2, 3), (3, 1)]
-    u, certified, _ = _polish_difference_qp(edges, [1.0, 1.0, 1.0], zeros(3))
+    u, certified, _, kkt = _polish_difference_qp(edges, [1.0, 1.0, 1.0], zeros(3))
     @test !certified
     @test u == zeros(3)
+    @test isnan(kkt.primal) && isnan(kkt.dual)
 end
 
 @testset "tree Laplacian assembly" begin

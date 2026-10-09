@@ -12,7 +12,7 @@ end
     # Match HiGHS across the symmetric corpus.
     for (_, A) in symmetric_matrices
         Af = Float64.(A)
-        a  = symcover_min(AbsLog{2}(), Af)
+        a, _ = symcover_min(AbsLog{2}(), Af)
         aj = MatrixCovers.symcover_min_jump(AbsLog{2}(), Af)
         @test iscover(a, Af; atol=1e-8)
         oj = cover_objective(AbsLog{2}(), aj, Af)
@@ -27,22 +27,22 @@ end
     for (_, A) in symmetric_matrices[1:30]
         Af = Float64.(A); n = size(Af, 1)
         d = exp.(2 .* randn(rng, n))
-        @test covaries(A -> symcover_min(AbsLog{2}(), A), Af, d; rtol=1e-6)
+        @test covaries(A -> first(symcover_min(AbsLog{2}(), A)), Af, d; rtol=1e-6)
     end
 
     # Edge cases.
-    @test symcover_min(AbsLog{2}(), reshape([4.0], 1, 1)) ≈ [2.0]           # n = 1
+    @test first(symcover_min(AbsLog{2}(), reshape([4.0], 1, 1))) ≈ [2.0]           # n = 1
     # [0 1; 1 0]: a₁a₂ = 1 is the (gauge-invariant) optimum, objective 0.
-    a = symcover_min(AbsLog{2}(), [0.0 1.0; 1.0 0.0])
+    a, _ = symcover_min(AbsLog{2}(), [0.0 1.0; 1.0 0.0])
     @test a[1] * a[2] ≈ 1.0
     @test cover_objective(AbsLog{2}(), a, [0.0 1.0; 1.0 0.0]) < 1e-12
     # Scattered zeros with an exact rank-1 cover.
     A = [0 0 1; 0 0 2; 1 2 1]
-    a = symcover_min(AbsLog{2}(), A)
+    a, _ = symcover_min(AbsLog{2}(), A)
     @test a ≈ [1, 2, 1]
     @test abs(cover_objective(AbsLog{2}(), a, A)) < 1e-8
     # κ and maxouter keywords are accepted.
-    @test symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; κ=1e3, maxouter=16) isa Vector
+    @test first(symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; κ=1e3, maxouter=16)) isa Vector
 end
 
 @testset "symcover_min active-set finish on dense supports" begin
@@ -75,16 +75,40 @@ end
 
     # Offset axes carry through the finish.
     Ao = OffsetArray(A, -5, -5)
-    ao = symcover_min(AbsLog{2}(), Ao; maxouter=3)
+    ao, _ = symcover_min(AbsLog{2}(), Ao; maxouter=3)
     @test axes(ao, 1) == axes(Ao, 1)
-    @test collect(ao) ≈ symcover_min(AbsLog{2}(), A; maxouter=3) rtol=1e-12
+    @test collect(ao) ≈ first(symcover_min(AbsLog{2}(), A; maxouter=3)) rtol=1e-12
 
     # Without the finish, the stalled iteration warns; an uncertified finish
-    # says so.
+    # says so. Any residual above the tolerance warns.
     @test_logs (:warn, r"Increase `maxouter` or `κ`") MatrixCovers._symcover_min_abslog2(A; maxouter=3, polish=false)
-    stats = (; converged=false, kkt=(1.0,), vtol=1e-13, vwarn=1e-10, nouter=3,
-             polish=(; certified=false, nsteps=5))
+    stats = (; converged=false, kkt=(1e-12,), tol=1e-13, nouter=32, polish=nothing)
+    @test_logs (:warn, r"Increase `maxouter` or `κ`") MatrixCovers._warn_unconverged(:symcover_min, stats, 32)
+    stats = merge(stats, (; polish=(; certified=false, nsteps=5)))
     @test_logs (:warn, r"active-set finish .* did not certify") MatrixCovers._warn_unconverged(:symcover_min, stats, 32)
+    # A certified finish reports a KKT check that meets its tolerances, and the
+    # accessors describe it.
+    _, s = @test_logs symcover_min(AbsLog{2}(), A; maxouter=3)
+    @test s isa MatrixCovers.AugmentedLagrangianStats{Float64}
+    @test MatrixCovers.converged(s) && s.polish.certified
+    @test MatrixCovers.residual(s) == s.polish.primal <= MatrixCovers.tolerance(s) == s.polish.ptol
+    @test s.polish.dual <= s.polish.dtol
+    @test MatrixCovers.iterations(s) == s.nouter <= 3
+    # A looser tolerance ends the multiplier iteration sooner, without the finish.
+    _, s = symcover_min(AbsLog{2}(), A; tol=1e-4)
+    @test MatrixCovers.converged(s) && s.polish === nothing
+    @test MatrixCovers.tolerance(s) == 1e-4 && MatrixCovers.residual(s) == last(s.kkt) <= 1e-4
+    @test_throws "tol must be finite and nonnegative" symcover_min(AbsLog{2}(), A; tol=-1.0)
+    # With no outer iteration nothing is checked, so the result is not
+    # reported as converged, and there is no warning.
+    _, s0 = @test_logs symcover_min(AbsLog{2}(), A; maxouter=0)
+    @test !MatrixCovers.converged(s0) && MatrixCovers.iterations(s0) == 0
+    @test isnan(MatrixCovers.residual(s0)) && s0.polish === nothing
+    # The soft cover has no stopping criterion, so the accessors do not apply.
+    _, sl = @test_logs soft_symcover(AbsLog{2}(), A)
+    @test sl isa MatrixCovers.LeastSquaresStats
+    @test_throws MethodError MatrixCovers.converged(sl)
+    @test_throws MethodError MatrixCovers.residual(sl)
 end
 
 @testset "cover_min native AbsLog{2}" begin
@@ -111,7 +135,7 @@ end
     for (_, A) in general_matrices[1:30]
         Af = Float64.(A); m, n = size(Af)
         dr = exp.(2 .* randn(rng, m)); dc = exp.(2 .* randn(rng, n))
-        @test covaries(A -> cover_min(AbsLog{2}(), A), Af, dr, dc; rtol=1e-6)
+        @test covaries(A -> scales(cover_min(AbsLog{2}(), A)), Af, dr, dc; rtol=1e-6)
     end
 
     # Non-square matrices, both orientations (transpose swaps the roles of a, b).
@@ -137,7 +161,7 @@ end
     @test iscover(a, b, A; atol=1e-8)
     @test cover_objective(AbsLog{2}(), a, b, A) ≈ 2 * log(sqrt(2))^2
     # κ and maxouter keywords are accepted.
-    @test cover_min(AbsLog{2}(), [1.0 2.0; 3.0 4.0]; κ=1e3, maxouter=16) isa Tuple
+    @test scales(cover_min(AbsLog{2}(), [1.0 2.0; 3.0 4.0]; κ=1e3, maxouter=16)) isa Tuple
 end
 
 @testset "MMC native AbsLog{2} matrix-free LSQR path" begin
@@ -149,7 +173,7 @@ end
     # across the committed symmetric library, and returns a feasible cover.
     for (_, A) in symmetric_matrices
         Af = Float64.(A)
-        a  = symcover_min(AbsLog{2}(), Af; linsolve=:lsqr)
+        a, _ = symcover_min(AbsLog{2}(), Af; linsolve=:lsqr)
         aj = MatrixCovers.symcover_min_jump(AbsLog{2}(), Af)
         @test iscover(a, Af; atol=1e-8)
         @test cover_objective(AbsLog{2}(), a, Af) <=
@@ -169,11 +193,11 @@ end
 
     # Gauge/edge cases the dense path handles via a ridge or v0*v0ᵀ must also work
     # matrix-free: bipartite support, a scalar, and a zero row/column.
-    a = symcover_min(AbsLog{2}(), [0.0 1.0; 1.0 0.0]; linsolve=:lsqr)
+    a, _ = symcover_min(AbsLog{2}(), [0.0 1.0; 1.0 0.0]; linsolve=:lsqr)
     @test a[1] * a[2] ≈ 1.0
-    @test symcover_min(AbsLog{2}(), reshape([4.0], 1, 1); linsolve=:lsqr) ≈ [2.0]
+    @test first(symcover_min(AbsLog{2}(), reshape([4.0], 1, 1); linsolve=:lsqr)) ≈ [2.0]
     Az = [1.0 0.0 2.0; 0.0 0.0 0.0; 2.0 0.0 3.0]
-    a = symcover_min(AbsLog{2}(), Az; linsolve=:lsqr)
+    a, _ = symcover_min(AbsLog{2}(), Az; linsolve=:lsqr)
     @test a[2] == 0.0
     @test iscover(a, Az; atol=1e-8)
     a, b = cover_min(AbsLog{2}(), [0.0 1.0; 1.0 0.0]; linsolve=:lsqr)
@@ -261,14 +285,14 @@ end
     # Offset axes and views index the support through `axes(A)`, not `1:n`, on this
     # path as on the others.
     A = symlognormal(12)
-    aref = symcover_min(AbsLog{2}(), A; linsolve=:woodbury)
+    aref, _ = symcover_min(AbsLog{2}(), A; linsolve=:woodbury)
     Ao = OffsetArray(A, -3, -3)
-    ao = symcover_min(AbsLog{2}(), Ao; linsolve=:woodbury)
+    ao, _ = symcover_min(AbsLog{2}(), Ao; linsolve=:woodbury)
     @test axes(ao, 1) == axes(Ao, 1)
     @test collect(ao) ≈ aref rtol=1e-10
     Av = view(symlognormal(16), 3:14, 3:14)
-    @test symcover_min(AbsLog{2}(), Matrix(Av); linsolve=:woodbury) ≈
-          symcover_min(AbsLog{2}(), Av; linsolve=:woodbury) rtol=1e-10
+    @test first(symcover_min(AbsLog{2}(), Matrix(Av); linsolve=:woodbury)) ≈
+          first(symcover_min(AbsLog{2}(), Av; linsolve=:woodbury)) rtol=1e-10
     Ag = lognormal(14, 10)
     Agv = view(Ag, 2:13, 2:9)
     av, bv = cover_min(AbsLog{2}(), Agv; linsolve=:woodbury)
@@ -331,7 +355,7 @@ end
     A32 = Float32.(symlognormal(8))
     a32, s32 = MatrixCovers._symcover_min_abslog2(A32)
     @test s32.linsolve === :woodbury && eltype(a32) === Float32
-    @test symcover_min(AbsLog{2}(), A32; linsolve=:woodbury) ≈ symcover_min(AbsLog{2}(), A32; linsolve=:dense) rtol=1e-6
+    @test first(symcover_min(AbsLog{2}(), A32; linsolve=:woodbury)) ≈ first(symcover_min(AbsLog{2}(), A32; linsolve=:dense)) rtol=1e-6
     Abig = BigFloat.(symlognormal(8))
     @test_throws "requires Float64 arithmetic" symcover_min(AbsLog{2}(), Abig; linsolve=:woodbury)
     @test MatrixCovers._symcover_min_abslog2(Abig)[2].linsolve === :dense
@@ -436,7 +460,7 @@ end
 
     # The budget is a keyword of the public solvers, and the paths that never
     # precondition say so.
-    @test symcover_min(AbsLog{2}(), A; linsolve=:lsqr, fillbudget=0) ≈ ad rtol=1e-6
+    @test first(symcover_min(AbsLog{2}(), A; linsolve=:lsqr, fillbudget=0)) ≈ ad rtol=1e-6
     @test MatrixCovers._symcover_min_abslog2(A; linsolve=:dense)[2].precond === :none
     Abig = BigFloat.([4.0 1.0 0.5; 1.0 3.0 1.0; 0.5 1.0 2.5])
     @test MatrixCovers._symcover_min_abslog2(Abig; linsolve=:lsqr)[2].precond === :none
@@ -601,7 +625,7 @@ end
     @test (tl.nsolves, tl.lsqriters) == (th.nsolves, th.lsqriters)
 
     # With no outer passes the unweighted fit is the answer, not a start.
-    @test soft_symcover(AbsLog{2}(), A; linsolve=:lsqr) != symcover(A)
+    @test first(soft_symcover(AbsLog{2}(), A; linsolve=:lsqr)) != symcover(A)
 end
 
 # Bound iterations for Cholesky-preconditioned `Float64` LSQR.
@@ -632,9 +656,9 @@ end
 
     # A working type CHOLMOD cannot factor keeps the plain matrix-free iteration.
     A32 = Float32.([4.0 1.0 0.5; 1.0 3.0 1.0; 0.5 1.0 2.5])
-    a32 = symcover_min(AbsLog{2}(), A32; linsolve=:lsqr)
+    a32, _ = symcover_min(AbsLog{2}(), A32; linsolve=:lsqr)
     @test a32 isa Vector{Float32}
-    @test a32 ≈ symcover_min(AbsLog{2}(), A32; linsolve=:dense) rtol=1e-5
+    @test a32 ≈ first(symcover_min(AbsLog{2}(), A32; linsolve=:dense)) rtol=1e-5
     @test iscover(a32, A32; rtol=1e-5)
 end
 
@@ -683,23 +707,23 @@ end
     rng = StableRNG(42)
     n = 6
     M = randn(rng, ComplexF64, n, n)
-    Href = symcover_min(AbsLog{2}(), abs.(Matrix(Hermitian(M + M'))))
+    Href, _ = symcover_min(AbsLog{2}(), abs.(Matrix(Hermitian(M + M'))))
 
     Hdense = Hermitian(M + M')
-    @test symcover_min(AbsLog{2}(), Hdense) ≈ Href rtol = 1e-10
+    @test first(symcover_min(AbsLog{2}(), Hdense)) ≈ Href rtol = 1e-10
 
     Msp = sprandn(rng, ComplexF64, n, n, 0.5)
     Hsp = Hermitian(sparse(Msp + Msp'))
-    @test symcover_min(AbsLog{2}(), Hsp) ≈ symcover_min(AbsLog{2}(), abs.(Matrix(Hsp))) rtol = 1e-7
+    @test first(symcover_min(AbsLog{2}(), Hsp)) ≈ first(symcover_min(AbsLog{2}(), abs.(Matrix(Hsp)))) rtol = 1e-7
 
     # Symmetric{<:Complex} carries no conjugate-symmetry guarantee, but the cover
     # problem still only depends on abs.(A), so the same identity holds.
     Ssp = Symmetric(sparse(Msp + transpose(Msp)))
-    @test symcover_min(AbsLog{2}(), Ssp) ≈ symcover_min(AbsLog{2}(), abs.(Matrix(Ssp))) rtol = 1e-7
+    @test first(symcover_min(AbsLog{2}(), Ssp)) ≈ first(symcover_min(AbsLog{2}(), abs.(Matrix(Ssp)))) rtol = 1e-7
 
     # Real input is unaffected by deriving T from real(eltype(A)).
     Ar = [4.0 1.0; 1.0 4.0]
-    @test symcover_min(AbsLog{2}(), Ar) ≈ [2.0, 2.0]
+    @test first(symcover_min(AbsLog{2}(), Ar)) ≈ [2.0, 2.0]
 end
 
 @testset "soft_cover native AbsLog{2}" begin
@@ -731,9 +755,9 @@ end
     # symcover_min(A) and cover_min(A) default to AbsLog{2}, matching
     # symcover(A)/cover(A). Solved natively, so no extension is needed.
     A = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
-    @test symcover_min(A) == symcover_min(AbsLog{2}(), A)
+    @test first(symcover_min(A)) == first(symcover_min(AbsLog{2}(), A))
     Aasym = [1.0 2.0 3.0; 4.0 5.0 6.0]
-    @test cover_min(Aasym) == cover_min(AbsLog{2}(), Aasym)
+    @test scales(cover_min(Aasym)) == scales(cover_min(AbsLog{2}(), Aasym))
 end
 
 @testset "symcover_min!/cover_min! native AbsLog{2}" begin
@@ -743,23 +767,23 @@ end
     # AbsLog{2} has a unique minimizer, so refining any valid start reproduces the
     # cold solve exactly, and the no-ϕ form selects the same penalty.
     a = initialize_symcover(A)
-    @test symcover_min!(AbsLog{2}(), copy(a), A) ≈ symcover_min(AbsLog{2}(), A)
-    @test symcover_min!(copy(a), A) == symcover_min!(AbsLog{2}(), copy(a), A)
+    @test first(symcover_min!(AbsLog{2}(), copy(a), A)) ≈ first(symcover_min(AbsLog{2}(), A))
+    @test first(symcover_min!(copy(a), A)) == first(symcover_min!(AbsLog{2}(), copy(a), A))
     ab, bb = initialize_cover(Aasym)
     ra, rb = cover_min!(AbsLog{2}(), copy(ab), copy(bb), Aasym)
     ca, cb = cover_min(AbsLog{2}(), Aasym)
     @test ra ≈ ca && rb ≈ cb
-    @test cover_min!(copy(ab), copy(bb), Aasym) == (ra, rb)
+    @test scales(cover_min!(copy(ab), copy(bb), Aasym)) == (ra, rb)
 
     # The refiners write through the buffers they are handed.
     a = initialize_symcover(A)
-    @test symcover_min!(AbsLog{2}(), a, A) === a
+    @test first(symcover_min!(AbsLog{2}(), a, A)) === a
     @test iscover(a, A; atol=1e-9)
 
     # The heuristics land on the coverage boundary only to within the roundoff of
     # their log-domain updates, so their output must be accepted as a start.
-    @test symcover_min!(AbsLog{2}(), symcover(A), A) ≈ symcover_min(AbsLog{2}(), A)
-    @test cover_min!(AbsLog{2}(), cover(Aasym)..., Aasym)[1] ≈ ca
+    @test first(symcover_min!(AbsLog{2}(), symcover(A), A)) ≈ first(symcover_min(AbsLog{2}(), A))
+    @test scales(cover_min!(AbsLog{2}(), cover(Aasym)..., Aasym))[1] ≈ ca
 
     # Every start is read only up to the gauge a -> c*a, b -> b/c, which leaves
     # every product a[i]*b[j] fixed.
@@ -770,7 +794,7 @@ end
     Anosupp = [4.0 1.0 0.0; 1.0 9.0 0.0; 0.0 0.0 0.0]
     a = initialize_symcover(Anosupp)
     a[3] = 7.0
-    @test symcover_min!(AbsLog{2}(), a, Anosupp)[3] == 0.0
+    @test first(symcover_min!(AbsLog{2}(), a, Anosupp))[3] == 0.0
 
     # A start must cover A, and be positive wherever A carries support.
     @test_throws "requires a start that covers `A`" symcover_min!(AbsLog{2}(), fill(0.1, 3), A)
@@ -784,9 +808,9 @@ end
     # Offset axes propagate through the start and the result.
     Ao = OffsetArray(A, -1, -1)
     ao = initialize_symcover(Ao)
-    @test symcover_min!(AbsLog{2}(), ao, Ao) === ao
+    @test first(symcover_min!(AbsLog{2}(), ao, Ao)) === ao
     @test axes(ao, 1) == axes(Ao, 1)
-    @test collect(ao) ≈ symcover_min(AbsLog{2}(), A)
+    @test collect(ao) ≈ first(symcover_min(AbsLog{2}(), A))
 end
 
 @testset "quality vs optimal (testmatrices)" begin
@@ -799,7 +823,7 @@ end
         a0 = symcover(AbsLog{2}(), Af / 100; maxiter=0)
         @test iscover(a0, Af / 100; atol=1e-12)
         # Covers are nearly quadratically optimal
-        qopt  = cover_objective(AbsLog{2}(), symcover_min(AbsLog{2}(), Af), Af)
+        qopt  = cover_objective(AbsLog{2}(), first(symcover_min(AbsLog{2}(), Af)), Af)
         qfast = cover_objective(AbsLog{2}(), symcover(AbsLog{2}(), Af; maxiter=10), Af)
         iszero(qopt) || push!(sym_ratios, qfast / qopt)
     end
@@ -812,7 +836,7 @@ end
         @test iscover(a0, b0, Af; atol=1e-12)
         a0, b0 = cover(AbsLog{2}(), Af / 100; maxiter=0)
         @test iscover(a0, b0, Af / 100; atol=1e-12)
-        qopt  = cover_objective(AbsLog{2}(), cover_min(AbsLog{2}(), Af)..., Af)
+        qopt  = cover_objective(AbsLog{2}(), scales(cover_min(AbsLog{2}(), Af))..., Af)
         qfast = cover_objective(AbsLog{2}(), cover(AbsLog{2}(), Af; maxiter=10)..., Af)
         iszero(qopt) || push!(gen_ratios, qfast / qopt)
     end
@@ -907,13 +931,22 @@ end
     # With the penalty held at the cap they are zeroed directly; left to drain by
     # `2(κ-1)z` per update they hold the KKT residual at 2.6e-6.
     # Without the active-set finish (`polish=false`), slack multipliers are zeroed.
+    # Whether the residual then reaches the tolerance depends on rounding (with the
+    # diagonal preconditioner it can stall just above it); the solve warns exactly
+    # when it does not. The default solve's finish certifies the result.
     A = banded_sparse_sym(StableRNG(5), 10_000, 3, 1.0)
     for fillbudget in (MatrixCovers.LSQR_FILL_BUDGET, 0)
-        a, s = @test_nowarn MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, fillbudget, polish=false)
+        (a, s), logs = capture_logs() do
+            MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, fillbudget, polish=false)
+        end
+        @test isempty(logs) == s.converged
+        @test all(l -> l.level == Base.CoreLogging.Warn && occursin("try a larger `κ`", l.message), logs)
         @test s.precond === (fillbudget == 0 ? :diagonal : :factor)
         @test s.nzeroed > 0
         @test maximum(s.κs) == 1e5
         @test s.kkt[end] < 1e-9
+        _, sp = @test_logs symcover_min(AbsLog{2}(), A; fillbudget)
+        @test MatrixCovers.converged(sp)
         @test cover_objective(AbsLog{2}(), a, A) ≈ 161350.449205 rtol=1e-9
         @test iscover(a, A)
     end
@@ -957,9 +990,14 @@ end
     @test cover_objective(AbsLog{2}(), a1, b1, A) ≈ cover_objective(AbsLog{2}(), a0, b0, A) rtol=1e-10
     @test a1 .* b1' ≈ a0 .* b0' rtol=1e-7
     @test iscover(a1, b1, A)
-    # Without the polish the iteration keeps zeroing.
-    _, _, s2 = MatrixCovers._cover_min_abslog2(A; polish=false)
+    # Without the polish the iteration keeps zeroing. Whether it then reaches the
+    # tolerance depends on rounding; it warns exactly when it does not.
+    (_, _, s2), logs = capture_logs() do
+        MatrixCovers._cover_min_abslog2(A; polish=false)
+    end
     @test s2.nzeroed > 0
+    @test isempty(logs) == s2.converged
+    @test all(l -> l.level == Base.CoreLogging.Warn && occursin("try a larger `κ`", l.message), logs)
 end
 
 @testset "MMC multiplier update is exact on an analytic problem" begin
@@ -984,7 +1022,7 @@ end
         Ã = A ./ (d * d')
         @test Ã .* (d * d') == A
         @test symcover(Ã) .* d ≈ symcover(A) rtol=1e-12
-        @test symcover_min(Ã) .* d ≈ symcover_min(A) rtol=1e-6
+        @test first(symcover_min(Ã)) .* d ≈ first(symcover_min(A)) rtol=1e-6
     end
     for seed in 1:3
         rng = StableRNG(seed)
@@ -995,9 +1033,9 @@ end
         e = 2.0 .^ round.(Int, 4 * log2(10) .* randn(rng, n))
         Ã = A ./ (d * d')
         @test symcover(Ã) .* d ≈ symcover(A) rtol=1e-12
-        @test symcover_min(Ã) .* d ≈ symcover_min(A) rtol=1e-6
+        @test first(symcover_min(Ã)) .* d ≈ first(symcover_min(A)) rtol=1e-6
         a, b = cover_min(A)
-        ã, b̃ = cover_min(A ./ (d * e'))
+        ã, b̃ = scales(cover_min(A ./ (d * e')))
         @test (ã * b̃') .* (d * e') ≈ a * b' rtol=1e-6
     end
 end
@@ -1009,7 +1047,7 @@ end
     a, b = cover_min(A)
     @test iscover(a, b, A)
     @test all(i -> isapprox(a[i+1] / a[i], sqrt(1 / 2); rtol=1e-6), 50:150)
-    @test maximum(abs, diff(log.(cover_min(toep(200, 1.0, 7.0, 1.0))[1]))) < 1e-6
+    @test maximum(abs, diff(log.(scales(cover_min(toep(200, 1.0, 7.0, 1.0)))[1]))) < 1e-6
 
     # Here the factors span about 690 decades, beyond Float64's range.
     B = toep(70, 1.0, 1.0, 1e20)

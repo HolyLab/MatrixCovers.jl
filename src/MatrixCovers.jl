@@ -18,10 +18,11 @@ export cover_transversal, cover_transversal!
 
 # `public` is parsed as a keyword only from Julia 1.11; this package supports 1.10.
 @static if VERSION >= v"1.11"
-    eval(Meta.parse("public AbstractCoverPenalty, foreach_support, foreach_support_sym, scalar_type, SupportComponents, support_components, ncomponents, rowcomponent, colcomponent, SolverFailure"))
+    eval(Meta.parse("public AbstractCoverPenalty, foreach_support, foreach_support_sym, scalar_type, SupportComponents, support_components, ncomponents, rowcomponent, colcomponent, SolverFailure, AbstractCoverStats, AugmentedLagrangianStats, ActiveSetStats, LeastSquaresStats, PowerMeanStats, ExternalSolverStats, MultistartStats, converged, iterations, residual, tolerance"))
 end
 
 include("penalties.jl")
+include("stats.jl")            # statistics returned by the optimizing solvers
 include("support.jl")
 include("iscover.jl")
 include("fastlog.jl")

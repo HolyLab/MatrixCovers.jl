@@ -6,8 +6,8 @@
 # ============================================================
 
 """
-    a = symcover_min(ϕ, A; kwargs...)
-    a = symcover_min(A; kwargs...)
+    a, stats = symcover_min(ϕ, A; kwargs...)
+    a, stats = symcover_min(A; kwargs...)
 
 Return the ϕ-minimal symmetric hard cover of `A`: the vector `a` minimizing
 `∑ ϕ(|A[i,j]|/(a[i]*a[j]))` subject to `a[i]*a[j] >= |A[i,j]|`. The
@@ -22,11 +22,19 @@ Supported ϕ values:
 `AbsLog` is convex in the log scales. If `AbsLog{1}` has multiple minima, the
 method selects the one with the smallest `AbsLog{2}` objective.
 
+`stats` is an [`AbstractCoverStats`](@ref MatrixCovers.AbstractCoverStats);
+[`MatrixCovers.converged(stats)`](@ref MatrixCovers.converged) reports whether
+`a` meets the solver's stopping criterion. The native solver warns when it does
+not, and returns a cover of `A` that may not minimize the objective. JuMP-backed
+solves throw a [`SolverFailure`](@ref MatrixCovers.SolverFailure) instead.
+
 # Extended help
 
 The native solver accepts `κ` (initial augmented-Lagrangian penalty, default
 `1e2`), `maxouter` (multiplier updates, default `32`; `0` returns the
-unconstrained fit), `maxiter` (Newton steps per update), `fillbudget` and
+unconstrained fit, shifted to cover `A`, with `converged(stats) == false` and no
+warning), `maxiter` (Newton steps per update), `tol` (the tolerance
+on the KKT residual, default `1000*eps` of the working type), `fillbudget` and
 `flopbudget` (see below), and `linsolve`:
 
 - `:dense` factorizes dense normal equations at O(n³) per Newton step.
@@ -56,9 +64,12 @@ exceed them are solved by conjugate gradients instead.
 
 If the solver warns that the result may not minimize the objective, follow the
 advice in the warning: increase `maxouter` when the update limit was reached,
-and `κ` when the residual stopped contracting before the limit.
+and `κ` when the residual stopped contracting before the limit. A caller who
+accepts a larger residual can pass a larger `tol`, or compare
+[`MatrixCovers.residual(stats)`](@ref MatrixCovers.residual) with its own
+threshold.
 
-Without a warning, the result typically matches the exact minimizer to a
+When `converged(stats)` is `true`, the result typically matches the exact minimizer to a
 relative accuracy of about `1e-8`, and occasionally only `1e-7`: the stopping
 test measures feasibility and complementary slackness but not stationarity.
 Scale covariance holds to the same accuracy. For a diagonal rescaling
@@ -74,8 +85,8 @@ function symcover_min end
 symcover_min(A::AbstractMatrix; kwargs...) = symcover_min(AbsLog{2}(), A; kwargs...)
 
 """
-    a, b = cover_min(ϕ, A)
-    a, b = cover_min(A)
+    a, b, stats = cover_min(ϕ, A; kwargs...)
+    a, b, stats = cover_min(A; kwargs...)
 
 Return the ϕ-minimal asymmetric hard cover of `A`: vectors `a`, `b` minimizing
 `∑ ϕ(|A[i,j]|/(a[i]*b[j]))` subject to `a[i]*b[j] >= |A[i,j]|`. The
@@ -94,7 +105,8 @@ distant rows or columns, such as `norm(a)`, inherit the spread.
 the floating-point range throw an error; converting `A` to `BigFloat` extends
 the range.
 
-Supported ϕ values:
+Supported ϕ values, `stats`, and the failure behavior are as for
+[`symcover_min`](@ref):
 - `AbsLog{2}()`: native.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
 - `AbsLinear{1}()` and `AbsLinear{2}()`: require JuMP and Ipopt and return the
@@ -105,8 +117,8 @@ method selects the one with the smallest `AbsLog{2}` objective.
 
 # Extended help
 
-The native solver accepts the same `κ`, `maxouter`, `maxiter`, `fillbudget`,
-`flopbudget`, and `linsolve` keywords as [`symcover_min`](@ref). For
+The native solver accepts the same `κ`, `maxouter`, `maxiter`, `tol`,
+`fillbudget`, `flopbudget`, and `linsolve` keywords as [`symcover_min`](@ref). For
 `:woodbury`, an `m × n` matrix may omit at most
 `min(m,n) ÷ 4` entries per row or column and `4 * max(m,n)` entries in total.
 `:dense` costs O((m+n)³) per Newton step; sparse matrices default to `:lsqr`.
@@ -120,7 +132,8 @@ continues from its result. The entries that are tight at the solution form a
 graph, and each step solves the objective with a spanning forest of them held
 tight, a sparse graph Laplacian with one unknown per tree. The method ends when
 the KKT conditions hold to rounding error, which makes the result the exact
-minimizer; only when it fails does the solver warn.
+minimizer; `stats.polish` records it. When it fails, the solver returns the
+multiplier iterate and warns.
 
 See also: [`symcover_min`](@ref), [`cover`](@ref), [`cover_min!`](@ref).
 """
@@ -128,11 +141,12 @@ function cover_min end
 cover_min(A::AbstractMatrix; kwargs...) = cover_min(AbsLog{2}(), A; kwargs...)
 
 """
-    a = symcover_min!(ϕ, a, A; kwargs...)
-    a = symcover_min!(a, A; kwargs...)
+    a, stats = symcover_min!(ϕ, a, A; kwargs...)
+    a, stats = symcover_min!(a, A; kwargs...)
 
 Refine the symmetric hard cover `a` in place. The no-ϕ form uses `AbsLog{2}()`;
-supported penalties and keywords match [`symcover_min`](@ref).
+supported penalties, keywords, `stats`, and failure behavior match
+[`symcover_min`](@ref).
 
 `a` must cover `A` and be positive on supported rows. Unsupported scales are
 ignored on input and set to zero. Use [`initialize_symcover`](@ref) or
@@ -149,13 +163,13 @@ symcover_min!(a::AbstractVector, A::AbstractMatrix; kwargs...) =
     symcover_min!(AbsLog{2}(), a, A; kwargs...)
 
 """
-    a, b = cover_min!(ϕ, a, b, A; kwargs...)
-    a, b = cover_min!(a, b, A; kwargs...)
+    a, b, stats = cover_min!(ϕ, a, b, A; kwargs...)
+    a, b, stats = cover_min!(a, b, A; kwargs...)
 
 Refine the asymmetric hard cover `(a, b)` in place. The start must cover `A` and
 be positive on supported rows and columns; unsupported scales are zeroed. The
-no-ϕ form uses `AbsLog{2}()`; supported penalties and keywords match
-[`cover_min`](@ref).
+no-ϕ form uses `AbsLog{2}()`; supported penalties, keywords, `stats`, and
+failure behavior match [`cover_min`](@ref).
 
 Equivalent starts `(c*a, b/c)` give the same balanced result.
 
@@ -172,33 +186,45 @@ cover_min!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
 #
 # Each `κ` stage freezes the weights, solves the normal equations, and uses a
 # backtracking line search. A final uniform shift restores feasibility.
-function symcover_min(::AbsLog{2}, A::AbstractMatrix; kwargs...)
-    a, _ = _symcover_min_abslog2(A; kwargs...)
-    return a
+function symcover_min(::AbsLog{2}, A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
+                      maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto,
+                      fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
+                      tol::Union{Real,Nothing}=nothing)
+    a, nt = _symcover_min_abslog2(A; κ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
+    return a, AugmentedLagrangianStats(A, nt)
 end
 
 # Asymmetric counterpart on stacked log scales `(α; β)`. The solve pins the
 # global gauge; `_cover_min_abslog2` regularizes and balances the remaining
 # component gauges.
-function cover_min(::AbsLog{2}, A::AbstractMatrix; kwargs...)
-    a, b, _ = _cover_min_abslog2(A; kwargs...)
-    return a, b
+function cover_min(::AbsLog{2}, A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
+                   maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto,
+                   fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
+                   tol::Union{Real,Nothing}=nothing)
+    a, b, nt = _cover_min_abslog2(A; κ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
+    return a, b, AugmentedLagrangianStats(A, nt)
 end
 
 # The convex objective has the same result from every valid start.
-function symcover_min!(::AbsLog{2}, a::AbstractVector, A::AbstractMatrix; kwargs...)
+function symcover_min!(::AbsLog{2}, a::AbstractVector, A::AbstractMatrix; κ::Real=AL_PENALTY,
+                       maxouter::Int=AL_MAXOUTER, maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto,
+                       fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
+                       tol::Union{Real,Nothing}=nothing)
     _prepare_symcover_start!(a, A)
-    anew, _ = _symcover_min_abslog2(A; start=a, kwargs...)
+    anew, nt = _symcover_min_abslog2(A; start=a, κ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
     a .= anew
-    return a
+    return a, AugmentedLagrangianStats(A, nt)
 end
 
-function cover_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
+function cover_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; κ::Real=AL_PENALTY,
+                    maxouter::Int=AL_MAXOUTER, maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto,
+                    fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
+                    tol::Union{Real,Nothing}=nothing)
     _prepare_cover_start!(a, b, A)
-    anew, bnew, _ = _cover_min_abslog2(A; start=(a, b), kwargs...)
+    anew, bnew, nt = _cover_min_abslog2(A; start=(a, b), κ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
     a .= anew
     b .= bnew
-    return a, b
+    return a, b, AugmentedLagrangianStats(A, nt)
 end
 
 # Multistart drivers for the `AbsLinear` kernels in MatrixCoversIpoptExt.
@@ -208,23 +234,30 @@ function symcover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=SYMCOVER_MIN_
     isempty(strategies) &&
         throw(ArgumentError("symcover_min: `strategies` must name at least one starting cover"))
     T = float(real(eltype(A)))
-    starts = [similar(Array{T}, ax) for _ in strategies]
+    a0 = similar(Array{T}, ax)
+    starts = [similar(a0) for _ in strategies]
     # Skip strategies that cannot produce a start for `A`.
     built = [_initialize_symcover!(a, A, strategy, :inflate) for (a, strategy) in zip(starts, strategies)]
-    covers = [symcover_min!(ϕ, a, A) for (a, ok) in zip(starts, built) if ok]
-    isempty(covers) &&
+    any(built) ||
         throw(ArgumentError("symcover_min: no strategy in $(string(strategies)) yields a starting cover of `A`"))
-    return covers[_multistart_select([cover_objective(ϕ, a, A) for a in covers])]
+    labels = Symbol[strategy for (strategy, ok) in zip(strategies, built) if ok]
+    covers = starts[built]
+    stats = [last(symcover_min!(ϕ, a, A))::ExternalSolverStats for a in covers]
+    objs = [cover_objective(ϕ, a, A) for a in covers]
+    k = _multistart_select(objs)
+    return covers[k], MultistartStats{ExternalSolverStats,eltype(objs)}(labels, stats, objs, k, Symbol[])
 end
 
 function cover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=COVER_MIN_STRATEGIES)
     isempty(strategies) &&
         throw(ArgumentError("cover_min: `strategies` must name at least one starting cover"))
+    labels = Symbol[strategy for strategy in strategies]
     covers = [initialize_cover(A; strategy) for strategy in strategies]
-    for (a, b) in covers
-        cover_min!(ϕ, a, b, A)
-    end
-    return covers[_multistart_select([cover_objective(ϕ, a, b, A) for (a, b) in covers])]
+    stats = [last(cover_min!(ϕ, a, b, A))::ExternalSolverStats for (a, b) in covers]
+    objs = [cover_objective(ϕ, a, b, A) for (a, b) in covers]
+    k = _multistart_select(objs)
+    a, b = covers[k]
+    return a, b, MultistartStats{ExternalSolverStats,eltype(objs)}(labels, stats, objs, k, Symbol[])
 end
 
 # ============================================================
@@ -1170,18 +1203,19 @@ end
 # Augmented-Lagrangian defaults.
 const AL_PENALTY = 1e2
 const AL_MAXOUTER = 32
+const AL_MAXITER = 40
 
-# Warn when the outer iteration ends with a KKT residual well above the
-# inner solver's accuracy floor and no active-set finish certified the result.
+# Warn when the returned scales may not minimize the objective. With
+# `maxouter = 0` there is no iteration and no warning.
 function _warn_unconverged(fname::Symbol, stats, maxouter::Int)
-    stats.converged && return nothing
-    v = isempty(stats.kkt) ? oftype(stats.vwarn, NaN) : stats.kkt[end]
-    v > stats.vwarn || return nothing
-    advice = haskey(stats, :polish) && !stats.polish.certified ?
+    (stats.converged || maxouter == 0) && return nothing
+    v = isempty(stats.kkt) ? oftype(stats.tol, NaN) : stats.kkt[end]
+    uncertified = stats.polish !== nothing && !stats.polish.certified
+    advice = uncertified ?
              "The active-set finish that follows the multiplier iteration did not certify a minimizer, so the result is the multiplier iterate." :
              stats.nouter < maxouter ? "The residual stopped contracting before the update limit, so a larger `maxouter` will not help; try a larger `κ`." :
                                        "Increase `maxouter` or `κ`."
-    @warn "$fname: the multiplier iteration ended after $(stats.nouter) of maxouter=$maxouter updates with KKT residual $v (tolerance $(stats.vtol)); the result covers `A` but may not minimize the objective. $advice"
+    @warn "$fname: the multiplier iteration ended after $(stats.nouter) of maxouter=$maxouter updates with KKT residual $v (tolerance $(stats.tol)); the result covers `A` but may not minimize the objective. $advice"
     return nothing
 end
 
@@ -1343,11 +1377,12 @@ _dense_factor_type(::Type{T}) where {T} = LinearAlgebra.LU{T,Matrix{T},Vector{In
 # log scales and a statistics tuple: the final multipliers (`multipliers`, laid
 # out by `_multiplier_storage`), inner solve and iteration counts, the
 # LSQR iterations of each solve (`lsqrtrace`), the per-update exits, drops, KKT
-# residuals (`kkt`) and penalty weights (`κs`), the convergence flag with its
-# tolerances, the `linsolve` and `precond` choices, the full Cholesky
-# preconditioner's predicted entry count `fill_entries` and flop count
-# `factor_flops` (`0` and `0.0` without a factor), the number of numeric
-# factorizations `nrefactor` (full or heavy-forest), the numbers of LSQR solves
+# residuals (`kkt`) and penalty weights (`κs`), the convergence flag
+# (`kkt[end] <= tol`; always `false` for `maxouter = 0`) with its tolerance,
+# the `linsolve` and `precond` choices, the full Cholesky preconditioner's
+# predicted entry count `fill_entries` and flop count `factor_flops` (`0` and
+# `0.0` without a factor), the number of numeric factorizations `nrefactor`
+# (full or heavy-forest), the numbers of LSQR solves
 # preconditioned by the heavy-forest factor (`nforest`) and by the diagonal
 # (`ndiagonal`) when the full factor is over budget, and the number `nzeroed`
 # of positive multipliers zeroed directly on entries with slack while the
@@ -1359,8 +1394,11 @@ _dense_factor_type(::Type{T}) where {T} = LinearAlgebra.LU{T,Matrix{T},Vector{In
 function _abslog2_auglag(sys::SupportSystem{T}, x0;
                                κ::Real, maxouter::Int, maxiter::Int, linsolve::Symbol, boost::Bool,
                                fillbudget::Real=LSQR_FILL_BUDGET,
-                               flopbudget::Real=LSQR_FLOP_BUDGET, zeroslack::Bool=true) where {T}
+                               flopbudget::Real=LSQR_FLOP_BUDGET, zeroslack::Bool=true,
+                               tol::Union{Real,Nothing}=nothing) where {T}
     κ > 1 || throw(ArgumentError("κ must exceed 1; got $κ"))
+    tol === nothing || (isfinite(tol) && tol >= 0) ||
+        throw(ArgumentError("tol must be finite and nonnegative; got $tol"))
     maxouter >= 0 || throw(ArgumentError("maxouter must be nonnegative; got $maxouter"))
     N = sys.N
     supp = sys.supp
@@ -1822,8 +1860,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     x = x0 === nothing ? solve_weighted(zeros(T, N), nothing) : x0
     # Absolute thresholds preserve covariance under rescaling because the
     # residuals are logarithmic.
-    vtol = 1000 * eps(T)
-    vwarn = max(sqrt(eps(T)), T(1e-6))
+    vtol = tol === nothing ? 1000 * eps(T) : T(tol)
     # Precision bounds the usable penalty: the cap is `1e5` (LSQR) or `1e8`
     # (exact solves) in `Float64` and grows as `1/sqrt(eps(T))`.
     κcap = T(use_lsqr ? 1e5 : 1e8) * sqrt(T(eps(Float64)) / eps(T))
@@ -1835,7 +1872,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     drops = T[]
     viols = T[]
     κtrace = T[]
-    converged = maxouter == 0
+    converged = false
     vprev = T(Inf)
     nstall = 0
     vbest = T(Inf)   # residual that the next tenfold contraction is measured from
@@ -1927,7 +1964,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     return x, (; multipliers=λ, nsolves=nsolves[], lsqriters=nlsqr[], lsqrtrace=Tuple(lsqrtrace), cgiters=ncg[],
                cholsolves=nchol[], nouter=length(exits), exits=Tuple(exits),
                drops=Tuple(drops), kkt=Tuple(viols), κs=Tuple(κtrace),
-               converged, vtol, vwarn,
+               converged, tol=vtol, polish=nothing,
                linsolve=(use_lsqr ? :lsqr : use_cg ? :woodbury : :dense),
                precond=(!use_precond ? :none : use_factor ? :factor : nforest[] > 0 ? :forest : :diagonal),
                nrefactor=nrefactor[], nforest=nforest[], ndiagonal=ndiagonal[], fill_entries, factor_flops=flops, nzeroed)
@@ -1938,12 +1975,17 @@ end
 # With `polish`, the active-set solver of `_polish_symcover` finishes a
 # multiplier iteration that stops before converging, and the iteration then
 # stops at its first stall at the penalty cap rather than zeroing slack
-# multipliers (`zeroslack`, which defaults to `!polish`).
+# multipliers (`zeroslack`, which defaults to `!polish`). When the finish runs,
+# `stats.polish` holds `certified`, the step count `nsteps`, and the KKT check of
+# `_polish_difference_qp` (`primal`, `ptol`, `dual`, `dtol`), and
+# `stats.converged == stats.polish.certified`. A certified finish replaces the
+# multiplier iterate, so `stats.kkt` then describes the iterate, not the result.
 function _symcover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
-                               maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
+                               maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto, start=nothing,
                                boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET,
                                flopbudget::Real=LSQR_FLOP_BUDGET, polish::Bool=true,
-                               zeroslack::Bool=!polish, fname=:symcover_min)
+                               zeroslack::Bool=!polish, tol::Union{Real,Nothing}=nothing,
+                               fname=:symcover_min)
     linsolve in (:auto, :dense, :lsqr, :woodbury) ||
         throw(ArgumentError("linsolve must be :auto, :dense, :lsqr, or :woodbury; got :$linsolve"))
     # Shared symmetry check for native symmetric minimal covers.
@@ -1956,7 +1998,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter:
     if eps(T) > eps(Float64)
         a64, stats = _symcover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
                                            κ, maxouter, maxiter, linsolve, start, boost, fillbudget, flopbudget,
-                                           polish, zeroslack, fname)
+                                           polish, zeroslack, tol, fname)
         # Narrowing rounds to nearest and so can round a product below its entry.
         a = T.(a64)
         boost && _certify_cover!(a, A, fname)
@@ -2043,11 +2085,11 @@ function _symcover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter:
                            zeros(T, n))
     x0 = start === nothing ? nothing :
          T[hassupp[ip] ? log(T(start[i])) : zero(T) for (ip, i) in enumerate(ax)]
-    α, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve, boost, fillbudget, flopbudget, zeroslack)
+    α, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve, boost, fillbudget, flopbudget, zeroslack, tol)
     if polish && !stats.converged && maxouter > 0
-        α, certified, nsteps = _polish_symcover(α, supp; multipliers=stats.multipliers,
-                                                budgets=(; fillbudget, flopbudget))
-        stats = merge(stats, (; converged=certified, polish=(; certified, nsteps)))
+        α, certified, nsteps, kkt = _polish_symcover(α, supp; multipliers=stats.multipliers,
+                                                     budgets=(; fillbudget, flopbudget))
+        stats = merge(stats, (; converged=certified, polish=(; certified, nsteps, kkt...)))
     end
     _warn_unconverged(fname, stats, maxouter)
     _check_representable(α, ip -> hassupp[ip], nothing, nothing, T, fname; gauge=false)
@@ -2068,13 +2110,15 @@ end
 # transversal. With `polish`, the active-set solver of `_polish_cover` finishes
 # a multiplier iteration that stops before converging, and the iteration then
 # stops at its first stall at the penalty cap rather than zeroing slack
-# multipliers (`zeroslack`, which defaults to `!polish`).
+# multipliers (`zeroslack`, which defaults to `!polish`). `stats` is as for
+# `_symcover_min_abslog2`.
 function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
-                            maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
+                            maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto, start=nothing,
                             boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET,
                             flopbudget::Real=LSQR_FLOP_BUDGET,
                             transversal::Union{Nothing,Bool,AbstractVector{<:Integer}}=nothing,
-                            polish::Bool=true, zeroslack::Bool=!polish, fname::Symbol=:cover_min)
+                            polish::Bool=true, zeroslack::Bool=!polish, tol::Union{Real,Nothing}=nothing,
+                            fname::Symbol=:cover_min)
     tt = transversal !== nothing && transversal !== false
     if tt
         linsolve in (:auto, :dense, :lsqr, :woodbury) ||
@@ -2092,7 +2136,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     if eps(T) > eps(Float64)
         a64, b64, stats = _cover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
                                              κ, maxouter, maxiter, linsolve, start, boost, fillbudget, flopbudget,
-                                             transversal, polish, zeroslack, fname)
+                                             transversal, polish, zeroslack, tol, fname)
         # Narrowing rounds to nearest and so can round a product below its entry.
         a, b = T.(a64), T.(b64)
         boost && _certify_cover!(a, b, A, fname)
@@ -2302,11 +2346,11 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
         s0
     end
     x, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve,
-                               boost=boost && !tt, fillbudget, flopbudget, zeroslack)
+                               boost=boost && !tt, fillbudget, flopbudget, zeroslack, tol)
     if polish && !stats.converged && maxouter > 0
-        x, certified, nsteps = _polish_cover(x, supp, m; multipliers=stats.multipliers,
-                                             budgets=(; fillbudget, flopbudget))
-        stats = merge(stats, (; converged=certified, polish=(; certified, nsteps)))
+        x, certified, nsteps, kkt = _polish_cover(x, supp, m; multipliers=stats.multipliers,
+                                                  budgets=(; fillbudget, flopbudget))
+        stats = merge(stats, (; converged=certified, polish=(; certified, nsteps, kkt...)))
     end
     _warn_unconverged(fname, stats, maxouter)
     if tt
@@ -2410,11 +2454,18 @@ function cover_transversal_jump end
 """
     SolverFailure(msg)
 
-Thrown when an external solver (Ipopt or HiGHS) stops without reaching a usable
-local minimum: it reports a status other than solved, or it returns scales that
-diverge on a plateau of the objective. A different start may succeed. The
-`AbsLinear` multistarts of [`soft_cover`](@ref) and [`soft_symcover`](@ref)
-leave out perturbed starts that throw this.
+Thrown by the `AbsLog{1}` and `AbsLinear` forms of [`symcover_min`](@ref),
+[`cover_min`](@ref), [`soft_symcover`](@ref), [`soft_cover`](@ref), and their
+mutating forms when the external solver (HiGHS or Ipopt) stops without reaching
+a usable local minimum: it reports a status other than solved, or it returns
+scales that diverge on a plateau of the objective. A different start may
+succeed. The `AbsLinear` multistarts of `soft_cover` and `soft_symcover` leave
+out perturbed starts that throw this and record them in
+[`MultistartStats`](@ref MatrixCovers.MultistartStats).
+
+The native solvers do not throw this: one that stops before meeting its
+stopping criterion warns and returns a result whose statistics report
+`converged(stats) == false`.
 """
 struct SolverFailure <: Exception
     msg::String
@@ -2424,7 +2475,7 @@ Base.showerror(io::IO, e::SolverFailure) = print(io, "SolverFailure: ", e.msg)
 # Reject all non-solved statuses, including `ALMOST_*`. Taking the status keeps
 # this helper independent of JuMP.
 function check_solved(status, solver, fname)
-    Symbol(status) in (:OPTIMAL, :LOCALLY_SOLVED) ||
+    Symbol(status) in SOLVED_STATUSES ||
         throw(SolverFailure("$fname: $solver terminated with status $status"))
     return nothing
 end

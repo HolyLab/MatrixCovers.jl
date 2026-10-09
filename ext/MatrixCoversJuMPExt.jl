@@ -3,12 +3,27 @@ module MatrixCoversJuMPExt
 using JuMP: JuMP, @variable, @objective, @constraint
 using HiGHS: HiGHS
 using MatrixCovers
-using MatrixCovers: AbsLog
+using MatrixCovers: AbsLog, ExternalSolverStats
 using MatrixCovers: _edge_list, _sym_edge_list, _degrees
 using LinearAlgebra: dot
 
 check_solved(model, fname) =
     MatrixCovers.check_solved(JuMP.termination_status(model), "HiGHS", fname)
+
+_highs_stats() = ExternalSolverStats(:HiGHS, Symbol[], Float64[], Int[], Float64[])
+
+# Iterations reported through MathOptInterface; HiGHS's QP iterations are not among them.
+_highs_iterations(model) = JuMP.simplex_iterations(model) + JuMP.barrier_iterations(model)
+
+# Check that the last solve of `model` succeeded and append it to `stats` as a stage.
+function record_solved!(stats::ExternalSolverStats, model, fname)
+    check_solved(model, fname)
+    push!(stats.status, Symbol(JuMP.termination_status(model)))
+    push!(stats.objective, JuMP.objective_value(model))
+    push!(stats.niters, _highs_iterations(model))
+    push!(stats.solvetime, JuMP.solve_time(model))
+    return stats
+end
 
 # Models use 1-based positions and scatter results back to `A`'s axes. Support is
 # gathered as an O(nnz) edge list; unsupported scales are zero.
@@ -43,23 +58,23 @@ MatrixCovers.symcover_min(::AbsLog{1}, A) = _symcover_min_abslog1(A, nothing)
 
 function MatrixCovers.symcover_min!(::AbsLog{1}, a::AbstractVector, A)
     MatrixCovers._prepare_symcover_start!(a, A)
-    a .= _symcover_min_abslog1(A, a)
-    return a
+    anew, stats = _symcover_min_abslog1(A, a)
+    a .= anew
+    return a, stats
 end
 
 # Slack for re-evaluating the `AbsLog{1}` optimum during tie-breaking.
 const LEX_L1_SLACK = 1e-9
 
 # Break `AbsLog{1}` ties with `AbsLog{2}` using full-grid support weights.
-function _minimize_l2_over_l1_face!(model, lin, residuals, fname)
-    isempty(residuals) && return nothing
+function _minimize_l2_over_l1_face!(stats, model, lin, residuals, fname)
+    isempty(residuals) && return stats
     linopt = JuMP.value(lin)
     l1 = sum(JuMP.value, residuals)          # the AbsLog{1} objective attained
     @constraint(model, lin <= linopt + LEX_L1_SLACK * max(one(l1), l1))
     @objective(model, Min, sum(r^2 for r in residuals))
     JuMP.optimize!(model)
-    check_solved(model, fname)
-    return nothing
+    return record_solved!(stats, model, fname)
 end
 
 # The soft `AbsLog{1}` objective is convex (an L1 fit in the log scales), so it
@@ -68,18 +83,19 @@ MatrixCovers.soft_symcover(::AbsLog{1}, A::AbstractMatrix) = _symcover_min_abslo
 
 function MatrixCovers.soft_symcover!(::AbsLog{1}, a::AbstractVector, A::AbstractMatrix)
     MatrixCovers._prepare_soft_symcover_start!(a, A)
-    a .= _symcover_min_abslog1(A, a; soft=true)
-    return a
+    anew, stats = _symcover_min_abslog1(A, a; soft=true)
+    a .= anew
+    return a, stats
 end
 
 MatrixCovers.soft_cover(::AbsLog{1}, A::AbstractMatrix) = _cover_min_abslog1(A, nothing; soft=true)
 
 function MatrixCovers.soft_cover!(::AbsLog{1}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
     MatrixCovers._prepare_soft_cover_start!(a, b, A)
-    anew, bnew = _cover_min_abslog1(A, (a, b); soft=true)
+    anew, bnew, stats = _cover_min_abslog1(A, (a, b); soft=true)
     a .= anew
     b .= bnew
-    return a, b
+    return a, b, stats
 end
 
 # Symmetric `AbsLog{1}` LP. A second stage selects the canonical point on the
@@ -124,9 +140,9 @@ function _symcover_min_abslog1(A, start; soft::Bool=false)
     end
     @objective(model, Min, lin)
     JuMP.optimize!(model)
-    check_solved(model, fname)
+    stats = record_solved!(_highs_stats(), model, fname)
     residuals = [α[ei[e]] + α[ej[e]] - elog[e] for e in eachindex(ei)]
-    _minimize_l2_over_l1_face!(model, lin, residuals, fname)
+    _minimize_l2_over_l1_face!(stats, model, lin, residuals, fname)
     αv = [JuMP.value(α[i]) for i in 1:n]
     if soft
         # Without the coverage constraints, bipartite components keep their gauge.
@@ -141,7 +157,7 @@ function _symcover_min_abslog1(A, start; soft::Bool=false)
     for (i, k) in pairs(pr)
         a[k] = supported[i] ? exp(αv[i]) : zero(T)
     end
-    return a
+    return a, stats
 end
 
 function MatrixCovers.cover_min_jump(::AbsLog{2}, A)
@@ -221,10 +237,10 @@ MatrixCovers.cover_min(::AbsLog{1}, A) = _cover_min_abslog1(A, nothing)
 
 function MatrixCovers.cover_min!(::AbsLog{1}, a::AbstractVector, b::AbstractVector, A)
     MatrixCovers._prepare_cover_start!(a, b, A)
-    anew, bnew = _cover_min_abslog1(A, (a, b))
+    anew, bnew, stats = _cover_min_abslog1(A, (a, b))
     a .= anew
     b .= bnew
-    return a, b
+    return a, b, stats
 end
 
 # Asymmetric `AbsLog{1}` LP. Balance globally in the model and per component
@@ -273,9 +289,9 @@ function _cover_min_abslog1(A, start; soft::Bool=false)
     # Pin the global row/column gauge; post-processing handles components.
     @constraint(model, sum(nza[i] * α[i] for i in 1:m) == sum(nzb[j] * β[j] for j in 1:n))
     JuMP.optimize!(model)
-    check_solved(model, fname)
+    stats = record_solved!(_highs_stats(), model, fname)
     residuals = [α[ei[e]] + β[ej[e]] - elog[e] for e in eachindex(ei)]
-    _minimize_l2_over_l1_face!(model, lin, residuals, fname)
+    _minimize_l2_over_l1_face!(stats, model, lin, residuals, fname)
     a = similar(Array{T}, axr)
     b = similar(Array{T}, axc)
     for (i, k) in pairs(pr)
@@ -285,8 +301,8 @@ function _cover_min_abslog1(A, start; soft::Bool=false)
         b[k] = nzb[j] > 0 ? exp(JuMP.value(β[j])) : zero(T)
     end
     MatrixCovers._balance_cover!(a, b, A)
-    soft && return a, b
-    return MatrixCovers.inflate_feasible!(a, b, A)
+    soft || MatrixCovers.inflate_feasible!(a, b, A)
+    return a, b, stats
 end
 
 

@@ -6,6 +6,21 @@ const PENALTIES = (AbsLog{1}(), AbsLog{2}(), AbsLinear{1}(), AbsLinear{2}())
 # Penalties with native soft-cover solvers, for properties of the soft-cover family.
 const SOFT_PENALTIES = (PENALTIES..., PowerMean{1}(), PowerMean{2}(), PowerMean{3.5}())
 
+# The scale vectors of a cover function's result: optimizing solvers append their
+# statistics, heuristics do not. Any other shape is a `MethodError`.
+scales(a::AbstractVector) = a
+scales(r::Tuple{AbstractVector,MatrixCovers.AbstractCoverStats}) = r[1]
+scales(r::Tuple{AbstractVector,AbstractVector}) = r
+scales(r::Tuple{AbstractVector,AbstractVector,MatrixCovers.AbstractCoverStats}) = (r[1], r[2])
+
+# `f()` and the log records it emits, for checks where whether a warning is
+# expected depends on rounding.
+function capture_logs(f)
+    logger = Test.TestLogger()
+    value = Base.CoreLogging.with_logger(f, logger)
+    return value, logger.logs
+end
+
 """
     isbalanced(a, b, A)
 

@@ -93,19 +93,19 @@
         @test all(unit.(v) == fill(u"m^-1", 3) for v in cover(S))
         @test unit.(symcover(Symmetric(S))) == fill(u"m^-1", 3)
 
-        @test unit.(symcover_min(AbsLog{2}(), S)) == fill(u"m^-1", 3)
-        @test unit.(symcover_min(AbsLog{2}(), Symmetric(S))) == fill(u"m^-1", 3)
-        @test all(unit.(v) == fill(u"m^-1", 3) for v in cover_min(AbsLog{2}(), S))
-        @test unit.(soft_symcover(AbsLog{2}(), S)) == fill(u"m^-1", 3)
-        @test unit.(soft_symcover(AbsLog{2}(), Symmetric(S))) == fill(u"m^-1", 3)
-        @test all(unit.(v) == fill(u"m^-1", 3) for v in soft_cover(AbsLog{2}(), S))
+        @test unit.(first(symcover_min(AbsLog{2}(), S))) == fill(u"m^-1", 3)
+        @test unit.(first(symcover_min(AbsLog{2}(), Symmetric(S)))) == fill(u"m^-1", 3)
+        @test all(unit.(v) == fill(u"m^-1", 3) for v in scales(cover_min(AbsLog{2}(), S)))
+        @test unit.(first(soft_symcover(AbsLog{2}(), S))) == fill(u"m^-1", 3)
+        @test unit.(first(soft_symcover(AbsLog{2}(), Symmetric(S)))) == fill(u"m^-1", 3)
+        @test all(unit.(v) == fill(u"m^-1", 3) for v in scales(soft_cover(AbsLog{2}(), S)))
         a = initialize_symcover(S)
-        @test unit.(symcover_min!(AbsLog{2}(), a, S)) == fill(u"m^-1", 3)
-        @test unit.(symcover_min!(AbsLog{2}(), a, Symmetric(S))) == fill(u"m^-1", 3)
+        @test unit.(first(symcover_min!(AbsLog{2}(), a, S))) == fill(u"m^-1", 3)
+        @test unit.(first(symcover_min!(AbsLog{2}(), a, Symmetric(S)))) == fill(u"m^-1", 3)
         a, b = initialize_cover(S)
-        @test all(unit.(v) == fill(u"m^-1", 3) for v in cover_min!(AbsLog{2}(), a, b, S))
-        @test all(unit.(v) == fill(u"m^-1", 3) for v in cover_transversal(S))
-        @test all(unit.(v) == fill(u"m^-1", 3) for v in cover_transversal!(a, b, S))
+        @test all(unit.(v) == fill(u"m^-1", 3) for v in scales(cover_min!(AbsLog{2}(), a, b, S)))
+        @test all(unit.(v) == fill(u"m^-1", 3) for v in scales(cover_transversal(S)))
+        @test all(unit.(v) == fill(u"m^-1", 3) for v in scales(cover_transversal!(a, b, S)))
     end
 
     @testset "balance convention holds in the caller's units" begin
@@ -164,7 +164,7 @@
 
     @testset "the whole family" begin
         for f in (symcover, initialize_symcover, soft_symcover, symcover_min)
-            a = f(A)
+            a = scales(f(A))
             @test unit.(a) == UA
             @test eltype(ustrip.(a)) <: AbstractFloat
         end
@@ -174,15 +174,15 @@
         end
         for ϕ in PENALTIES
             @test unit.(symcover(ϕ, A)) == UA
-            @test unit.(soft_symcover(ϕ, A)) == UA
-            @test unit.(symcover_min(ϕ, A)) == UA
+            @test unit.(first(soft_symcover(ϕ, A))) == UA
+            @test unit.(first(symcover_min(ϕ, A))) == UA
             @test all(unit.(v) == UA for v in cover(ϕ, A))
-            @test all(unit.(v) == UA for v in soft_cover(ϕ, A))
-            @test all(unit.(v) == UA for v in cover_min(ϕ, A))
+            @test all(unit.(v) == UA for v in soft_cover(ϕ, A)[1:2])
+            @test all(unit.(v) == UA for v in cover_min(ϕ, A)[1:2])
         end
         for ϕ in (PowerMean{1}(), PowerMean{2}())
-            @test unit.(soft_symcover(ϕ, A)) == UA
-            @test all(unit.(v) == UA for v in soft_cover(ϕ, A))
+            @test unit.(scales(soft_symcover(ϕ, A))) == UA
+            @test all(unit.(v) == UA for v in scales(soft_cover(ϕ, A)))
         end
     end
 
@@ -219,53 +219,53 @@
 
         # Initializer output is valid refiner input with matching units.
         a = initialize_symcover(A)
-        @test symcover_min!(AbsLog{2}(), a, A) === a
+        @test first(symcover_min!(AbsLog{2}(), a, A)) === a
         @test unit.(a) == UA
         @test iscover(a, A; rtol=1e-8)
 
         a, b = initialize_cover(A)
-        @test cover_min!(AbsLog{2}(), a, b, A) == (a, b)
+        @test scales(cover_min!(AbsLog{2}(), a, b, A)) == (a, b)
         @test unit.(a) == unit.(b) == UA
 
         # The no-ϕ forms of the `*_min` family default their penalty, and carry
         # the units the same way.
         a = initialize_symcover(A)
-        @test symcover_min!(a, A) === a
+        @test first(symcover_min!(a, A)) === a
         @test unit.(a) == UA
         @test iscover(a, A; rtol=1e-8)
 
         a, b = initialize_cover(A)
-        @test cover_min!(a, b, A) == (a, b)
+        @test scales(cover_min!(a, b, A)) == (a, b)
         @test unit.(a) == unit.(b) == UA
 
         a = initialize_symcover(A)
-        @test soft_symcover!(a, A) === a
+        @test first(soft_symcover!(a, A)) === a
         @test unit.(a) == UA
 
         a, b = initialize_cover(A)
-        @test soft_cover!(a, b, A) == (a, b)
+        @test scales(soft_cover!(a, b, A)) == (a, b)
         @test unit.(a) == unit.(b) == UA
 
         a = initialize_symcover(A)
-        @test soft_symcover!(AbsLinear{2}(), a, A) === a
+        @test first(soft_symcover!(AbsLinear{2}(), a, A)) === a
         @test unit.(a) == UA
 
         a, b = initialize_cover(A)
-        @test soft_cover!(AbsLog{2}(), a, b, A) == (a, b)
+        @test scales(soft_cover!(AbsLog{2}(), a, b, A)) == (a, b)
         @test unit.(a) == unit.(b) == UA
 
         a = initialize_symcover(A)
-        @test soft_symcover!(PowerMean{1}(), a, A) === a
+        @test first(soft_symcover!(PowerMean{1}(), a, A)) === a
         @test unit.(a) == UA
 
         a, b = initialize_cover(A)
-        @test soft_cover!(PowerMean{1}(), a, b, A) == (a, b)
+        @test scales(soft_cover!(PowerMean{1}(), a, b, A)) == (a, b)
         @test unit.(a) == unit.(b) == UA
 
         # A start in a dimensionally equivalent spelling is converted, not rejected.
         a = initialize_symcover(A)
         a2 = [uconvert(u, x) for (u, x) in zip((u"mm^-1", u"hr/km", u"kN^-1"), a)]
-        @test ustrip.(symcover_min!(AbsLog{2}(), a2, A)) ≈ ustrip.(symcover_min!(AbsLog{2}(), a, A))
+        @test ustrip.(first(symcover_min!(AbsLog{2}(), a2, A))) ≈ ustrip.(first(symcover_min!(AbsLog{2}(), a, A)))
 
         # A start whose dimensions are wrong is not.
         a3 = Quantity{Float64}[1.0u"m", 1.0u"s", 1.0u"N"]

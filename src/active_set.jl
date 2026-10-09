@@ -530,8 +530,8 @@ function _most_violated(u::Vector{T}, inW::Matrix{Bool}, s::_DiffGridQP, de::T) 
 end
 
 """
-    u, certified, nsteps = _polish_difference_qp(supp, u0; τ, maxsteps, seed, budgets)
-    u, certified, nsteps = _polish_difference_qp(edges, cvals, u0; τ, maxsteps, seed, budgets)
+    u, certified, nsteps, kkt = _polish_difference_qp(supp, u0; τ, maxsteps, seed, budgets)
+    u, certified, nsteps, kkt = _polish_difference_qp(edges, cvals, u0; τ, maxsteps, seed, budgets)
 
 Minimize `½ ∑ₑ (u[p] - u[q] - c[e])²` subject to every term being nonnegative,
 starting from the near-optimal `u0`. The constraints are those of `supp`, an
@@ -546,8 +546,11 @@ an augmented-Lagrangian iteration, the candidates are the constraints with
 positive weight or residual below `ptol`, largest weight first and then
 tightest first. `certified` reports that the returned `u` satisfies the KKT
 conditions to tolerances proportional to the largest magnitude in `c` and `u0`;
-when it is false, `u` is `u0`. Each step solves a graph-Laplacian system, and
-`maxsteps` bounds their number. `budgets`, a `NamedTuple` with fields
+when it is false, `u` is `u0`. `kkt = (; primal, ptol, dual, dtol)` gives the
+largest constraint violation of the returned `u` and the most negative active
+multiplier (as nonnegative magnitudes), with the tolerances they were certified
+against; `primal` and `dual` are `NaN` when `certified` is false. Each step
+solves a graph-Laplacian system, and `maxsteps` bounds their number. `budgets`, a `NamedTuple` with fields
 `fillbudget` and/or `flopbudget`, sets the limits above which these systems are
 solved by conjugate gradients rather than a sparse Cholesky factorization.
 The constant on each connected component of the graph is taken from `u0`.
@@ -599,6 +602,7 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
     u = u0
     u, nsteps = _dual_feasible!(inW, W, λ, s, nV, dtol, nsteps, maxsteps; budgets)
     certified = false
+    nokkt = (; primal=T(NaN), ptol, dual=T(NaN), dtol)
     while nsteps <= maxsteps
         e, de = _most_violated(u, inW, s, -ptol)
         if e == 0
@@ -619,7 +623,7 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
                 sv[q] += one(T)
                 _route!(r, sv, F, s)
                 t, wb = _ratio_test(λ, r, W)
-                wb == 0 && return u0, false, nsteps   # the constraints are infeasible
+                wb == 0 && return u0, false, nsteps, nokkt   # the constraints are infeasible
                 for w in W
                     λ[w] += t * r[w]
                 end
@@ -634,7 +638,7 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
             y = _tree_solve(K, rhs)
             z = [y[F.tree[v]] for v in 1:nV]
             a = z[p] - z[q]
-            a > 0 || return u0, false, nsteps
+            a > 0 || return u0, false, nsteps, nokkt
             # Rates of the multipliers in `W`: route `L z - gₑ` onto the forest.
             sv = _difference_sums!(zeros(T, nV), z, s, false)
             sv[p] -= one(T)
@@ -661,10 +665,12 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
         # Recompute from `W` alone, so rounding does not accumulate.
         u, nsteps = _dual_feasible!(inW, W, λ, s, nV, dtol, nsteps, maxsteps; budgets)
     end
-    certified || return u0, false, nsteps
+    certified || return u0, false, nsteps, nokkt
     # Restore each component's constant from `u0`. (`u` is reassigned above, so
     # capturing it in a closure would box it; `ustar` is bound once.)
     ustar = u
+    kkt = (; primal=max(zero(T), -minimum(e -> _resid(ustar, s, e), 1:_nconstraints(s))), ptol,
+           dual=max(zero(T), -minimum(k -> λ[k], W; init=zero(T))), dtol)
     uf .= 1:nV
     _foreach_constraint(s) do p, q
         rp, rq = find(p), find(q)
@@ -676,7 +682,7 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
         rv = find(v)
         rv == v && (shift[v] = u0[v] - ustar[v])
     end
-    return [ustar[v] + shift[find(v)] for v in 1:nV], true, nsteps
+    return [ustar[v] + shift[find(v)] for v in 1:nV], true, nsteps, kkt
 end
 
 function _deactivate!(inW, W::Vector{Int}, λ, w::Int)
@@ -722,7 +728,7 @@ function _ratio_test(λ::Vector{T}, r::Vector{T}, W::Vector{Int}) where {T}
 end
 
 # Solve the `AbsLog{2}` problem of `_cover_min_abslog2` exactly from its
-# augmented-Lagrangian iterate `x`, returning `(x, certified, nsteps)`. In the
+# augmented-Lagrangian iterate `x`, returning `(x, certified, nsteps, kkt)`. In the
 # stacked layout `(α; β)` an entry's residual is `α[i] + β[j] - c`, which is a
 # difference in `(α; -β)`; the transversal layout is a difference already.
 # `multipliers`, the iteration's multipliers in the layout of `supp`, seed the
@@ -731,9 +737,9 @@ function _polish_cover(x::Vector{T}, supp::EdgeList{T}, m::Int; multipliers=noth
                        budgets::NamedTuple=(;)) where {T}
     supp.qsign < 0 && return _polish_difference_qp(supp, x; seed=multipliers, budgets)
     flip(u) = [k <= m ? u[k] : -u[k] for k in eachindex(u)]
-    u, certified, nsteps = _polish_difference_qp(EdgeList{T}(supp.edges, supp.cvals, -oneunit(T)), flip(x);
-                                                 seed=multipliers, budgets)
-    return flip(u), certified, nsteps
+    u, certified, nsteps, kkt = _polish_difference_qp(EdgeList{T}(supp.edges, supp.cvals, -oneunit(T)), flip(x);
+                                                      seed=multipliers, budgets)
+    return flip(u), certified, nsteps, kkt
 end
 
 function _polish_cover(x::Vector{T}, supp::Grid{T}, m::Int; multipliers=nothing,
@@ -755,7 +761,8 @@ _polish_cover(x::Vector{T}, supp::DiffGrid{T}, m::Int; multipliers=nothing, budg
     _polish_difference_qp(supp, x; seed=multipliers === nothing ? nothing : vec(multipliers), budgets)
 
 # Solve the `AbsLog{2}` problem of `_symcover_min_abslog2` exactly from its
-# augmented-Lagrangian iterate `x`, returning `(x, certified, nsteps)`. The
+# augmented-Lagrangian iterate `x`, returning `(x, certified, nsteps, kkt)`, with
+# `kkt` describing the double-cover solution. The
 # symmetric problem is the asymmetric one on the bipartite double cover: with
 # unknowns `u = (α; β)` and start `(x; -x)`, each stored entry `(p, q)` gives the
 # difference constraints `α[p] - β[q] ≥ c` and, off the diagonal, `α[q] - β[p] ≥ c`.
@@ -808,8 +815,8 @@ function _polish_symcover(x::Vector{T}, supp::Grid{T}; multipliers=nothing,
 end
 
 # Symmetric scales `(α - β)/2` from the double-cover solution `u = (α; β)`.
-function _unfold_symcover(x::Vector{T}, (u, certified, nsteps)) where {T}
+function _unfold_symcover(x::Vector{T}, (u, certified, nsteps, kkt)) where {T}
     n = length(x)
     xnew = (u[1:n] .- u[n+1:2n]) ./ 2
-    return xnew, certified, nsteps
+    return xnew, certified, nsteps, kkt
 end

@@ -1,7 +1,7 @@
 # Transversal-tight minimal covers and the maximum-product transversal they rest on.
 
 """
-    a, b = cover_transversal(A; kwargs...)
+    a, b, stats = cover_transversal(A; kwargs...)
 
 Return the transversal-tight minimal cover of the square matrix `A`: the hard
 cover minimizing `∑ log(a[i]*b[j]/|A[i,j]|)^2` over the support of `A`, among
@@ -23,6 +23,10 @@ balance convention of [`cover_min`](@ref).
 `A` must be square and structurally nonsingular, i.e., have at least one
 transversal of nonzero entries; otherwise an `ArgumentError` is thrown.
 
+`stats` is an [`AugmentedLagrangianStats`](@ref MatrixCovers.AugmentedLagrangianStats);
+as for [`cover_min`](@ref), the solver warns when
+[`MatrixCovers.converged(stats)`](@ref MatrixCovers.converged) is `false`.
+
 # Extended help
 
 A maximum-product transversal `σ` is found by shortest augmenting paths on the
@@ -32,7 +36,7 @@ row scales alone, with one constraint per entry off the transversal. The
 augmented-Lagrangian solver of [`cover_min`](@ref) solves it, starting from the
 dual variables of the transversal, which are a hard cover tight on `σ`.
 
-The keywords `κ`, `maxouter`, `maxiter`, `fillbudget`, `flopbudget`, and
+The keywords `κ`, `maxouter`, `maxiter`, `tol`, `fillbudget`, `flopbudget`, and
 `linsolve` are as for [`cover_min`](@ref). `linsolve=:woodbury` solves the
 row-scale system as a sparse matrix (conjugate gradients, or sparse Cholesky
 when poorly conditioned). For `n×n` `A`, it requires at most `n ÷ 4` zeros in
@@ -45,26 +49,30 @@ finishes a solve whose multiplier iteration stops early.
 
 See also: [`cover_transversal!`](@ref), [`cover_min`](@ref).
 """
-function cover_transversal(A::AbstractMatrix; kwargs...)
-    a, b, _ = _cover_min_abslog2(A; transversal=true, fname=:cover_transversal, kwargs...)
-    return a, b
+function cover_transversal(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
+                           maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto,
+                           fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
+                           tol::Union{Real,Nothing}=nothing)
+    a, b, nt = _cover_min_abslog2(A; transversal=true, fname=:cover_transversal,
+                                  κ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
+    return a, b, AugmentedLagrangianStats(A, nt)
 end
 
 """
-    a, b = cover_transversal!(a, b, A; kwargs...)
+    a, b, stats = cover_transversal!(a, b, A; kwargs...)
 
 Mutating counterpart of [`cover_transversal`](@ref): writes the cover into `a`
-and `b` and returns them. The initial contents of `a` and `b` are ignored.
-`eachindex(a)` must match `axes(A, 1)` and `eachindex(b)` must match
-`axes(A, 2)`.
+and `b` and returns them with the solver's statistics. The initial contents of
+`a` and `b` are ignored. `eachindex(a)` must match `axes(A, 1)` and
+`eachindex(b)` must match `axes(A, 2)`.
 """
 function cover_transversal!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
     axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
     axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
-    anew, bnew = cover_transversal(A; kwargs...)
+    anew, bnew, stats = cover_transversal(A; kwargs...)
     a .= anew
     b .= bnew
-    return a, b
+    return a, b, stats
 end
 
 # Binary min-heap of `(key, index)` pairs. Entries are never decreased in place;
