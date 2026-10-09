@@ -5,13 +5,13 @@
     @testset "Float32 flows through the family" begin
         A = Float32[4 1.5; 1.5 1]
         for a in (symcover(A), soft_symcover(A), soft_symcover(AbsLog{1}(), A),
-                  soft_symcover(AbsLinear{1}(), A), symcover_min(AbsLog{2}(), A),
-                  soft_symcover(AbsLog{2}(), A))
+                  soft_symcover(AbsLinear{1}(), A), first(symcover_min(AbsLog{2}(), A)),
+                  first(soft_symcover(AbsLog{2}(), A)))
             @test eltype(a) === Float32
             @test all(isfinite, a)
         end
         @test iscover(symcover(A), A; rtol=8eps(Float32))
-        @test iscover(symcover_min(AbsLog{2}(), A), A; rtol=8eps(Float32))
+        @test iscover(first(symcover_min(AbsLog{2}(), A)), A; rtol=8eps(Float32))
 
         B = Float32[4 1.5 0.5; 1.5 1 2]
         a, b = cover(B)
@@ -25,8 +25,8 @@
         X = exp.(randn(rng, 60, 60))
         Asym = (X .+ X') ./ 2
         Agen = exp.(randn(rng, 60, 45))
-        aref = symcover_min(AbsLog{2}(), Asym)
-        sref = soft_symcover(AbsLog{2}(), Asym)
+        aref, _ = symcover_min(AbsLog{2}(), Asym)
+        sref, _ = soft_symcover(AbsLog{2}(), Asym)
         gref, href = cover_min(AbsLog{2}(), Agen)
         A32 = Float32.(Asym)
 
@@ -36,26 +36,26 @@
                                            "SparseMatrixCSC" => sparse(A32),
                                            "Symmetric{SparseMatrixCSC}" => Symmetric(sparse(triu(A32))),
                                            "Hermitian{ComplexF32}" => Hermitian(ComplexF32.(A32)))
-            a = symcover_min(AbsLog{2}(), M)
+            a, _ = symcover_min(AbsLog{2}(), M)
             @test a isa Vector{Float32}
             @test a ≈ aref rtol=1e-5
         end
 
         # Offset axes survive the promotion and the conversion back.
         Ao = OffsetArray(A32, -1, -1)
-        ao = symcover_min(AbsLog{2}(), Ao)
+        ao, _ = symcover_min(AbsLog{2}(), Ao)
         @test ao isa OffsetVector{Float32}
         @test axes(ao, 1) == axes(Ao, 1)
         @test collect(ao) ≈ aref rtol=1e-5
 
         # `Float16` pins the returned cover only to its own precision, which is what
         # the looser tolerance measures; the solve behind it is the same `Float64` one.
-        a16 = symcover_min(AbsLog{2}(), Float16.(Asym))
+        a16, _ = symcover_min(AbsLog{2}(), Float16.(Asym))
         @test a16 isa Vector{Float16}
         @test a16 ≈ aref rtol=2e-3
 
         # The soft cover is the same worker with no continuation and no boost.
-        s32 = soft_symcover(AbsLog{2}(), A32)
+        s32, _ = soft_symcover(AbsLog{2}(), A32)
         @test s32 isa Vector{Float32}
         @test s32 ≈ sref rtol=1e-5
 
@@ -69,16 +69,16 @@
 
         # A type at least as wide as `Float64` is solved in itself.
         Abig = BigFloat.(Asym[1:8, 1:8])
-        abig = symcover_min(AbsLog{2}(), Abig)
+        abig, _ = symcover_min(AbsLog{2}(), Abig)
         @test abig isa Vector{BigFloat}
-        @test Float64.(abig) ≈ symcover_min(AbsLog{2}(), Float64.(Abig)) rtol=1e-6
+        @test Float64.(abig) ≈ first(symcover_min(AbsLog{2}(), Float64.(Abig))) rtol=1e-6
         @test abig != BigFloat.(Float32.(abig))
     end
 
     @testset "BigFloat flows through the family" begin
         A = BigFloat[4 1.5; 1.5 1]
-        for a in (symcover(A), soft_symcover(A), symcover_min(AbsLog{2}(), A),
-                  soft_symcover(AbsLog{2}(), A))
+        for a in (symcover(A), soft_symcover(A), first(symcover_min(AbsLog{2}(), A)),
+                  first(soft_symcover(AbsLog{2}(), A)))
             @test eltype(a) === BigFloat
             @test all(isfinite, a)
         end
@@ -96,7 +96,7 @@
         @test iscover(a, b, A; rtol=1e-6)
 
         for ϕ in (AbsLog{1}(), AbsLinear{1}(), AbsLinear{2}())
-            x, y = soft_cover!(ϕ, copy(a0), copy(b0), A)
+            x, y = scales(soft_cover!(ϕ, copy(a0), copy(b0), A))
             @test eltype(x) === Float64
             @test eltype(y) === Float32
             @test all(isfinite, x) && all(isfinite, y)

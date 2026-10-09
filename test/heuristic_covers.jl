@@ -199,14 +199,14 @@ end
         n = rand(qrng, 5:15)
         B = randn(qrng, n, n) .* exp.(rand(qrng) * 3 * randn(qrng, n, n))
         A = (B + B') / 2
-        Emin = cover_objective(AbsLog{2}(), symcover_min(AbsLog{2}(), A), A)
+        Emin = cover_objective(AbsLog{2}(), first(symcover_min(AbsLog{2}(), A)), A)
         E3   = cover_objective(AbsLog{2}(), symcover(AbsLog{2}(), A; maxiter=3), A)
         iszero(Emin) || push!(gaps, log(E3 / Emin))
     end
     for _ in 1:10
         n = rand(qrng, 5:15)
         S = sprand(qrng, n, n, 0.3); A = Matrix(S + S')
-        Emin = cover_objective(AbsLog{2}(), symcover_min(AbsLog{2}(), A), A)
+        Emin = cover_objective(AbsLog{2}(), first(symcover_min(AbsLog{2}(), A)), A)
         E3   = cover_objective(AbsLog{2}(), symcover(AbsLog{2}(), A; maxiter=3), A)
         iszero(Emin) || push!(gaps, log(E3 / Emin))
     end

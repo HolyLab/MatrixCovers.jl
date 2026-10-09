@@ -172,33 +172,45 @@ cover_min!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
 #
 # Each `κ` stage freezes the weights, solves the normal equations, and uses a
 # backtracking line search. A final uniform shift restores feasibility.
-function symcover_min(::AbsLog{2}, A::AbstractMatrix; kwargs...)
-    a, _ = _symcover_min_abslog2(A; kwargs...)
-    return a
+function symcover_min(::AbsLog{2}, A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
+                      maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto,
+                      fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
+                      tol::Union{Real,Nothing}=nothing)
+    a, nt = _symcover_min_abslog2(A; κ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
+    return a, AugmentedLagrangianStats(A, nt)
 end
 
 # Asymmetric counterpart on stacked log scales `(α; β)`. The solve pins the
 # global gauge; `_cover_min_abslog2` regularizes and balances the remaining
 # component gauges.
-function cover_min(::AbsLog{2}, A::AbstractMatrix; kwargs...)
-    a, b, _ = _cover_min_abslog2(A; kwargs...)
-    return a, b
+function cover_min(::AbsLog{2}, A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
+                   maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto,
+                   fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
+                   tol::Union{Real,Nothing}=nothing)
+    a, b, nt = _cover_min_abslog2(A; κ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
+    return a, b, AugmentedLagrangianStats(A, nt)
 end
 
 # The convex objective has the same result from every valid start.
-function symcover_min!(::AbsLog{2}, a::AbstractVector, A::AbstractMatrix; kwargs...)
+function symcover_min!(::AbsLog{2}, a::AbstractVector, A::AbstractMatrix; κ::Real=AL_PENALTY,
+                       maxouter::Int=AL_MAXOUTER, maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto,
+                       fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
+                       tol::Union{Real,Nothing}=nothing)
     _prepare_symcover_start!(a, A)
-    anew, _ = _symcover_min_abslog2(A; start=a, kwargs...)
+    anew, nt = _symcover_min_abslog2(A; start=a, κ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
     a .= anew
-    return a
+    return a, AugmentedLagrangianStats(A, nt)
 end
 
-function cover_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
+function cover_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; κ::Real=AL_PENALTY,
+                    maxouter::Int=AL_MAXOUTER, maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto,
+                    fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
+                    tol::Union{Real,Nothing}=nothing)
     _prepare_cover_start!(a, b, A)
-    anew, bnew, _ = _cover_min_abslog2(A; start=(a, b), kwargs...)
+    anew, bnew, nt = _cover_min_abslog2(A; start=(a, b), κ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
     a .= anew
     b .= bnew
-    return a, b
+    return a, b, AugmentedLagrangianStats(A, nt)
 end
 
 # Multistart drivers for the `AbsLinear` kernels in MatrixCoversIpoptExt.
@@ -1170,21 +1182,19 @@ end
 # Augmented-Lagrangian defaults.
 const AL_PENALTY = 1e2
 const AL_MAXOUTER = 32
+const AL_MAXITER = 40
 
-# Warn when the returned scales may not minimize the objective: an active-set
-# finish ran and did not certify a minimizer, or none ran and the outer
-# iteration ended with a KKT residual well above the inner solver's accuracy
-# floor. With `maxouter = 0` there is no iteration and no warning.
+# Warn when the returned scales may not minimize the objective. With
+# `maxouter = 0` there is no iteration and no warning.
 function _warn_unconverged(fname::Symbol, stats, maxouter::Int)
     (stats.converged || maxouter == 0) && return nothing
-    v = isempty(stats.kkt) ? oftype(stats.vwarn, NaN) : stats.kkt[end]
-    uncertified = haskey(stats, :polish) && !stats.polish.certified
-    uncertified || v > stats.vwarn || return nothing
+    v = isempty(stats.kkt) ? oftype(stats.tol, NaN) : stats.kkt[end]
+    uncertified = stats.polish !== nothing && !stats.polish.certified
     advice = uncertified ?
              "The active-set finish that follows the multiplier iteration did not certify a minimizer, so the result is the multiplier iterate." :
              stats.nouter < maxouter ? "The residual stopped contracting before the update limit, so a larger `maxouter` will not help; try a larger `κ`." :
                                        "Increase `maxouter` or `κ`."
-    @warn "$fname: the multiplier iteration ended after $(stats.nouter) of maxouter=$maxouter updates with KKT residual $v (tolerance $(stats.vtol)); the result covers `A` but may not minimize the objective. $advice"
+    @warn "$fname: the multiplier iteration ended after $(stats.nouter) of maxouter=$maxouter updates with KKT residual $v (tolerance $(stats.tol)); the result covers `A` but may not minimize the objective. $advice"
     return nothing
 end
 
@@ -1347,7 +1357,7 @@ _dense_factor_type(::Type{T}) where {T} = LinearAlgebra.LU{T,Matrix{T},Vector{In
 # out by `_multiplier_storage`), inner solve and iteration counts, the
 # LSQR iterations of each solve (`lsqrtrace`), the per-update exits, drops, KKT
 # residuals (`kkt`) and penalty weights (`κs`), the convergence flag
-# (`kkt[end] <= vtol`; always `false` for `maxouter = 0`) with its tolerances,
+# (`kkt[end] <= tol`; always `false` for `maxouter = 0`) with its tolerance,
 # the `linsolve` and `precond` choices, the full Cholesky preconditioner's
 # predicted entry count `fill_entries` and flop count `factor_flops` (`0` and
 # `0.0` without a factor), the number of numeric factorizations `nrefactor`
@@ -1363,8 +1373,11 @@ _dense_factor_type(::Type{T}) where {T} = LinearAlgebra.LU{T,Matrix{T},Vector{In
 function _abslog2_auglag(sys::SupportSystem{T}, x0;
                                κ::Real, maxouter::Int, maxiter::Int, linsolve::Symbol, boost::Bool,
                                fillbudget::Real=LSQR_FILL_BUDGET,
-                               flopbudget::Real=LSQR_FLOP_BUDGET, zeroslack::Bool=true) where {T}
+                               flopbudget::Real=LSQR_FLOP_BUDGET, zeroslack::Bool=true,
+                               tol::Union{Real,Nothing}=nothing) where {T}
     κ > 1 || throw(ArgumentError("κ must exceed 1; got $κ"))
+    tol === nothing || (isfinite(tol) && tol >= 0) ||
+        throw(ArgumentError("tol must be finite and nonnegative; got $tol"))
     maxouter >= 0 || throw(ArgumentError("maxouter must be nonnegative; got $maxouter"))
     N = sys.N
     supp = sys.supp
@@ -1826,8 +1839,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     x = x0 === nothing ? solve_weighted(zeros(T, N), nothing) : x0
     # Absolute thresholds preserve covariance under rescaling because the
     # residuals are logarithmic.
-    vtol = 1000 * eps(T)
-    vwarn = max(sqrt(eps(T)), T(1e-6))
+    vtol = tol === nothing ? 1000 * eps(T) : T(tol)
     # Precision bounds the usable penalty: the cap is `1e5` (LSQR) or `1e8`
     # (exact solves) in `Float64` and grows as `1/sqrt(eps(T))`.
     κcap = T(use_lsqr ? 1e5 : 1e8) * sqrt(T(eps(Float64)) / eps(T))
@@ -1931,7 +1943,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     return x, (; multipliers=λ, nsolves=nsolves[], lsqriters=nlsqr[], lsqrtrace=Tuple(lsqrtrace), cgiters=ncg[],
                cholsolves=nchol[], nouter=length(exits), exits=Tuple(exits),
                drops=Tuple(drops), kkt=Tuple(viols), κs=Tuple(κtrace),
-               converged, vtol, vwarn,
+               converged, tol=vtol, polish=nothing,
                linsolve=(use_lsqr ? :lsqr : use_cg ? :woodbury : :dense),
                precond=(!use_precond ? :none : use_factor ? :factor : nforest[] > 0 ? :forest : :diagonal),
                nrefactor=nrefactor[], nforest=nforest[], ndiagonal=ndiagonal[], fill_entries, factor_flops=flops, nzeroed)
@@ -1948,10 +1960,11 @@ end
 # `stats.converged == stats.polish.certified`. A certified finish replaces the
 # multiplier iterate, so `stats.kkt` then describes the iterate, not the result.
 function _symcover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
-                               maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
+                               maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto, start=nothing,
                                boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET,
                                flopbudget::Real=LSQR_FLOP_BUDGET, polish::Bool=true,
-                               zeroslack::Bool=!polish, fname=:symcover_min)
+                               zeroslack::Bool=!polish, tol::Union{Real,Nothing}=nothing,
+                               fname=:symcover_min)
     linsolve in (:auto, :dense, :lsqr, :woodbury) ||
         throw(ArgumentError("linsolve must be :auto, :dense, :lsqr, or :woodbury; got :$linsolve"))
     # Shared symmetry check for native symmetric minimal covers.
@@ -1964,7 +1977,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter:
     if eps(T) > eps(Float64)
         a64, stats = _symcover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
                                            κ, maxouter, maxiter, linsolve, start, boost, fillbudget, flopbudget,
-                                           polish, zeroslack, fname)
+                                           polish, zeroslack, tol, fname)
         # Narrowing rounds to nearest and so can round a product below its entry.
         a = T.(a64)
         boost && _certify_cover!(a, A, fname)
@@ -2051,7 +2064,7 @@ function _symcover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter:
                            zeros(T, n))
     x0 = start === nothing ? nothing :
          T[hassupp[ip] ? log(T(start[i])) : zero(T) for (ip, i) in enumerate(ax)]
-    α, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve, boost, fillbudget, flopbudget, zeroslack)
+    α, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve, boost, fillbudget, flopbudget, zeroslack, tol)
     if polish && !stats.converged && maxouter > 0
         α, certified, nsteps, kkt = _polish_symcover(α, supp; multipliers=stats.multipliers,
                                                      budgets=(; fillbudget, flopbudget))
@@ -2079,11 +2092,12 @@ end
 # multipliers (`zeroslack`, which defaults to `!polish`). `stats` is as for
 # `_symcover_min_abslog2`.
 function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
-                            maxiter::Int=40, linsolve::Symbol=:auto, start=nothing,
+                            maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto, start=nothing,
                             boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET,
                             flopbudget::Real=LSQR_FLOP_BUDGET,
                             transversal::Union{Nothing,Bool,AbstractVector{<:Integer}}=nothing,
-                            polish::Bool=true, zeroslack::Bool=!polish, fname::Symbol=:cover_min)
+                            polish::Bool=true, zeroslack::Bool=!polish, tol::Union{Real,Nothing}=nothing,
+                            fname::Symbol=:cover_min)
     tt = transversal !== nothing && transversal !== false
     if tt
         linsolve in (:auto, :dense, :lsqr, :woodbury) ||
@@ -2101,7 +2115,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     if eps(T) > eps(Float64)
         a64, b64, stats = _cover_min_abslog2(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A);
                                              κ, maxouter, maxiter, linsolve, start, boost, fillbudget, flopbudget,
-                                             transversal, polish, zeroslack, fname)
+                                             transversal, polish, zeroslack, tol, fname)
         # Narrowing rounds to nearest and so can round a product below its entry.
         a, b = T.(a64), T.(b64)
         boost && _certify_cover!(a, b, A, fname)
@@ -2311,7 +2325,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
         s0
     end
     x, stats = _abslog2_auglag(sys, x0; κ, maxouter, maxiter, linsolve,
-                               boost=boost && !tt, fillbudget, flopbudget, zeroslack)
+                               boost=boost && !tt, fillbudget, flopbudget, zeroslack, tol)
     if polish && !stats.converged && maxouter > 0
         x, certified, nsteps, kkt = _polish_cover(x, supp, m; multipliers=stats.multipliers,
                                                   budgets=(; fillbudget, flopbudget))

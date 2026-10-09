@@ -121,7 +121,7 @@ end
     # Hermitian — where A[i,j] == conj(A[j,i]) — is a legitimate input.
     @test iscover(symcover([4.0 1.0; -1.0 4.0]), [4.0 1.0; -1.0 4.0]; rtol=8eps())
     P = sparse([1, 2, 1], [1, 2, 2], ComplexF64[4.0, 2.0, 0.5+0.5im], 2, 2)
-    @test symcover_min(AbsLog{2}(), Hermitian(P, :U)) isa AbstractVector
+    @test first(symcover_min(AbsLog{2}(), Hermitian(P, :U))) isa AbstractVector
 
     # Exact symmetry is not required: a symmetric matrix that has been through
     # floating-point arithmetic lands a ULP or so off, and must still be accepted.

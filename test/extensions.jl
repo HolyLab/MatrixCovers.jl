@@ -4,7 +4,7 @@
     for A in ([2.0 1.0; 1.0 3.0], [100.0 1.0; 1.0 0.01], [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0])
         a_fast  = symcover(A)
         a_lmin  = symcover_min(AbsLog{1}(), A)
-        a_qmin  = symcover_min(AbsLog{2}(), A)
+        a_qmin, _ = symcover_min(AbsLog{2}(), A)
         # qmin is a valid cover
         @test iscover(a_qmin, A; atol=1e-10)
         # qmin achieves lower or equal AbsLog{2} objective than symcover and lmin
@@ -18,7 +18,7 @@
     @test iscover(a, A; atol=1e-10)
     @test a ≈ [1, 2, 1]
     @test abs(cover_objective(AbsLog{1}(), a, A)) < 1e-10
-    a = symcover_min(AbsLog{2}(), A)
+    a, _ = symcover_min(AbsLog{2}(), A)
     @test iscover(a, A; atol=1e-10)
     @test a ≈ [1, 2, 1]
     @test abs(cover_objective(AbsLog{2}(), a, A)) < 1e-10
@@ -42,14 +42,14 @@
     # soft_symcover(AbsLog{p}): unconstrained, lower objective than constrained
     for A in ([2.0 1.0; 1.0 3.0], [100.0 1.0; 1.0 0.01], [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0])
         for ϕ in (AbsLog{1}(), AbsLog{2}())
-            a_soft = soft_symcover(ϕ, A)
-            a_hard = symcover_min(ϕ, A)
+            a_soft = scales(soft_symcover(ϕ, A))
+            a_hard = scales(symcover_min(ϕ, A))
             @test cover_objective(ϕ, a_soft, A) <= cover_objective(ϕ, a_hard, A) + 1e-8
         end
     end
     # Rank-1 matrix: both achieve zero objective
     A_rank1 = [2.0 1.0 4.0; 1.0 0.5 2.0; 4.0 2.0 8.0]
-    @test cover_objective(AbsLog{2}(), soft_symcover(AbsLog{2}(), A_rank1), A_rank1) < 1e-8
+    @test cover_objective(AbsLog{2}(), first(soft_symcover(AbsLog{2}(), A_rank1)), A_rank1) < 1e-8
     @test cover_objective(AbsLog{1}(), soft_symcover(AbsLog{1}(), A_rank1), A_rank1) < 1e-6
 
     # Non-optimal solver statuses are errors.
@@ -74,12 +74,12 @@ end
         a_fast = symcover(AbsLinear{2}(), A)
         for ϕ in (AbsLinear{1}(), AbsLinear{2}())
             # symcover_min: valid hard cover, at most as costly as heuristic
-            a_min = symcover_min(ϕ, A)
+            a_min = scales(symcover_min(ϕ, A))
             @test iscover(a_min, A; atol=1e-6)
             @test cover_objective(ϕ, a_min, A) <= cover_objective(ϕ, a_fast, A) + 1e-8
 
             # soft_symcover: lower or equal objective than constrained version
-            a_soft = soft_symcover(ϕ, A)
+            a_soft = scales(soft_symcover(ϕ, A))
             @test cover_objective(ϕ, a_soft, A) <= cover_objective(ϕ, a_min, A) + 1e-8
         end
         # AbsLinear{2} ≤ AbsLinear{1} soft objectives (p=2 is a stricter lower bound)
@@ -117,8 +117,8 @@ end
         es = sort(map(1:12) do _
             a = exp.(3 .* randn(rng, 5))
             b = exp.(3 .* randn(rng, 5))
-            sym ? cover_objective(ϕ, soft_symcover!(ϕ, a, A), A) :
-                  cover_objective(ϕ, soft_cover!(ϕ, a, b, A)..., A)
+            sym ? cover_objective(ϕ, scales(soft_symcover!(ϕ, a, A)), A) :
+                  cover_objective(ϕ, scales(soft_cover!(ϕ, a, b, A))..., A)
         end)
         gaps = diff(es) ./ es[begin:end-1]
         @test all(g -> g < 1e-8 || g > 1e-3, gaps)
@@ -148,18 +148,18 @@ end
     for ϕ in PENALTIES
         # Refinement does not worsen the start beyond solver tolerance.
         a0 = initialize_symcover(A)
-        a = symcover_min!(ϕ, copy(a0), A)
+        a = scales(symcover_min!(ϕ, copy(a0), A))
         @test iscover(a, A; rtol=1e-6)
         @test cover_objective(ϕ, a, A) <= cover_objective(ϕ, a0, A) * (1 + 1e-6) + 1e-8
 
         ab0, bb0 = initialize_cover(Aasym)
-        ab, bb = cover_min!(ϕ, copy(ab0), copy(bb0), Aasym)
+        ab, bb = scales(cover_min!(ϕ, copy(ab0), copy(bb0), Aasym))
         @test iscover(ab, bb, Aasym; rtol=1e-6)
         @test cover_objective(ϕ, ab, bb, Aasym) <= cover_objective(ϕ, ab0, bb0, Aasym) * (1 + 1e-6) + 1e-8
 
         # The asymmetric result is pinned to the balance convention, so the start is
         # read only up to the gauge a -> c*a, b -> b/c that leaves a[i]*b[j] fixed.
-        ga, gb = cover_min!(ϕ, 4 .* ab0, bb0 ./ 4, Aasym)
+        ga, gb = scales(cover_min!(ϕ, 4 .* ab0, bb0 ./ 4, Aasym))
         @test ga ≈ ab && gb ≈ bb
     end
 
@@ -180,17 +180,17 @@ end
               29.4700945830419 38.0236584552296 8.96405068596511 26.5775238859338;
               0.0181293142917846 0.0279078887878805 26.5775238859338 42.6650094474717]
     ϕ = AbsLinear{2}()
-    a_hard = symcover_min!(ϕ, initialize_symcover(Abasin; strategy=:hardcover), Abasin)
-    a_geo = symcover_min!(ϕ, initialize_symcover(Abasin; strategy=:geomean), Abasin)
+    a_hard = scales(symcover_min!(ϕ, initialize_symcover(Abasin; strategy=:hardcover), Abasin))
+    a_geo = scales(symcover_min!(ϕ, initialize_symcover(Abasin; strategy=:geomean), Abasin))
     @test iscover(a_hard, Abasin; rtol=1e-6)
     @test iscover(a_geo, Abasin; rtol=1e-6)
     @test cover_objective(ϕ, a_geo, Abasin) < cover_objective(ϕ, a_hard, Abasin) - 0.5
 
     # Offset axes survive the Ipopt position mapping.
     Ao = OffsetArray(A, -1, -1)
-    ao = symcover_min!(ϕ, initialize_symcover(Ao), Ao)
+    ao = scales(symcover_min!(ϕ, initialize_symcover(Ao), Ao))
     @test axes(ao, 1) == axes(Ao, 1)
-    @test collect(ao) ≈ symcover_min!(ϕ, initialize_symcover(A), A)
+    @test collect(ao) ≈ scales(symcover_min!(ϕ, initialize_symcover(A), A))
 end
 
 @testset "soft_symcover multistart and refiner (Ipopt)" begin
@@ -202,14 +202,14 @@ end
     @test soft_symcover!(AbsLinear{2}(), copy(a0), A) isa AbstractVector
 
     for ϕ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{1}())
-        @test soft_symcover(ϕ, A) == soft_symcover(ϕ, A)         # deterministic
+        @test scales(soft_symcover(ϕ, A)) == scales(soft_symcover(ϕ, A))         # deterministic
     end
 
     # No start on the menu beats the driver.
     for ϕ in (AbsLinear{1}(), AbsLinear{2}())
-        a = soft_symcover(ϕ, A)
+        a = scales(soft_symcover(ϕ, A))
         for strategy in (:hardcover, :geomean, :leaveout)
-            single = soft_symcover!(ϕ, initialize_symcover(A; strategy, feasible=:none), A)
+            single = scales(soft_symcover!(ϕ, initialize_symcover(A; strategy, feasible=:none), A))
             @test cover_objective(ϕ, a, A) <= cover_objective(ϕ, single, A) * (1 + 1e-6) + 1e-8
         end
     end
@@ -222,7 +222,7 @@ end
               3.0721768720180109 333.53567816710364 0.92571970793600067 7.3601096491681046 1.0844635712556003]
     d = [20.451338935482074, 0.69212569803171398, 35.401627522529395, 15.904906661932396, 0.19696509774727827]
     for ϕ in (AbsLinear{1}(), AbsLinear{2}())
-        @test covaries(A -> soft_symcover(ϕ, A), Abasins, d; rtol=1e-5)
+        @test covaries(A -> scales(soft_symcover(ϕ, A)), Abasins, d; rtol=1e-5)
     end
 
     @test_throws "positive scale on every supported row" soft_symcover!(AbsLinear{2}(), [1.0, -1.0, 2.0], A)
@@ -241,30 +241,30 @@ end
     @test_throws "requires a start that covers `A`" cover_min!(AbsLinear{2}(), copy(a0), copy(b0), A)
 
     for ϕ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{1}(), AbsLog{2}())
-        a, b = soft_cover(ϕ, A)
-        @test soft_cover(ϕ, A) == (a, b)                          # deterministic
+        a, b = scales(soft_cover(ϕ, A))
+        @test scales(soft_cover(ϕ, A)) == (a, b)                          # deterministic
         # The objective depends on `a`, `b` only through their products, so the split is
         # fixed by the balance convention rather than left to the solver.
         @test balance(a, b) ≈ 0 atol=1e-7
         # Gauge-invariant in the start: (a, b) and (2a, b/2) name the same point.
-        ag, bg = soft_cover!(ϕ, 2 .* copy(a0), copy(b0) ./ 2, A)
-        ah, bh = soft_cover!(ϕ, copy(a0), copy(b0), A)
+        ag, bg = scales(soft_cover!(ϕ, 2 .* copy(a0), copy(b0) ./ 2, A))
+        ah, bh = scales(soft_cover!(ϕ, copy(a0), copy(b0), A))
         @test ag ≈ ah && bg ≈ bh
     end
 
     # No start on the menu beats the driver.
     for ϕ in (AbsLinear{1}(), AbsLinear{2}())
-        a, b = soft_cover(ϕ, A)
+        a, b = scales(soft_cover(ϕ, A))
         for strategy in (:hardcover, :covariant)
-            sa, sb = soft_cover!(ϕ, initialize_cover(A; strategy, feasible=:none)..., A)
+            sa, sb = scales(soft_cover!(ϕ, initialize_cover(A; strategy, feasible=:none)..., A))
             @test cover_objective(ϕ, a, b, A) <= cover_objective(ϕ, sa, sb, A) * (1 + 1e-6) + 1e-8
         end
 
         # The asymmetric soft cover relaxes the symmetric one on a symmetric matrix.
         As = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
-        aa, ab = soft_cover(ϕ, As)
+        aa, ab = scales(soft_cover(ϕ, As))
         @test cover_objective(ϕ, aa, ab, As) <=
-              cover_objective(ϕ, soft_symcover(ϕ, As), As) * (1 + 1e-6) + 1e-8
+              cover_objective(ϕ, scales(soft_symcover(ϕ, As)), As) * (1 + 1e-6) + 1e-8
     end
 
     # Covariant starts make the selected cover covariant on irregular support too.
@@ -290,36 +290,36 @@ end
         B = exp.(3 .* randn(rng, n, n)) .* (rand(rng, n, n) .> 0.25)
         A = (B + B') / 2
         all(iszero, A) && continue
-        a = symcover_min(ϕ1, A)
+        a = scales(symcover_min(ϕ1, A))
         @test iscover(a, A; rtol=1e-7)
 
         # No cover beats it on AbsLog{1}: the canonical selection does not cost optimality.
         # Any feasible cover is a witness; use the AbsLog{2}-minimal one, and the heuristic.
-        for other in (symcover_min(ϕ2, A), symcover(A))
+        for other in (scales(symcover_min(ϕ2, A)), symcover(A))
             @test cover_objective(ϕ1, a, A) <= cover_objective(ϕ1, other, A) * (1 + 1e-6) + 1e-8
         end
 
         # Start-independent in the *result*, not merely in the objective value.
         for strategy in (:hardcover, :geomean, :diagfeasible)
-            @test symcover_min!(ϕ1, initialize_symcover(A; strategy), A) ≈ a
+            @test scales(symcover_min!(ϕ1, initialize_symcover(A; strategy), A)) ≈ a
         end
 
         # Scale-covariant: both objectives see `A` only through the residuals, which a
         # rescaling leaves invariant, so the selected member co-varies with the frame.
         D = Diagonal(exp.(randn(rng, n)))
-        @test symcover_min(ϕ1, D * A * D) ≈ D * a
+        @test scales(symcover_min(ϕ1, D * A * D)) ≈ D * a
     end
 
     # Gauge balancing and `AbsLog{1}` face selection are independent.
     Aasym = [3.0 1.0 7.0; 2.0 5.0 1.0; 8.0 1.0 4.0]
-    a, b = cover_min(ϕ1, Aasym)
+    a, b = scales(cover_min(ϕ1, Aasym))
     nza = vec(count(!iszero, Aasym, dims=2))
     nzb = vec(count(!iszero, Aasym, dims=1))
     @test sum(nza .* log.(a)) ≈ sum(nzb .* log.(b)) atol=1e-8
     @test iscover(a, b, Aasym; rtol=1e-7)
     # Gauge-invariant in the start, and start-independent in the result.
     a0, b0 = initialize_cover(Aasym; strategy=:geomean)
-    ag, bg = cover_min!(ϕ1, 4 .* a0, b0 ./ 4, Aasym)
+    ag, bg = scales(cover_min!(ϕ1, 4 .* a0, b0 ./ 4, Aasym))
     @test ag ≈ a && bg ≈ b
 end
 
@@ -332,43 +332,43 @@ end
     Aasym = [1.0 2.0 3.0; 40.0 5.0 0.6]
 
     for ϕ in (AbsLinear{1}(), AbsLinear{2}())
-        a = symcover_min(ϕ, Abasin)
+        a = scales(symcover_min(ϕ, Abasin))
         @test iscover(a, Abasin; rtol=1e-6)
         # No start on the menu beats the driver.
         for strategy in (:hardcover, :geomean, :leaveout)
-            single = symcover_min!(ϕ, initialize_symcover(Abasin; strategy), Abasin)
+            single = scales(symcover_min!(ϕ, initialize_symcover(Abasin; strategy), Abasin))
             @test cover_objective(ϕ, a, Abasin) <=
                   cover_objective(ϕ, single, Abasin) * (1 + 1e-6) + 1e-8
         end
-        @test symcover_min(ϕ, Abasin) == a   # deterministic
+        @test scales(symcover_min(ϕ, Abasin)) == a   # deterministic
 
-        ab, bb = cover_min(ϕ, Aasym)
+        ab, bb = scales(cover_min(ϕ, Aasym))
         @test iscover(ab, bb, Aasym; rtol=1e-6)
         for strategy in (:hardcover, :covariant)
-            sa, sb = cover_min!(ϕ, initialize_cover(Aasym; strategy)..., Aasym)
+            sa, sb = scales(cover_min!(ϕ, initialize_cover(Aasym; strategy)..., Aasym))
             @test cover_objective(ϕ, ab, bb, Aasym) <=
                   cover_objective(ϕ, sa, sb, Aasym) * (1 + 1e-6) + 1e-8
         end
-        @test cover_min(ϕ, Aasym) == (ab, bb)   # deterministic
+        @test scales(cover_min(ϕ, Aasym)) == (ab, bb)   # deterministic
 
         # The asymmetric cover relaxes the symmetric one: independent row and column
         # scales can only do better on the same matrix.
-        asym_a, asym_b = cover_min(ϕ, Abasin)
+        asym_a, asym_b = scales(cover_min(ϕ, Abasin))
         @test cover_objective(ϕ, asym_a, asym_b, Abasin) <=
-              cover_objective(ϕ, symcover_min(ϕ, Abasin), Abasin) * (1 + 1e-6) + 1e-8
+              cover_objective(ϕ, scales(symcover_min(ϕ, Abasin)), Abasin) * (1 + 1e-6) + 1e-8
     end
 
     # Restricting `strategies` changes the selected basin.
     ϕ = AbsLinear{2}()
-    @test symcover_min(ϕ, Abasin; strategies=(:hardcover,)) ≈
-          symcover_min!(ϕ, initialize_symcover(Abasin; strategy=:hardcover), Abasin)
-    @test cover_objective(ϕ, symcover_min(ϕ, Abasin), Abasin) <
-          cover_objective(ϕ, symcover_min(ϕ, Abasin; strategies=(:hardcover,)), Abasin) - 0.5
+    @test scales(symcover_min(ϕ, Abasin; strategies=(:hardcover,))) ≈
+          scales(symcover_min!(ϕ, initialize_symcover(Abasin; strategy=:hardcover), Abasin))
+    @test cover_objective(ϕ, scales(symcover_min(ϕ, Abasin)), Abasin) <
+          cover_objective(ϕ, scales(symcover_min(ϕ, Abasin; strategies=(:hardcover,))), Abasin) - 0.5
 
     # A matrix whose every row carries a single support entry admits no :leaveout start;
     # that strategy forfeits its slot rather than failing the solve.
     Adiag = [4.0 0.0; 0.0 9.0]
-    @test symcover_min(ϕ, Adiag) ≈ [2.0, 3.0] rtol=1e-4
+    @test scales(symcover_min(ϕ, Adiag)) ≈ [2.0, 3.0] rtol=1e-4
 
     @test_throws "unknown strategy :banana" symcover_min(ϕ, Abasin; strategies=(:banana,))
     @test_throws "no strategy in (:leaveout,)" symcover_min(ϕ, Adiag; strategies=(:leaveout,))
@@ -384,7 +384,7 @@ end
     # Do not hint when loading an extension cannot fix the argument type.
     A = [4.0 1.0; 1.0 4.0]
     e = try
-        symcover_min(AbsLog{2}(), "not a matrix")
+        first(symcover_min(AbsLog{2}(), "not a matrix"))
         nothing
     catch err
         err
@@ -457,7 +457,7 @@ end
 
     # The widened gate still refuses to fire when no package load could help.
     e5 = try
-        symcover_min!(AbsLog{2}(), [1.0, 1.0], "not a matrix")
+        first(symcover_min!(AbsLog{2}(), [1.0, 1.0], "not a matrix"))
         nothing
     catch err
         err
@@ -475,7 +475,7 @@ end
         dense[i, j] = dense[j, i] = v
     end
 
-    @test symcover_min(AbsLog{2}(), M) ≈ symcover_min(AbsLog{2}(), dense) rtol=1e-8
+    @test first(symcover_min(AbsLog{2}(), M)) ≈ first(symcover_min(AbsLog{2}(), dense)) rtol=1e-8
     @test MatrixCovers.symcover_min_jump(AbsLog{2}(), M) ≈
           MatrixCovers.symcover_min_jump(AbsLog{2}(), dense) rtol=1e-6
     @test symcover_min(AbsLog{1}(), M) ≈ symcover_min(AbsLog{1}(), dense) rtol=1e-6
@@ -487,7 +487,7 @@ end
         @test fh[1] ≈ fd[1] rtol=1e-6
         @test fh[2] ≈ fd[2] rtol=1e-6
     end
-    for (fh, fd) in ((cover_transversal(M), cover_transversal(dense)),
+    for (fh, fd) in ((scales(cover_transversal(M)), scales(cover_transversal(dense))),
                      (MatrixCovers.cover_transversal_jump(M)[1],
                       MatrixCovers.cover_transversal_jump(dense)[1]))
         @test fh[1] ≈ fd[1] rtol=1e-6
@@ -497,20 +497,20 @@ end
     # Ipopt: the AbsLinear kernels, whose starts the caller supplies.
     for p in (1, 2)
         ϕ = AbsLinear{p}()
-        sh = symcover_min!(ϕ, symcover(ϕ, M), M)
-        sd = symcover_min!(ϕ, symcover(ϕ, dense), dense)
+        sh = scales(symcover_min!(ϕ, symcover(ϕ, M), M))
+        sd = scales(symcover_min!(ϕ, symcover(ϕ, dense), dense))
         @test sh ≈ sd rtol=1e-5
 
-        ah, bh = cover_min!(ϕ, cover(ϕ, M)..., M)
-        ad, bd = cover_min!(ϕ, cover(ϕ, dense)..., dense)
+        ah, bh = scales(cover_min!(ϕ, cover(ϕ, M)..., M))
+        ad, bd = scales(cover_min!(ϕ, cover(ϕ, dense)..., dense))
         @test ah ≈ ad rtol=1e-5
         @test bh ≈ bd rtol=1e-5
 
-        @test soft_symcover!(ϕ, soft_symcover(ϕ, M), M) ≈
-              soft_symcover!(ϕ, soft_symcover(ϕ, dense), dense) rtol=1e-5
+        @test scales(soft_symcover!(ϕ, scales(soft_symcover(ϕ, M)), M)) ≈
+              scales(soft_symcover!(ϕ, scales(soft_symcover(ϕ, dense)), dense)) rtol=1e-5
 
-        sah, sbh = soft_cover!(ϕ, soft_cover(ϕ, M)..., M)
-        sad, sbd = soft_cover!(ϕ, soft_cover(ϕ, dense)..., dense)
+        sah, sbh = scales(soft_cover!(ϕ, scales(soft_cover(ϕ, M))..., M))
+        sad, sbd = scales(soft_cover!(ϕ, scales(soft_cover(ϕ, dense))..., dense))
         @test sah ≈ sad rtol=1e-5
         @test sbh ≈ sbd rtol=1e-5
     end

@@ -10,7 +10,7 @@ end
     # At the minimum, gradients should be near zero
     for A in ([2.0 1.0; 1.0 3.0], [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0])
         # At the minimum, ∑_j (log a[k] + log a[j] - log|A[k,j]|) ≈ 0 for each k
-        a = soft_symcover(AbsLog{2}(), A)
+        a, _ = soft_symcover(AbsLog{2}(), A)
         for k in axes(A, 1)
             residual = sum(abs(A[k,j]) != 0 ? log(a[k]) + log(a[j]) - log(abs(A[k,j])) : 0.0
                            for j in axes(A, 2))
@@ -33,7 +33,7 @@ end
     # Rank-1 is exact: A = [4 2; 2 1] = [2;1]*[2 1], so exact cover has all ratios = 1
     A = [4.0 2.0; 2.0 1.0]
     for ϕ in SOFT_PENALTIES
-        a = soft_symcover(ϕ, A)
+        a = scales(soft_symcover(ϕ, A))
         @test cover_objective(ϕ, a, A) ≈ 0.0 atol=1e-8
     end
 
@@ -41,13 +41,13 @@ end
     A = [2.0 1.0; 1.0 3.0]
     d = [2.0, 0.5]
     for ϕ in SOFT_PENALTIES
-        @test covaries(a -> soft_symcover(ϕ, a), A, d; rtol=1e-5)
+        @test covaries(a -> scales(soft_symcover(ϕ, a)), A, d; rtol=1e-5)
     end
 
     # Lower objective than naive uniform scaling perturbations
     A = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
     for ϕ in SOFT_PENALTIES
-        a = soft_symcover(ϕ, A)
+        a = scales(soft_symcover(ϕ, A))
         E = cover_objective(ϕ, a, A)
         for scale in [0.5, 0.9, 1.1, 2.0]
             @test E <= cover_objective(ϕ, scale .* a, A) + 1e-8
@@ -59,8 +59,8 @@ end
     A_zero  = [γ 1.0; 1.0 0.0]
     A_small = [γ 1.0; 1.0 1e-10]
     for ϕ in (AbsLinear{1}(), AbsLinear{2}())
-        a_zero  = soft_symcover(ϕ, A_zero)
-        a_small = soft_symcover(ϕ, A_small)
+        a_zero  = scales(soft_symcover(ϕ, A_zero))
+        a_small = scales(soft_symcover(ϕ, A_small))
         @test a_small ≈ a_zero atol=1e-5
     end
 
@@ -68,8 +68,8 @@ end
     for ϕ in (AbsLinear{1}(), AbsLinear{2}())
         for (B, d) in ((A_small, [50.0, 0.02]),
                        ([3.0 7.6e-10; 7.6e-10 80.0], [35.0, 3400.0]))
-            a0 = soft_symcover(ϕ, B)
-            as = soft_symcover(ϕ, B .* d .* d')
+            a0 = scales(soft_symcover(ϕ, B))
+            as = scales(soft_symcover(ϕ, B .* d .* d'))
             @test as .* as' ≈ (d .* d') .* (a0 .* a0') rtol=1e-6
         end
     end
@@ -177,7 +177,7 @@ end
     S = [4.0 1.0 0.0 2.0; 1.0 9.0 3.0 0.0; 0.0 3.0 1.0 5.0; 2.0 0.0 5.0 16.0]
     a = soft_symcover(AbsLog{1}(), S)
     E = cover_objective(AbsLog{1}(), a, S)
-    @test E <= cover_objective(AbsLog{1}(), soft_symcover(AbsLog{2}(), S), S) + 1e-12
+    @test E <= cover_objective(AbsLog{1}(), first(soft_symcover(AbsLog{2}(), S)), S) + 1e-12
     for _ in 1:20
         @test E <= cover_objective(AbsLog{1}(), a .* exp.(0.1 .* randn(rng, 4)), S) + 1e-8
     end
@@ -406,7 +406,7 @@ end
     asym_dense = rand(rng, 4, 6)
 
     for A in (sym_zeros, sym_dense, float.(last(symmetric_matrices[1])))
-        a = soft_symcover(AbsLog{2}(), A)
+        a, _ = soft_symcover(AbsLog{2}(), A)
         @test cover_objective(AbsLog{2}(), a, A) ≈ cover_objective(AbsLog{2}(), exact_sym(A), A) rtol=1e-8
         # Stationarity of the convex objective: ∂/∂α_k ∑ (α_i + α_j − log|A_ij|)² = 0.
         α = log.(a)
@@ -423,34 +423,34 @@ end
 
     # Sparse support distinguishes the exact minimum from the geometric mean.
     @test cover_objective(AbsLog{2}(), initialize_symcover(sym_dense; strategy=:geomean, feasible=:none), sym_dense) ≈
-          cover_objective(AbsLog{2}(), soft_symcover(AbsLog{2}(), sym_dense), sym_dense) rtol=1e-8
+          cover_objective(AbsLog{2}(), first(soft_symcover(AbsLog{2}(), sym_dense)), sym_dense) rtol=1e-8
     @test cover_objective(AbsLog{2}(), initialize_symcover(sym_zeros; strategy=:geomean, feasible=:none), sym_zeros) >
-          cover_objective(AbsLog{2}(), soft_symcover(AbsLog{2}(), sym_zeros), sym_zeros) * (1 + 1e-6)
+          cover_objective(AbsLog{2}(), first(soft_symcover(AbsLog{2}(), sym_zeros)), sym_zeros) * (1 + 1e-6)
 
     # Convex with one minimizer, so a refiner cannot be steered by its start.
     for strategy in (:geomean, :leaveout, :diagfeasible, :hardcover)
         a0 = initialize_symcover(sym_zeros; strategy, feasible=:none)
-        @test soft_symcover!(AbsLog{2}(), a0, sym_zeros) ≈ soft_symcover(AbsLog{2}(), sym_zeros)
+        @test first(soft_symcover!(AbsLog{2}(), a0, sym_zeros)) ≈ first(soft_symcover(AbsLog{2}(), sym_zeros))
     end
     a0, b0 = initialize_cover(asym_zeros; strategy=:geomean, feasible=:none)
     ar, br = soft_cover!(AbsLog{2}(), a0, b0, asym_zeros)
-    @test (ar, br) == soft_cover(AbsLog{2}(), asym_zeros)
+    @test (ar, br) == scales(soft_cover(AbsLog{2}(), asym_zeros))
 
     # A bipartite support graph makes the signless Laplacian singular; the balanced
     # representative is the one reported.
-    @test soft_symcover(AbsLog{2}(), [0 1; 1 0]) ≈ [1.0, 1.0]
+    @test first(soft_symcover(AbsLog{2}(), [0 1; 1 0])) ≈ [1.0, 1.0]
 
     # The `:lsqr` and dense paths solve the same problem.
-    @test soft_symcover(AbsLog{2}(), sym_zeros; linsolve=:lsqr) ≈
-          soft_symcover(AbsLog{2}(), sym_zeros; linsolve=:dense) rtol=1e-6
+    @test first(soft_symcover(AbsLog{2}(), sym_zeros; linsolve=:lsqr)) ≈
+          first(soft_symcover(AbsLog{2}(), sym_zeros; linsolve=:dense)) rtol=1e-6
 
     # The soft cover is the hard worker's cold solve, so it reaches the Woodbury path
     # too: one sparse Cholesky in place of the dense factorization, same answer.
     rng = StableRNG(77)
     X = exp.(randn(rng, 40, 40))
     Adense = (X .+ X') ./ 2
-    @test soft_symcover(AbsLog{2}(), Adense; linsolve=:woodbury) ≈
-          soft_symcover(AbsLog{2}(), Adense; linsolve=:dense) rtol=1e-8
+    @test first(soft_symcover(AbsLog{2}(), Adense; linsolve=:woodbury)) ≈
+          first(soft_symcover(AbsLog{2}(), Adense; linsolve=:dense)) rtol=1e-8
     @test MatrixCovers._soft_symcover_abslog2(Adense)[2].linsolve === :woodbury
     Y = exp.(randn(rng, 40, 30))
     aw, bw = soft_cover(AbsLog{2}(), Y; linsolve=:woodbury)
@@ -463,20 +463,20 @@ end
     rng = StableRNG(19)
     S0 = sprand(rng, 60, 60, 0.1)
     Ssp = S0 + S0' + I     # supported diagonal keeps every component non-bipartite
-    a = soft_symcover(AbsLog{2}(), Ssp)
+    a, _ = soft_symcover(AbsLog{2}(), Ssp)
     @test a isa Vector{Float64}
-    @test a == soft_symcover(AbsLog{2}(), Ssp; linsolve=:lsqr)
-    @test a ≈ soft_symcover(AbsLog{2}(), Matrix(Ssp); linsolve=:dense) rtol=1e-6
+    @test a == first(soft_symcover(AbsLog{2}(), Ssp; linsolve=:lsqr))
+    @test a ≈ first(soft_symcover(AbsLog{2}(), Matrix(Ssp); linsolve=:dense)) rtol=1e-6
     U = Symmetric(sparse(triu(Ssp)))
-    @test soft_symcover(AbsLog{2}(), U) == soft_symcover(AbsLog{2}(), U; linsolve=:lsqr)
+    @test first(soft_symcover(AbsLog{2}(), U)) == first(soft_symcover(AbsLog{2}(), U; linsolve=:lsqr))
     # Asymmetric form; the cover products are gauge-free.
     G = sprand(rng, 50, 40, 0.12)
     ga, gb = soft_cover(AbsLog{2}(), G)
-    @test (ga, gb) == soft_cover(AbsLog{2}(), G; linsolve=:lsqr)
+    @test (ga, gb) == scales(soft_cover(AbsLog{2}(), G; linsolve=:lsqr))
     gad, gbd = soft_cover(AbsLog{2}(), Matrix(G); linsolve=:dense)
     @test ga .* gb' ≈ gad .* gbd' rtol=1e-6
     a0 = copy(a)
-    @test soft_symcover!(AbsLog{2}(), a0, Ssp) == a
+    @test first(soft_symcover!(AbsLog{2}(), a0, Ssp)) == a
 end
 
 @testset "soft_symcover!/soft_cover! refiners" begin
@@ -485,8 +485,8 @@ end
 
     @testset "refining the multistart's own start reproduces it: $ϕ" for ϕ in SOFT_PENALTIES
         a = initialize_symcover(Asym; strategy=:geomean, feasible=:none)
-        soft_symcover!(ϕ, a, Asym)
-        @test cover_objective(ϕ, a, Asym) ≈ cover_objective(ϕ, soft_symcover(ϕ, Asym), Asym) rtol=1e-6
+        scales(soft_symcover!(ϕ, a, Asym))
+        @test cover_objective(ϕ, a, Asym) ≈ cover_objective(ϕ, scales(soft_symcover(ϕ, Asym)), Asym) rtol=1e-6
     end
 
     @testset "no-ϕ form defaults to PowerMean{2}" begin
@@ -505,8 +505,8 @@ end
         o(ϕ, a) = cover_objective(ϕ, a, Abasins)
 
         s1, s2 = starts()
-        @test o(AbsLog{2}(), soft_symcover!(AbsLog{2}(), s1, Abasins)) ≈
-              o(AbsLog{2}(), soft_symcover!(AbsLog{2}(), s2, Abasins))
+        @test o(AbsLog{2}(), first(soft_symcover!(AbsLog{2}(), s1, Abasins))) ≈
+              o(AbsLog{2}(), first(soft_symcover!(AbsLog{2}(), s2, Abasins)))
 
         s1, s2 = starts()
         @test !isapprox(o(AbsLinear{2}(), soft_symcover!(AbsLinear{2}(), s1, Abasins)),
@@ -517,10 +517,10 @@ end
     @testset "start need not cover A: $ϕ" for ϕ in SOFT_PENALTIES
         a = fill(0.01, 3)
         @test !iscover(a, Asym)
-        @test soft_symcover!(ϕ, a, Asym) === a
+        @test scales(soft_symcover!(ϕ, a, Asym)) === a
         b, c = fill(0.01, 2), fill(0.01, 3)
         @test !iscover(b, c, Agen)
-        @test soft_cover!(ϕ, b, c, Agen) === (b, c)
+        @test scales(soft_cover!(ϕ, b, c, Agen)) === (b, c)
     end
 
     @testset "invalid starts throw, naming the function called" begin
@@ -539,24 +539,24 @@ end
     @testset "unsupported rows are zeroed: $ϕ" for ϕ in SOFT_PENALTIES
         Az = [1.0 0.0 2.0; 0.0 0.0 0.0; 2.0 0.0 3.0]
         a = initialize_symcover(Az; strategy=:geomean, feasible=:none)
-        @test soft_symcover!(ϕ, a, Az)[2] == 0
+        @test scales(soft_symcover!(ϕ, a, Az))[2] == 0
     end
 
     @testset "asymmetric refiners pin the balance convention: $ϕ" for ϕ in SOFT_PENALTIES
         a, b = initialize_cover(Agen; strategy=:geomean, feasible=:none)
         a .*= 7           # move the gauge; the objective cannot see it
         b ./= 7
-        soft_cover!(ϕ, a, b, Agen)
+        scales(soft_cover!(ϕ, a, b, Agen))
         @test isbalanced(a, b, Agen)
     end
 
     @testset "offset axes propagate: $ϕ" for ϕ in SOFT_PENALTIES
         Ao = OffsetArray(Asym, -1:1, -1:1)
         ao = initialize_symcover(Ao; strategy=:geomean, feasible=:none)
-        soft_symcover!(ϕ, ao, Ao)
+        scales(soft_symcover!(ϕ, ao, Ao))
         @test axes(ao, 1) == axes(Ao, 1)
         aref = initialize_symcover(Asym; strategy=:geomean, feasible=:none)
-        soft_symcover!(ϕ, aref, Asym)
+        scales(soft_symcover!(ϕ, aref, Asym))
         @test collect(ao) ≈ aref rtol=1e-6
     end
 end
@@ -607,7 +607,7 @@ MatrixCovers.require_abs_symmetric(::HookOnlyMatrix, fname) = nothing
     @test soft_symcover(PowerMean{2}(), M) ≈ soft_symcover(PowerMean{2}(), dense) rtol=1e-12
     for ϕ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{1}(), AbsLog{2}())
         @test symcover(ϕ, M) ≈ symcover(ϕ, dense) rtol=1e-10
-        @test soft_symcover(ϕ, M) ≈ soft_symcover(ϕ, dense) rtol=1e-6
+        @test scales(soft_symcover(ϕ, M)) ≈ scales(soft_symcover(ϕ, dense)) rtol=1e-6
         @test iscover(symcover(ϕ, M), dense; rtol=8eps())
         @test cover_objective(ϕ, symcover(ϕ, M), M) ≈
               cover_objective(ϕ, symcover(ϕ, dense), dense) rtol=1e-10

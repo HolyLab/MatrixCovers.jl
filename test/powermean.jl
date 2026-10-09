@@ -63,23 +63,23 @@ end
             sp.nzval .= exp.(3 .* randn(rng, nnz(sp)))
             sp[7, :] .= 0; sp[:, 9] .= 0; dropzeros!(sp)
             for A in (dense, rect, wide, sp)
-                a, b = @test_logs soft_cover(ϕ, A)
+                a, b = @test_logs scales(soft_cover(ϕ, A))
                 @test pm_imbalance(p, a, b, A) < 1e-11
                 @test isbalanced(a, b, A)
                 @test all(iszero(a[i]) == all(iszero, A[i, :]) for i in axes(A, 1))
                 @test all(iszero(b[j]) == all(iszero, A[:, j]) for j in axes(A, 2))
             end
-            @test soft_cover(ϕ, sp)[1] isa Vector{Float64}
+            @test scales(soft_cover(ϕ, sp))[1] isa Vector{Float64}
 
             S = pm_testmatrix(rng, 35, 35; σ=3.0, zrows=(4,), zcols=(4,))
             S = S + S'
             Ssp = sparse(S)
             for M in (S, Ssp, Symmetric(Ssp))
-                a = soft_symcover(ϕ, M)
+                a = scales(soft_symcover(ϕ, M))
                 @test pm_imbalance(p, a, a, M) < 1e-11
                 @test a[4] == 0
                 # The unique minimizer is symmetric, so the asymmetric solver agrees.
-                x, y = soft_cover(ϕ, M)
+                x, y = scales(soft_cover(ϕ, M))
                 supp = findall(!iszero, S)
                 @test (x .* y')[supp] ≈ (a .* a')[supp] rtol=1e-10
             end

@@ -147,59 +147,28 @@ end
 # ============================================================
 
 # Sparse `AbsLog{2}` solvers default to LSQR; `:auto` uses support density.
-function symcover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
-    a, _ = _symcover_min_abslog2(A; linsolve, kwargs...)
-    return a
-end
+# Otherwise they are the generic methods, which check the other keywords.
+const _SparseSym = Union{SparseMatrixCSC,Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}}
 
-function cover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
-    a, b, _ = _cover_min_abslog2(A; linsolve, kwargs...)
-    return a, b
-end
+symcover_min(ϕ::AbsLog{2}, S::_SparseSym; linsolve::Symbol=:lsqr, kwargs...) =
+    invoke(symcover_min, Tuple{AbsLog{2},AbstractMatrix}, ϕ, S; linsolve, kwargs...)
 
-function symcover_min(ϕ::AbsLog{2}, S::Symmetric{<:Any, <:SparseMatrixCSC}; linsolve::Symbol=:lsqr, kwargs...)
-    a, _ = _symcover_min_abslog2(S; linsolve, kwargs...)
-    return a
-end
+cover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...) =
+    invoke(cover_min, Tuple{AbsLog{2},AbstractMatrix}, ϕ, A; linsolve, kwargs...)
 
-function symcover_min(ϕ::AbsLog{2}, H::Hermitian{<:Any, <:SparseMatrixCSC}; linsolve::Symbol=:lsqr, kwargs...)
-    a, _ = _symcover_min_abslog2(H; linsolve, kwargs...)
-    return a
-end
+cover_transversal(A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...) =
+    invoke(cover_transversal, Tuple{AbstractMatrix}, A; linsolve, kwargs...)
 
-function cover_transversal(A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
-    a, b, _ = _cover_min_abslog2(A; transversal=true, fname=:cover_transversal, linsolve, kwargs...)
-    return a, b
-end
+symcover_min!(ϕ::AbsLog{2}, a::AbstractVector, S::_SparseSym; linsolve::Symbol=:lsqr, kwargs...) =
+    invoke(symcover_min!, Tuple{AbsLog{2},AbstractVector,AbstractMatrix}, ϕ, a, S; linsolve, kwargs...)
 
-# The refiners take the same sparse `linsolve` default as the solvers above.
-function symcover_min!(ϕ::AbsLog{2}, a::AbstractVector,
-        S::Union{SparseMatrixCSC,Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}};
-        linsolve::Symbol=:lsqr, kwargs...)
-    _prepare_symcover_start!(a, S)
-    anew, _ = _symcover_min_abslog2(S; start=a, linsolve, kwargs...)
-    a .= anew
-    return a
-end
+cover_min!(ϕ::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::SparseMatrixCSC;
+           linsolve::Symbol=:lsqr, kwargs...) =
+    invoke(cover_min!, Tuple{AbsLog{2},AbstractVector,AbstractVector,AbstractMatrix}, ϕ, a, b, A;
+           linsolve, kwargs...)
 
-function cover_min!(ϕ::AbsLog{2}, a::AbstractVector, b::AbstractVector,
-                    A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
-    _prepare_cover_start!(a, b, A)
-    anew, bnew, _ = _cover_min_abslog2(A; start=(a, b), linsolve, kwargs...)
-    a .= anew
-    b .= bnew
-    return a, b
-end
+soft_symcover(ϕ::AbsLog{2}, S::_SparseSym; linsolve::Symbol=:lsqr, kwargs...) =
+    invoke(soft_symcover, Tuple{AbsLog{2},AbstractMatrix}, ϕ, S; linsolve, kwargs...)
 
-# Soft covers use the same sparse default.
-function soft_symcover(ϕ::AbsLog{2},
-        S::Union{SparseMatrixCSC,Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}};
-        linsolve::Symbol=:lsqr, kwargs...)
-    a, _ = _soft_symcover_abslog2(S; linsolve, kwargs...)
-    return a
-end
-
-function soft_cover(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...)
-    a, b, _ = _soft_cover_abslog2(A; linsolve, kwargs...)
-    return a, b
-end
+soft_cover(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...) =
+    invoke(soft_cover, Tuple{AbsLog{2},AbstractMatrix}, ϕ, A; linsolve, kwargs...)

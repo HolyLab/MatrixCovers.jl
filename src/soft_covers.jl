@@ -88,11 +88,12 @@ julia> round.(soft_symcover([0 1; 1 0]); digits=4)
 """
 soft_symcover(A::AbstractMatrix; kwargs...) = soft_symcover(PowerMean{2}(), A; kwargs...)
 
-function soft_symcover(::AbsLog{2}, A::AbstractMatrix; kwargs...)
+function soft_symcover(::AbsLog{2}, A::AbstractMatrix; linsolve::Symbol=:auto,
+                       fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("soft_symcover requires a square matrix"))
-    a, _ = _soft_symcover_abslog2(A; kwargs...)
-    return a
+    a, nt = _soft_symcover_abslog2(A; linsolve, fillbudget, flopbudget)
+    return a, LeastSquaresStats(nt)
 end
 
 # Sole owner of the starts/σ/rng defaults for the symmetric `AbsLinear` multistart.
@@ -129,8 +130,9 @@ soft_symcover!(a::AbstractVector, A::AbstractMatrix; kwargs...) =
 
 function soft_symcover!(::AbsLog{2}, a::AbstractVector, A::AbstractMatrix; kwargs...)
     _prepare_soft_symcover_start!(a, A)
-    a .= soft_symcover(AbsLog{2}(), A; kwargs...)   # convex: the start is not read
-    return a
+    anew, stats = soft_symcover(AbsLog{2}(), A; kwargs...)   # convex: the start is not read
+    a .= anew
+    return a, stats
 end
 
 """
@@ -196,9 +198,10 @@ julia> a * b'
 """
 soft_cover(A::AbstractMatrix; kwargs...) = soft_cover(PowerMean{2}(), A; kwargs...)
 
-function soft_cover(::AbsLog{2}, A::AbstractMatrix; kwargs...)
-    a, b, _ = _soft_cover_abslog2(A; kwargs...)
-    return a, b
+function soft_cover(::AbsLog{2}, A::AbstractMatrix; linsolve::Symbol=:auto,
+                    fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET)
+    a, b, nt = _soft_cover_abslog2(A; linsolve, fillbudget, flopbudget)
+    return a, b, LeastSquaresStats(nt)
 end
 
 # Sole owner of the starts/σ/rng defaults for the asymmetric `AbsLinear` multistart.
@@ -231,10 +234,10 @@ soft_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) 
 
 function soft_cover!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
     _prepare_soft_cover_start!(a, b, A)
-    anew, bnew = soft_cover(AbsLog{2}(), A; kwargs...)   # convex: the start is not read
+    anew, bnew, stats = soft_cover(AbsLog{2}(), A; kwargs...)   # convex: the start is not read
     a .= anew
     b .= bnew
-    return a, b
+    return a, b, stats
 end
 
 # Validate a symmetric soft-cover start and clear unsupported scales.

@@ -72,7 +72,7 @@ end
         (aj, bj), lπj = MatrixCovers.cover_transversal_jump(Af)
         @test lπj ≈ lπ rtol=1e-8
         @test logproduct_gap(a, b, aj, bj, Af) <= 1e-5
-        @test cover_objective(AbsLog{2}(), a, b, Af) >= cover_objective(AbsLog{2}(), cover_min(Af)..., Af) * (1 - 1e-6) - 1e-10
+        @test cover_objective(AbsLog{2}(), a, b, Af) >= cover_objective(AbsLog{2}(), scales(cover_min(Af))..., Af) * (1 - 1e-6) - 1e-10
     end
 
     # Independence from the transversal used: solve with each maximum-product
@@ -99,7 +99,7 @@ end
 
     # Coincides with the minimal cover when that is already tight on the transversal.
     D = [4.0 1 1; 1 4 1; 1 1 4]
-    @test logproduct_gap(cover_transversal(D)..., cover_min(D)..., D) <= 1e-7
+    @test logproduct_gap(scales(cover_transversal(D))..., scales(cover_min(D))..., D) <= 1e-7
 
     # Scale covariance, including power-of-two rescalings, which change the
     # floating-point costs seen by the matching.
@@ -116,7 +116,7 @@ end
         d = 2.0 .^ rand(rng, -30:30, n)
         e = 2.0 .^ rand(rng, -30:30, n)
         a, b = cover_transversal(A)
-        ã, b̃ = cover_transversal(Diagonal(d) * A * Diagonal(e))
+        ã, b̃ = scales(cover_transversal(Diagonal(d) * A * Diagonal(e)))
         @test logproduct_gap(ã ./ d, b̃ ./ e, a, b, A) <= 1e-6
         # The sparse default (`:lsqr`) and the dense solve agree.
         ad, bd = cover_transversal(Matrix(A); linsolve=:dense)
@@ -130,7 +130,7 @@ end
     T3 = sparse([4.0 1.0 0.0; 1.0 4.0 1.0; 0.0 1.0 4.0])
     a, b, st = _cover_min_abslog2(T3; transversal=true, linsolve=:lsqr, fname=:cover_transversal)
     @test st.precond === :factor
-    @test logproduct_gap(a, b, cover_transversal(Matrix(T3); linsolve=:dense)..., T3) <= 1e-7
+    @test logproduct_gap(a, b, scales(cover_transversal(Matrix(T3); linsolve=:dense))..., T3) <= 1e-7
 
     # Several support components, each balanced separately.
     Ablk = [1.0 2.0 0 0; 0.25 3.0 0 0; 0 0 1.5 2.5; 0 0 0.75 0]
@@ -161,7 +161,7 @@ end
 
     # Mutating form writes through its buffers.
     a2, b2 = zeros(3), zeros(3)
-    @test cover_transversal!(a2, b2, A) === (a2, b2)
+    @test scales(cover_transversal!(a2, b2, A)) === (a2, b2)
     @test (a2, b2) == (a, b)
     @test_throws DimensionMismatch cover_transversal!(zeros(2), zeros(3), A)
 

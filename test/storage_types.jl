@@ -17,7 +17,7 @@
         MatrixCovers.foreach_support_sym((i, j, v) -> push!(ref, (i, j, v)), Matrix(H))
         @test sort(got) == sort(ref)
 
-        a = symcover_min(AbsLog{2}(), H)
+        a, _ = symcover_min(AbsLog{2}(), H)
         @test iscover(a, Matrix(H); rtol=1e-8)
         @test symcover(AbsLog{2}(), H) ≈ symcover(AbsLog{2}(), Matrix(H)) rtol = 1e-12
     end
@@ -193,11 +193,11 @@ end
     symdenses = [[2.0 1.0 0.0; 1.0 3.0 2.0; 0.0 2.0 5.0],
                  [4.0 0.0 1.0; 0.0 0.0 0.0; 1.0 0.0 2.0]]   # second has a zero row/column
     for M in symdenses
-        ad = symcover_min(AbsLog{2}(), M)
+        ad, _ = symcover_min(AbsLog{2}(), M)
         asd = soft_symcover(AbsLinear{2}(), M)
         for A in (sparse(M), Symmetric(sparse(triu(M)), :U), Symmetric(sparse(tril(M)), :L),
                   Hermitian(sparse(triu(M)), :U))
-            a = symcover_min(AbsLog{2}(), A)
+            a, _ = symcover_min(AbsLog{2}(), A)
             @test iscover(a, M; atol=1e-7)
             @test cover_objective(AbsLog{2}(), a, M) ≈ cover_objective(AbsLog{2}(), ad, M) rtol = 1e-7 atol = 1e-10
             as = soft_symcover(AbsLinear{2}(), A)
@@ -206,12 +206,12 @@ end
             @test as isa Vector{Float64}
         end
     end
-    @test symcover_min(AbsLog{2}(), sparse(symdenses[1])) isa Vector{Float64}
+    @test first(symcover_min(AbsLog{2}(), sparse(symdenses[1]))) isa Vector{Float64}
     # Every soft_symcover penalty returns a dense Vector on sparse-backed input.
     let Ssp = sparse(symdenses[1])
         for ϕ in SOFT_PENALTIES
-            @test soft_symcover(ϕ, Ssp) isa Vector{Float64}
-            @test soft_symcover(ϕ, Symmetric(Ssp)) isa Vector{Float64}
+            @test scales(soft_symcover(ϕ, Ssp)) isa Vector{Float64}
+            @test scales(soft_symcover(ϕ, Symmetric(Ssp))) isa Vector{Float64}
         end
     end
 
@@ -228,16 +228,16 @@ end
         @test cover_objective(AbsLinear{2}(), as, bs, M) ≈ cover_objective(AbsLinear{2}(), asd, bsd, M) rtol = 1e-7 atol = 1e-10
         @test as isa Vector{Float64} && bs isa Vector{Float64}
     end
-    let (a, b) = cover_min(AbsLog{2}(), sparse(gendenses[1]))
+    let (a, b) = scales(cover_min(AbsLog{2}(), sparse(gendenses[1])))
         @test a isa Vector{Float64} && b isa Vector{Float64}
     end
 
     for D in (Diagonal([4.0, 9.0, 1.0]), Diagonal([4.0, 0.0, 1.0]))
         M = Matrix(D)
-        a = symcover_min(AbsLog{2}(), D)
+        a, _ = symcover_min(AbsLog{2}(), D)
         @test iscover(a, M; atol=1e-7)
         @test cover_objective(AbsLog{2}(), a, M) ≈
-              cover_objective(AbsLog{2}(), symcover_min(AbsLog{2}(), M), M) rtol = 1e-7
+              cover_objective(AbsLog{2}(), first(symcover_min(AbsLog{2}(), M)), M) rtol = 1e-7
         a2, b2 = cover_min(AbsLog{2}(), D)   # disconnected support: exercises the gauge ridge
         @test iscover(a2, b2, M; atol=1e-7)
         @test cover_objective(AbsLog{2}(), a2, b2, M) ≈ 0.0 atol = 1e-8   # diagonal is exactly coverable
@@ -248,7 +248,7 @@ end
         a2, b2 = cover_min(AbsLog{2}(), A)
         @test iscover(a2, b2, M; atol=1e-7)
         @test cover_objective(AbsLog{2}(), a2, b2, M) ≈
-              cover_objective(AbsLog{2}(), cover_min(AbsLog{2}(), M)..., M) rtol = 1e-7
+              cover_objective(AbsLog{2}(), scales(cover_min(AbsLog{2}(), M))..., M) rtol = 1e-7
     end
 end
 

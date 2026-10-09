@@ -191,47 +191,56 @@ reattach(a, ua) = a .* ua
 # Entry points
 # ============================================================
 
-sym(f, A::QMatrix, ϕ...; kwargs...) = reattach(f(ϕ..., strip_matrix(A); kwargs...), factor_units_sym(A))
+# The optimizing solvers return statistics after the scale vectors; split them off
+# so they pass through unchanged.
+symsplit(x::AbstractVector) = (x, ())
+symsplit(r::Tuple) = (first(r), Base.tail(r))
+asymsplit(r::Tuple) = (r[1], r[2], Base.tail(Base.tail(r)))
+
+function sym(f, A::QMatrix, ϕ...; kwargs...)
+    a, rest = symsplit(f(ϕ..., strip_matrix(A); kwargs...))
+    return isempty(rest) ? reattach(a, factor_units_sym(A)) : (reattach(a, factor_units_sym(A)), rest...)
+end
 
 function asym(f, A::QMatrix, ϕ...; kwargs...)
     ua, ub = factor_units(A)
-    a, b = f(ϕ..., strip_matrix(A); kwargs...)
-    return reattach(a, ua), reattach(b, ub)
+    a, b, rest = asymsplit(f(ϕ..., strip_matrix(A); kwargs...))
+    return (reattach(a, ua), reattach(b, ub), rest...)
 end
 
 # Allocating scratch from `A` permits uninitialized destination vectors.
 function sym!(f, a::QVector, A::QMatrix, ϕ...; kwargs...)
     ua = factor_units_sym(A)
     An = strip_matrix(A)
-    x = f(ϕ..., similar(a, float(real(eltype(An)))), An; kwargs...)
+    x, rest = symsplit(f(ϕ..., similar(a, float(real(eltype(An)))), An; kwargs...))
     a .= reattach(x, ua)
-    return a
+    return isempty(rest) ? a : (a, rest...)
 end
 
 function asym!(f, a::QVector, b::QVector, A::QMatrix, ϕ...; kwargs...)
     ua, ub = factor_units(A)
     An = strip_matrix(A)
     T = float(real(eltype(An)))
-    x, y = f(ϕ..., similar(a, T), similar(b, T), An; kwargs...)
+    x, y, rest = asymsplit(f(ϕ..., similar(a, T), similar(b, T), An; kwargs...))
     a .= reattach(x, ua)
     b .= reattach(y, ub)
-    return a, b
+    return (a, b, rest...)
 end
 
 # `a` is a start, and is read.
 function symstart!(f, a::QVector, A::QMatrix, ϕ...; kwargs...)
     ua = factor_units_sym(A)
-    x = f(ϕ..., strip_start(a, ua), strip_matrix(A); kwargs...)
+    x, rest = symsplit(f(ϕ..., strip_start(a, ua), strip_matrix(A); kwargs...))
     a .= reattach(x, ua)
-    return a
+    return isempty(rest) ? a : (a, rest...)
 end
 
 function asymstart!(f, a::QVector, b::QVector, A::QMatrix, ϕ...; kwargs...)
     ua, ub = factor_units(A)
-    x, y = f(ϕ..., strip_start(a, ua), strip_start(b, ub), strip_matrix(A); kwargs...)
+    x, y, rest = asymsplit(f(ϕ..., strip_start(a, ua), strip_start(b, ub), strip_matrix(A); kwargs...))
     a .= reattach(x, ua)
     b .= reattach(y, ub)
-    return a, b
+    return (a, b, rest...)
 end
 
 # Mirror the core penalty dispatch while specializing on unitful matrices.

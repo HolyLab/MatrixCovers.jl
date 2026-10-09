@@ -45,9 +45,13 @@ finishes a solve whose multiplier iteration stops early.
 
 See also: [`cover_transversal!`](@ref), [`cover_min`](@ref).
 """
-function cover_transversal(A::AbstractMatrix; kwargs...)
-    a, b, _ = _cover_min_abslog2(A; transversal=true, fname=:cover_transversal, kwargs...)
-    return a, b
+function cover_transversal(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
+                           maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto,
+                           fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
+                           tol::Union{Real,Nothing}=nothing)
+    a, b, nt = _cover_min_abslog2(A; transversal=true, fname=:cover_transversal,
+                                  κ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
+    return a, b, AugmentedLagrangianStats(A, nt)
 end
 
 """
@@ -61,10 +65,10 @@ and `b` and returns them. The initial contents of `a` and `b` are ignored.
 function cover_transversal!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
     axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
     axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
-    anew, bnew = cover_transversal(A; kwargs...)
+    anew, bnew, stats = cover_transversal(A; kwargs...)
     a .= anew
     b .= bnew
-    return a, b
+    return a, b, stats
 end
 
 # Binary min-heap of `(key, index)` pairs. Entries are never decreased in place;
