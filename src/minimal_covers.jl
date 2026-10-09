@@ -223,20 +223,26 @@ function symcover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=SYMCOVER_MIN_
     starts = [similar(Array{T}, ax) for _ in strategies]
     # Skip strategies that cannot produce a start for `A`.
     built = [_initialize_symcover!(a, A, strategy, :inflate) for (a, strategy) in zip(starts, strategies)]
-    covers = [symcover_min!(ϕ, a, A) for (a, ok) in zip(starts, built) if ok]
-    isempty(covers) &&
+    any(built) ||
         throw(ArgumentError("symcover_min: no strategy in $(string(strategies)) yields a starting cover of `A`"))
-    return covers[_multistart_select([cover_objective(ϕ, a, A) for a in covers])]
+    labels = Symbol[strategy for (strategy, ok) in zip(strategies, built) if ok]
+    covers = [a for (a, ok) in zip(starts, built) if ok]
+    stats = [last(symcover_min!(ϕ, a, A))::ExternalSolverStats for a in covers]
+    objs = [cover_objective(ϕ, a, A) for a in covers]
+    k = _multistart_select(objs)
+    return covers[k], MultistartStats{ExternalSolverStats,eltype(objs)}(labels, stats, objs, k, Symbol[])
 end
 
 function cover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=COVER_MIN_STRATEGIES)
     isempty(strategies) &&
         throw(ArgumentError("cover_min: `strategies` must name at least one starting cover"))
+    labels = Symbol[strategy for strategy in strategies]
     covers = [initialize_cover(A; strategy) for strategy in strategies]
-    for (a, b) in covers
-        cover_min!(ϕ, a, b, A)
-    end
-    return covers[_multistart_select([cover_objective(ϕ, a, b, A) for (a, b) in covers])]
+    stats = [last(cover_min!(ϕ, a, b, A))::ExternalSolverStats for (a, b) in covers]
+    objs = [cover_objective(ϕ, a, b, A) for (a, b) in covers]
+    k = _multistart_select(objs)
+    a, b = covers[k]
+    return a, b, MultistartStats{ExternalSolverStats,eltype(objs)}(labels, stats, objs, k, Symbol[])
 end
 
 # ============================================================
@@ -2447,7 +2453,7 @@ Base.showerror(io::IO, e::SolverFailure) = print(io, "SolverFailure: ", e.msg)
 # Reject all non-solved statuses, including `ALMOST_*`. Taking the status keeps
 # this helper independent of JuMP.
 function check_solved(status, solver, fname)
-    Symbol(status) in (:OPTIMAL, :LOCALLY_SOLVED) ||
+    Symbol(status) in SOLVED_STATUSES ||
         throw(SolverFailure("$fname: $solver terminated with status $status"))
     return nothing
 end

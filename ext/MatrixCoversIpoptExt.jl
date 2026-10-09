@@ -4,7 +4,7 @@ using JuMP: JuMP, @variable, @objective, @constraint
 using Ipopt: Ipopt
 using MatrixCovers
 using MatrixCovers: AbsLinear
-using MatrixCovers: _edge_list, _sym_edge_list, _degrees, SolverFailure
+using MatrixCovers: _edge_list, _sym_edge_list, _degrees, SolverFailure, ExternalSolverStats
 
 # Models use 1-based positions and scatter results back to `A`'s axes. Support is
 # gathered as an O(nnz) edge list; unsupported scales are zero.
@@ -13,6 +13,14 @@ using MatrixCovers: _edge_list, _sym_edge_list, _degrees, SolverFailure
 
 check_solved(model, fname) =
     MatrixCovers.check_solved(JuMP.termination_status(model), "Ipopt", fname)
+
+# Check that the solve of `model` succeeded and return its statistics.
+function solved_stats(model, fname)
+    check_solved(model, fname)
+    return ExternalSolverStats(:Ipopt, [Symbol(JuMP.termination_status(model))],
+                               [JuMP.objective_value(model)], [JuMP.barrier_iterations(model)],
+                               [JuMP.solve_time(model)])
+end
 
 # Suppress both solver output and Ipopt's startup banner.
 #
@@ -102,13 +110,13 @@ function MatrixCovers.symcover_min!(::AbsLinear{2}, a::AbstractVector, A)
         @constraint(model, α[ti[k]] + α[tj[k]] >= tlog[k])
     end
     JuMP.optimize!(model)
-    check_solved(model, "symcover_min!")
+    stats = solved_stats(model, "symcover_min!")
     lα = JuMP.value.(α)
     check_not_plateau("symcover_min!", fi, fj, flog, lα, lα, pr, pr)
     for (i, k) in pairs(pr)
         a[k] = supported[i] ? exp(lα[i]) : zero(T)
     end
-    return a
+    return a, stats
 end
 
 function MatrixCovers.symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
@@ -135,13 +143,13 @@ function MatrixCovers.symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
         @constraint(model, α[ti[k]] + α[tj[k]] >= tlog[k])
     end
     JuMP.optimize!(model)
-    check_solved(model, "symcover_min!")
+    stats = solved_stats(model, "symcover_min!")
     lα = JuMP.value.(α)
     check_not_plateau("symcover_min!", fi, fj, flog, lα, lα, pr, pr)
     for (i, k) in pairs(pr)
         a[k] = supported[i] ? exp(lα[i]) : zero(T)
     end
-    return a
+    return a, stats
 end
 
 # ============================================================
@@ -172,7 +180,7 @@ function MatrixCovers.cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractV
     end
     _pin_gauge!(model, α, β, A, nza, nzb)
     JuMP.optimize!(model)
-    check_solved(model, "cover_min!")
+    stats = solved_stats(model, "cover_min!")
     lα, lβ = JuMP.value.(α), JuMP.value.(β)
     check_not_plateau("cover_min!", ei, ej, elog, lα, lβ, pr, pc)
     for (i, k) in pairs(pr)
@@ -182,7 +190,8 @@ function MatrixCovers.cover_min!(::AbsLinear{2}, a::AbstractVector, b::AbstractV
         b[k] = nzb[j] > 0 ? exp(lβ[j]) : zero(T)
     end
     MatrixCovers._balance_cover!(a, b, A)
-    return MatrixCovers.inflate_feasible!(a, b, A)
+    MatrixCovers.inflate_feasible!(a, b, A)
+    return a, b, stats
 end
 
 function MatrixCovers.cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractVector, A)
@@ -211,7 +220,7 @@ function MatrixCovers.cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractV
     end
     _pin_gauge!(model, α, β, A, nza, nzb)
     JuMP.optimize!(model)
-    check_solved(model, "cover_min!")
+    stats = solved_stats(model, "cover_min!")
     lα, lβ = JuMP.value.(α), JuMP.value.(β)
     check_not_plateau("cover_min!", ei, ej, elog, lα, lβ, pr, pc)
     for (i, k) in pairs(pr)
@@ -221,7 +230,8 @@ function MatrixCovers.cover_min!(::AbsLinear{1}, a::AbstractVector, b::AbstractV
         b[k] = nzb[j] > 0 ? exp(lβ[j]) : zero(T)
     end
     MatrixCovers._balance_cover!(a, b, A)
-    return MatrixCovers.inflate_feasible!(a, b, A)
+    MatrixCovers.inflate_feasible!(a, b, A)
+    return a, b, stats
 end
 
 # ============================================================
@@ -246,13 +256,13 @@ function MatrixCovers.soft_symcover!(::AbsLinear{2}, a::AbstractVector, A)
     @objective(model, Min,
         sum(tw[k] * (1 - exp(tlog[k] - α[ti[k]] - α[tj[k]]))^2 for k in eachindex(ti)) + n_zeros)
     JuMP.optimize!(model)
-    check_solved(model, "soft_symcover!")
+    stats = solved_stats(model, "soft_symcover!")
     lα = JuMP.value.(α)
     check_not_plateau("soft_symcover!", fi, fj, flog, lα, lα, pr, pr)
     for (i, k) in pairs(pr)
         a[k] = supported[i] ? exp(lα[i]) : zero(T)
     end
-    return a
+    return a, stats
 end
 
 function MatrixCovers.soft_symcover!(::AbsLinear{1}, a::AbstractVector, A)
@@ -276,13 +286,13 @@ function MatrixCovers.soft_symcover!(::AbsLinear{1}, a::AbstractVector, A)
     end
     @objective(model, Min, sum(tw[k] * t[k] for k in eachindex(ti)) + n_zeros)
     JuMP.optimize!(model)
-    check_solved(model, "soft_symcover!")
+    stats = solved_stats(model, "soft_symcover!")
     lα = JuMP.value.(α)
     check_not_plateau("soft_symcover!", fi, fj, flog, lα, lα, pr, pr)
     for (i, k) in pairs(pr)
         a[k] = supported[i] ? exp(lα[i]) : zero(T)
     end
-    return a
+    return a, stats
 end
 
 # ============================================================
@@ -311,7 +321,7 @@ function MatrixCovers.soft_cover!(::AbsLinear{2}, a::AbstractVector, b::Abstract
         sum((1 - exp(elog[e] - α[ei[e]] - β[ej[e]]))^2 for e in eachindex(ei)) + n_zeros)
     _pin_gauge!(model, α, β, A, nza, nzb)
     JuMP.optimize!(model)
-    check_solved(model, "soft_cover!")
+    stats = solved_stats(model, "soft_cover!")
     lα, lβ = JuMP.value.(α), JuMP.value.(β)
     check_not_plateau("soft_cover!", ei, ej, elog, lα, lβ, pr, pc)
     for (i, k) in pairs(pr)
@@ -320,7 +330,8 @@ function MatrixCovers.soft_cover!(::AbsLinear{2}, a::AbstractVector, b::Abstract
     for (j, k) in pairs(pc)
         b[k] = nzb[j] > 0 ? exp(lβ[j]) : zero(T)
     end
-    return MatrixCovers._balance_cover!(a, b, A)
+    MatrixCovers._balance_cover!(a, b, A)
+    return a, b, stats
 end
 
 function MatrixCovers.soft_cover!(::AbsLinear{1}, a::AbstractVector, b::AbstractVector, A)
@@ -347,7 +358,7 @@ function MatrixCovers.soft_cover!(::AbsLinear{1}, a::AbstractVector, b::Abstract
     @objective(model, Min, sum(t) + n_zeros)
     _pin_gauge!(model, α, β, A, nza, nzb)
     JuMP.optimize!(model)
-    check_solved(model, "soft_cover!")
+    stats = solved_stats(model, "soft_cover!")
     lα, lβ = JuMP.value.(α), JuMP.value.(β)
     check_not_plateau("soft_cover!", ei, ej, elog, lα, lβ, pr, pc)
     for (i, k) in pairs(pr)
@@ -356,7 +367,8 @@ function MatrixCovers.soft_cover!(::AbsLinear{1}, a::AbstractVector, b::Abstract
     for (j, k) in pairs(pc)
         b[k] = nzb[j] > 0 ? exp(lβ[j]) : zero(T)
     end
-    return MatrixCovers._balance_cover!(a, b, A)
+    MatrixCovers._balance_cover!(a, b, A)
+    return a, b, stats
 end
 
 end  # module MatrixCoversIpoptExt

@@ -174,11 +174,11 @@
         end
         for ϕ in PENALTIES
             @test unit.(symcover(ϕ, A)) == UA
-            @test unit.(scales(soft_symcover(ϕ, A))) == UA
-            @test unit.(scales(symcover_min(ϕ, A))) == UA
+            @test unit.(first(soft_symcover(ϕ, A))) == UA
+            @test unit.(first(symcover_min(ϕ, A))) == UA
             @test all(unit.(v) == UA for v in cover(ϕ, A))
-            @test all(unit.(v) == UA for v in scales(soft_cover(ϕ, A)))
-            @test all(unit.(v) == UA for v in scales(cover_min(ϕ, A)))
+            @test all(unit.(v) == UA for v in soft_cover(ϕ, A)[1:2])
+            @test all(unit.(v) == UA for v in cover_min(ϕ, A)[1:2])
         end
         for ϕ in (PowerMean{1}(), PowerMean{2}())
             @test unit.(scales(soft_symcover(ϕ, A))) == UA
@@ -247,7 +247,7 @@
         @test unit.(a) == unit.(b) == UA
 
         a = initialize_symcover(A)
-        @test soft_symcover!(AbsLinear{2}(), a, A) === a
+        @test first(soft_symcover!(AbsLinear{2}(), a, A)) === a
         @test unit.(a) == UA
 
         a, b = initialize_cover(A)

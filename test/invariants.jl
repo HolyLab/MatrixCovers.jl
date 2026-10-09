@@ -9,13 +9,13 @@
 const SYM_NOTIONS = (
     (name = "symcover",                        f = A -> symcover(A),                          hard = true,  rtol = 1e-9),
     (name = "symcover_min(AbsLog{2})",         f = A -> first(symcover_min(AbsLog{2}(), A)),         hard = true,  rtol = 1e-5),
-    (name = "symcover_min(AbsLog{1})",         f = A -> symcover_min(AbsLog{1}(), A),         hard = true,  rtol = 1e-5),
-    (name = "symcover_min(AbsLinear{1})",      f = A -> symcover_min(AbsLinear{1}(), A),      hard = true,  rtol = 1e-5),
-    (name = "symcover_min(AbsLinear{2})",      f = A -> symcover_min(AbsLinear{2}(), A),      hard = true,  rtol = 1e-5),
+    (name = "symcover_min(AbsLog{1})",         f = A -> first(symcover_min(AbsLog{1}(), A)),         hard = true,  rtol = 1e-5),
+    (name = "symcover_min(AbsLinear{1})",      f = A -> first(symcover_min(AbsLinear{1}(), A)),      hard = true,  rtol = 1e-5),
+    (name = "symcover_min(AbsLinear{2})",      f = A -> first(symcover_min(AbsLinear{2}(), A)),      hard = true,  rtol = 1e-5),
     (name = "soft_symcover(AbsLog{2})",        f = A -> first(soft_symcover(AbsLog{2}(), A)),        hard = false, rtol = 1e-9),
-    (name = "soft_symcover(AbsLog{1})",        f = A -> soft_symcover(AbsLog{1}(), A),        hard = false, rtol = 1e-5),
-    (name = "soft_symcover(AbsLinear{2})",     f = A -> soft_symcover(AbsLinear{2}(), A),     hard = false, rtol = 1e-5),
-    (name = "soft_symcover(AbsLinear{1})",     f = A -> soft_symcover(AbsLinear{1}(), A),     hard = false, rtol = 1e-5),
+    (name = "soft_symcover(AbsLog{1})",        f = A -> first(soft_symcover(AbsLog{1}(), A)),        hard = false, rtol = 1e-5),
+    (name = "soft_symcover(AbsLinear{2})",     f = A -> first(soft_symcover(AbsLinear{2}(), A)),     hard = false, rtol = 1e-5),
+    (name = "soft_symcover(AbsLinear{1})",     f = A -> first(soft_symcover(AbsLinear{1}(), A)),     hard = false, rtol = 1e-5),
     (name = "soft_symcover(PowerMean{2})",     f = A -> first(soft_symcover(PowerMean{2}(), A)),     hard = false, rtol = 1e-12),
     (name = "soft_symcover(PowerMean{1})",     f = A -> first(soft_symcover(PowerMean{1}(), A)),     hard = false, rtol = 1e-12),
 )
@@ -23,13 +23,13 @@ const SYM_NOTIONS = (
 const GEN_NOTIONS = (
     (name = "cover",                          f = A -> cover(A),                          hard = true,  rtol = 1e-9),
     (name = "cover_min(AbsLog{2})",           f = A -> scales(cover_min(AbsLog{2}(), A)),         hard = true,  rtol = 1e-5),
-    (name = "cover_min(AbsLog{1})",           f = A -> cover_min(AbsLog{1}(), A),         hard = true,  rtol = 1e-5),
-    (name = "cover_min(AbsLinear{1})",        f = A -> cover_min(AbsLinear{1}(), A),      hard = true,  rtol = 1e-5),
-    (name = "cover_min(AbsLinear{2})",        f = A -> cover_min(AbsLinear{2}(), A),      hard = true,  rtol = 1e-5),
+    (name = "cover_min(AbsLog{1})",           f = A -> scales(cover_min(AbsLog{1}(), A)),         hard = true,  rtol = 1e-5),
+    (name = "cover_min(AbsLinear{1})",        f = A -> scales(cover_min(AbsLinear{1}(), A)),      hard = true,  rtol = 1e-5),
+    (name = "cover_min(AbsLinear{2})",        f = A -> scales(cover_min(AbsLinear{2}(), A)),      hard = true,  rtol = 1e-5),
     (name = "soft_cover(AbsLog{2})",          f = A -> scales(soft_cover(AbsLog{2}(), A)),        hard = false, rtol = 1e-9),
-    (name = "soft_cover(AbsLog{1})",          f = A -> soft_cover(AbsLog{1}(), A),        hard = false, rtol = 1e-5),
-    (name = "soft_cover(AbsLinear{2})",       f = A -> soft_cover(AbsLinear{2}(), A),     hard = false, rtol = 1e-5),
-    (name = "soft_cover(AbsLinear{1})",       f = A -> soft_cover(AbsLinear{1}(), A),     hard = false, rtol = 1e-5),
+    (name = "soft_cover(AbsLog{1})",          f = A -> scales(soft_cover(AbsLog{1}(), A)),        hard = false, rtol = 1e-5),
+    (name = "soft_cover(AbsLinear{2})",       f = A -> scales(soft_cover(AbsLinear{2}(), A)),     hard = false, rtol = 1e-5),
+    (name = "soft_cover(AbsLinear{1})",       f = A -> scales(soft_cover(AbsLinear{1}(), A)),     hard = false, rtol = 1e-5),
     (name = "soft_cover(PowerMean{2})",       f = A -> scales(soft_cover(PowerMean{2}(), A)),     hard = false, rtol = 1e-12),
     (name = "soft_cover(PowerMean{3})",       f = A -> scales(soft_cover(PowerMean{3}(), A)),     hard = false, rtol = 1e-12),
 )
@@ -168,7 +168,7 @@ const GEN_NOTIONS = (
             @test cover_objective(AbsLog{2}(), MatrixCovers.symcover_min_jump(AbsLog{2}(), M), M) ≈ o2 rtol=1e-5
             # AbsLog{1}: the HiGHS LP, whose objective is assembled from nonzero counts
             # rather than from the residuals directly.
-            @test cover_objective(AbsLog{1}(), symcover_min(AbsLog{1}(), M), M) ≈ ref_min(1, M) rtol=1e-5
+            @test cover_objective(AbsLog{1}(), first(symcover_min(AbsLog{1}(), M)), M) ≈ ref_min(1, M) rtol=1e-5
         end
     end
 end

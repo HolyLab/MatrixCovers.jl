@@ -194,13 +194,13 @@ end
                  [4.0 0.0 1.0; 0.0 0.0 0.0; 1.0 0.0 2.0]]   # second has a zero row/column
     for M in symdenses
         ad, _ = symcover_min(AbsLog{2}(), M)
-        asd = soft_symcover(AbsLinear{2}(), M)
+        asd, _ = soft_symcover(AbsLinear{2}(), M)
         for A in (sparse(M), Symmetric(sparse(triu(M)), :U), Symmetric(sparse(tril(M)), :L),
                   Hermitian(sparse(triu(M)), :U))
             a, _ = symcover_min(AbsLog{2}(), A)
             @test iscover(a, M; atol=1e-7)
             @test cover_objective(AbsLog{2}(), a, M) ≈ cover_objective(AbsLog{2}(), ad, M) rtol = 1e-7 atol = 1e-10
-            as = soft_symcover(AbsLinear{2}(), A)
+            as, _ = soft_symcover(AbsLinear{2}(), A)
             @test cover_objective(AbsLinear{2}(), as, M) ≈ cover_objective(AbsLinear{2}(), asd, M) rtol = 1e-7 atol = 1e-10
             # Scale vectors are dense: return a plain Vector, matching cover/symcover.
             @test as isa Vector{Float64}
@@ -210,8 +210,8 @@ end
     # Every soft_symcover penalty returns a dense Vector on sparse-backed input.
     let Ssp = sparse(symdenses[1])
         for ϕ in SOFT_PENALTIES
-            @test scales(soft_symcover(ϕ, Ssp)) isa Vector{Float64}
-            @test scales(soft_symcover(ϕ, Symmetric(Ssp))) isa Vector{Float64}
+            @test first(soft_symcover(ϕ, Ssp)) isa Vector{Float64}
+            @test first(soft_symcover(ϕ, Symmetric(Ssp))) isa Vector{Float64}
         end
     end
 

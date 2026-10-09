@@ -87,6 +87,6 @@
         # rather than forbidding it, so whether one covers is a real question.
         Asoft = [1.0 4.0; 4.0 1.0]
         @test iscover(symcover(Asoft), Asoft; rtol=8eps())
-        @test !iscover(soft_symcover(AbsLinear{2}(), Asoft), Asoft)
+        @test !iscover(first(soft_symcover(AbsLinear{2}(), Asoft)), Asoft)
     end
 end

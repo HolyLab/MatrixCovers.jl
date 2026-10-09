@@ -324,27 +324,26 @@ end
 
 # Shared multistart driver: refine every start, then select. `inits_builder` returns the
 # labels, the starts, and the number `nfixed` of leading deterministic starts; the rest
-# are random. A random start whose refinement throws `SolverFailure` gets objective
-# `Inf`, while a failing deterministic start propagates the error. Optional `labels` and
-# `objs` collect candidate data for tests.
-function _multistart_run(inits_builder::F, refine!::G, objective::H, A::AbstractMatrix,
-                         starts::Int, σ::Real, rng; labels=nothing, objs=nothing) where {F,G,H}
+# are random. `refine!` returns statistics of type `S`. A random start whose refinement
+# throws `SolverFailure` is left out of the selection, while a failing deterministic
+# start propagates the error. Returns the selected start and a `MultistartStats`.
+function _multistart_run(::Type{S}, inits_builder::F, refine!::G, objective::H, A::AbstractMatrix,
+                         starts::Int, σ::Real, rng) where {S,F,G,H}
     labs, inits, nfixed = inits_builder(A, starts, σ, rng)
-    failed = falses(length(inits))
+    ok = trues(length(inits))
+    stats = S[]
     for (k, x) in enumerate(inits)
-        k <= nfixed && (refine!(x, A); continue)
         try
-            refine!(x, A)
+            push!(stats, refine!(x, A)::S)
         catch err
-            err isa SolverFailure || rethrow()
-            failed[k] = true
+            (k <= nfixed || !(err isa SolverFailure)) && rethrow()
+            ok[k] = false
         end
     end
-    E = [objective(x, A) for x in inits]
-    E[failed] .= Inf
-    labels === nothing || append!(labels, labs)
-    objs === nothing || append!(objs, E)
-    return inits[_multistart_select(E)]
+    kept = inits[ok]
+    E = [objective(x, A) for x in kept]
+    sel = _multistart_select(E)
+    return kept[sel], MultistartStats{S,eltype(E)}(labs[ok], stats, E, sel, labs[.!ok])
 end
 
 # Symmetric `AbsLinear` starts in selection order, followed by log-normal
@@ -353,22 +352,22 @@ function _soft_symcover_abslinear_inits(A::AbstractMatrix, starts::Int, σ::Real
     ax = axes(A, 1)
     T = float(real(eltype(A)))
     # The soft cover imposes no coverage constraint, so the starts are taken raw
-    # (`feasible=:none`); "inflate" is the one candidate that is deliberately a cover.
+    # (`feasible=:none`); `:inflate` is the one candidate that is deliberately a cover.
     ag = initialize_symcover(A; strategy=:geomean, feasible=:none)   # also the perturbation base
-    labels = ["geomean"]
+    labels = [:geomean]
     inits = [copy(ag)]
     length(inits) < starts &&
-        (push!(labels, "hardcover"); push!(inits, initialize_symcover(A; strategy=:hardcover, feasible=:none)))
+        (push!(labels, :hardcover); push!(inits, initialize_symcover(A; strategy=:hardcover, feasible=:none)))
     length(inits) < starts &&
-        (push!(labels, "inflate"); push!(inits, initialize_symcover(A; strategy=:geomean, feasible=:inflate)))
+        (push!(labels, :inflate); push!(inits, initialize_symcover(A; strategy=:geomean, feasible=:inflate)))
     if length(inits) < starts
         # `:leaveout` is unavailable when no entry can be dropped; a multistart forfeits that
         # slot rather than fail, so it takes the start through the gated builder.
         lo = similar(ag)
-        _initialize_symcover!(lo, A, :leaveout, :none) && (push!(labels, "leaveout"); push!(inits, lo))
+        _initialize_symcover!(lo, A, :leaveout, :none) && (push!(labels, :leaveout); push!(inits, lo))
     end
     if length(inits) < starts && _nsupport(A) < length(A)
-        push!(labels, "feasible"); push!(inits, initialize_symcover(A; strategy=:diagfeasible, feasible=:none))
+        push!(labels, :feasible); push!(inits, initialize_symcover(A; strategy=:diagfeasible, feasible=:none))
     end
     nfixed, k = length(inits), 0
     while length(inits) < starts
@@ -377,18 +376,17 @@ function _soft_symcover_abslinear_inits(A::AbstractMatrix, starts::Int, σ::Real
             ξ = randn(rng)
             p[i] = ag[i] > 0 ? ag[i] * exp(T(σ) * T(ξ)) : zero(T)
         end
-        k += 1; push!(labels, "rand$k"); push!(inits, p)
+        k += 1; push!(labels, Symbol(:rand, k)); push!(inits, p)
     end
     return labels, inits, nfixed
 end
 
 # Scale-covariant symmetric `AbsLinear` multistart.
-function _soft_symcover_abslinear(ϕ::AbsLinear, A::AbstractMatrix, starts::Int, σ::Real, rng;
-                                  labels=nothing, objs=nothing)
-    return _multistart_run(_soft_symcover_abslinear_inits,
-                           (a, A) -> soft_symcover!(ϕ, a, A),
+function _soft_symcover_abslinear(ϕ::AbsLinear, A::AbstractMatrix, starts::Int, σ::Real, rng)
+    return _multistart_run(ExternalSolverStats, _soft_symcover_abslinear_inits,
+                           (a, A) -> last(soft_symcover!(ϕ, a, A)),
                            (a, A) -> cover_objective(ϕ, a, A),
-                           A, starts, σ, rng; labels, objs)
+                           A, starts, σ, rng)
 end
 
 # Asymmetric `AbsLinear` starts: boosted covariant start, tightened cover, and
@@ -396,10 +394,10 @@ end
 function _soft_cover_abslinear_inits(A::AbstractMatrix, starts::Int, σ::Real, rng)
     T = float(real(eltype(A)))
     ag, bg = initialize_cover(A; strategy=:covariant, feasible=:boost)
-    labels = ["boost"]
+    labels = [:boost]
     inits = [(copy(ag), copy(bg))]
     # Reuse the covariant start and boost pass when constructing the hard start.
-    length(inits) < starts && (push!(labels, "hardcover"); push!(inits, tighten_cover!(copy(ag), copy(bg), A)))
+    length(inits) < starts && (push!(labels, :hardcover); push!(inits, tighten_cover!(copy(ag), copy(bg), A)))
     nfixed, k = length(inits), 0
     while length(inits) < starts
         a = similar(ag); b = similar(bg)
@@ -411,16 +409,16 @@ function _soft_cover_abslinear_inits(A::AbstractMatrix, starts::Int, σ::Real, r
             η = randn(rng)
             b[j] = bg[j] > 0 ? bg[j] * exp(T(σ) * T(η)) : zero(T)
         end
-        k += 1; push!(labels, "rand$k"); push!(inits, (a, b))
+        k += 1; push!(labels, Symbol(:rand, k)); push!(inits, (a, b))
     end
     return labels, inits, nfixed
 end
 
 # Scale-covariant asymmetric `AbsLinear` multistart.
-function _soft_cover_abslinear(ϕ::AbsLinear, A::AbstractMatrix, starts::Int, σ::Real, rng;
-                               labels=nothing, objs=nothing)
-    return _multistart_run(_soft_cover_abslinear_inits,
-                           (ab, A) -> soft_cover!(ϕ, ab[1], ab[2], A),
-                           (ab, A) -> cover_objective(ϕ, ab[1], ab[2], A),
-                           A, starts, σ, rng; labels, objs)
+function _soft_cover_abslinear(ϕ::AbsLinear, A::AbstractMatrix, starts::Int, σ::Real, rng)
+    (a, b), stats = _multistart_run(ExternalSolverStats, _soft_cover_abslinear_inits,
+                                    (ab, A) -> last(soft_cover!(ϕ, ab[1], ab[2], A)),
+                                    (ab, A) -> cover_objective(ϕ, ab[1], ab[2], A),
+                                    A, starts, σ, rng)
+    return a, b, stats
 end

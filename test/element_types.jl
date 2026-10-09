@@ -4,8 +4,8 @@
 
     @testset "Float32 flows through the family" begin
         A = Float32[4 1.5; 1.5 1]
-        for a in (symcover(A), first(soft_symcover(A)), soft_symcover(AbsLog{1}(), A),
-                  soft_symcover(AbsLinear{1}(), A), first(symcover_min(AbsLog{2}(), A)),
+        for a in (symcover(A), first(soft_symcover(A)), first(soft_symcover(AbsLog{1}(), A)),
+                  first(soft_symcover(AbsLinear{1}(), A)), first(symcover_min(AbsLog{2}(), A)),
                   first(soft_symcover(AbsLog{2}(), A)))
             @test eltype(a) === Float32
             @test all(isfinite, a)
@@ -96,7 +96,7 @@
         @test iscover(a, b, A; rtol=1e-6)
 
         for ϕ in (AbsLog{1}(), AbsLinear{1}(), AbsLinear{2}())
-            x, y = scales(soft_cover!(ϕ, copy(a0), copy(b0), A))
+            x, y, _ = soft_cover!(ϕ, copy(a0), copy(b0), A)
             @test eltype(x) === Float64
             @test eltype(y) === Float32
             @test all(isfinite, x) && all(isfinite, y)
