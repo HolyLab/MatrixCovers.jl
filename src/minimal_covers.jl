@@ -1806,9 +1806,9 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     # Absolute thresholds preserve covariance under rescaling because the
     # residuals are logarithmic.
     vtol = tol === nothing ? 1000 * eps(T) : T(tol)
-    # Precision bounds the usable penalty: the cap is `1e5` (LSQR) or `1e8`
+    # Precision bounds the usable penalty: the cap is `1e6` (LSQR) or `1e8`
     # (exact solves) in `Float64` and grows as `1/sqrt(eps(T))`.
-    κcap = T(use_lsqr ? 1e5 : 1e8) * sqrt(T(eps(Float64)) / eps(T))
+    κcap = T(use_lsqr ? 1e6 : 1e8) * sqrt(T(eps(Float64)) / eps(T))
     # Slack below the inner solver's resolution is indistinguishable from an
     # active entry.
     zdrain = sqrt(eps(T))
