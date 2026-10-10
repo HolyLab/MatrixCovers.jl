@@ -55,7 +55,8 @@ number of stored entries in `A`'s support, where a symmetric off-diagonal entry
 counts twice, as `nnz` counts it for a fully stored matrix. Otherwise it
 factors a sparser matrix that keeps the couplings only among entries whose
 constraints are active and the diagonal contributions of the rest; whenever
-that factor also exceeds the budgets, it uses a diagonal preconditioner.
+that factor also exceeds the budgets, it uses a diagonal preconditioner. Other
+element types use the diagonal preconditioner throughout.
 `fillbudget=Inf` and `flopbudget=Inf` together always select the full Cholesky
 preconditioner; `fillbudget=0` or `flopbudget=0` always select the diagonal
 one. The same budgets apply to the active-set method that finishes an
@@ -1415,8 +1416,10 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     use_cg = use_woodbury || use_cg_diff
     ne = supp isa EdgeList ? length(supp.edges) : 0
     use_lsqr = linsolve === :lsqr
-    # CHOLMOD preconditioning is limited to Float64.
-    use_precond = use_lsqr && T === Float64
+    use_precond = use_lsqr
+    # The factor preconditioners are CHOLMOD factorizations, so other element
+    # types use the diagonal preconditioner throughout.
+    use_cholmod = T === Float64
     # Residual multiplicity of each stored entry.
     symmetric = sys.symmetric
     mult = (p, q) -> (symmetric && p != q) ? 2 : 1
@@ -1477,7 +1480,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     # stages. Use its diagonal if the predicted Cholesky factor exceeds the fill
     # or flop budget.
     Msp = _precond_pattern(T, supp, v0, use_precond ? N : 0, mult)
-    MF, fill_entries, flops = use_precond ? _precond_analysis(Msp) : (nothing, 0, 0.0)
+    MF, fill_entries, flops = use_precond && use_cholmod ? _precond_analysis(Msp) : (nothing, 0, 0.0)
     # Number of stored entries of the user's support, counted as `nnz` counts
     # the input matrix: a symmetric off-diagonal entry is stored in both
     # triangles and so counts twice, and every other stored entry counts once.
@@ -1488,7 +1491,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
         end
     end
     flopcap = flopbudget * nstored   # largest affordable predicted flop count
-    use_factor = use_precond && sizeof(T) * fill_entries <= fillbudget &&
+    use_factor = use_precond && use_cholmod && sizeof(T) * fill_entries <= fillbudget &&
                  (flopbudget == Inf || flops <= flopcap)
     # Positions of the entries each factored solve overwrites: the diagonal, and
     # both copies of each off-diagonal support entry.
@@ -1507,7 +1510,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     # contribute only to the diagonal. Its pattern follows the violation
     # pattern, so each new `(κ, vpat)` gets its own symbolic analysis and budget
     # check; `forestok` records whether the current one passed.
-    HF = use_precond && !use_factor ? SparseCholesky() : nothing
+    HF = use_precond && use_cholmod && !use_factor ? SparseCholesky() : nothing
     HP = Ref(spzeros(T, 0, 0))
     forestok = Ref(false)
     hI = Int[]
@@ -1686,7 +1689,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                 push!(lsqrtrace, it)
                 return solve_up!(soly, MF, soly)
             elseif use_precond
-                if prevκ[] != κl || vpat != prevpat
+                if HF !== nothing && (prevκ[] != κl || vpat != prevpat)
                     # Heavy-forest matrix: the violated part of `RᵀWR`, the
                     # diagonal of the rest, the diagonal of `v0 v0ᵀ`, and a
                     # ridge. `sparse` sums duplicates.

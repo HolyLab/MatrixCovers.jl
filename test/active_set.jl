@@ -159,7 +159,7 @@ end
     b = randn(rng, nV - 1)
     xch = MatrixCovers._laplacian_solve!(zeros(nV - 1), Fch, b)
     xcg = MatrixCovers._laplacian_solve!(zeros(nV - 1), Fcg, b)
-    @test !Fcg.factored[]
+    @test Fcg.fallback[] === nothing
     @test xcg ≈ xch rtol=1e-13
     @test norm(S * xcg - b) <= 8 * eps() * (opnorm(Matrix(S)) * norm(xcg) + norm(b))
     @test Fcg.err[] <= 8 * eps() * norm(xcg)
@@ -167,7 +167,7 @@ end
     # later solves reuse.
     Fcg = MatrixCovers._laplacian_factor(L; flopbudget=0, cgmaxiter=0)
     xfb = MatrixCovers._laplacian_solve!(zeros(nV - 1), Fcg, b)
-    @test Fcg.factored[]
+    @test Fcg.fallback[] !== nothing
     @test xfb ≈ xch rtol=1e-13
     @test MatrixCovers._laplacian_solve!(zeros(nV - 1), Fcg, 2b) ≈ 2xch rtol=1e-13
 end
@@ -208,7 +208,7 @@ end
         Fcg = MatrixCovers._laplacian_factor(L; flopbudget=0)
         @test Fcg isa MatrixCovers._LaplacianCG
         x = MatrixCovers._laplacian_solve!(zeros(nV), Fcg, b)
-        @test !Fcg.factored[]
+        @test Fcg.fallback[] === nothing
         @test maximum(abs, x - xtrue) <= 64 * eps() * norm(xtrue)
         @test Fcg.err[] <= 8 * eps() * norm(x)
         # The residual helper: exact at the solution, accurate for a perturbed one.
@@ -216,6 +216,26 @@ end
         y = xtrue .+ 1e-9 .* randn(rng, nV)
         @test MatrixCovers._residual_dd!(zeros(nV), b, S, y) ≈ Vector(S * (xtrue - y)) rtol=1e-5
     end
+    # Element types CHOLMOD does not factor take the same path, to their own
+    # roundoff, and fall back to a dense Cholesky factorization.
+    nV = 300
+    S, L = path_laplacian(nV)
+    Sb, Lb = BigFloat.(S), BigFloat.(L)
+    xtrue = BigFloat.(rand(rng, -5:5, nV))
+    b = Sb * xtrue
+    Fcg = MatrixCovers._laplacian_factor(Lb)
+    @test Fcg isa MatrixCovers._LaplacianCG{BigFloat}
+    @test Fcg.F === nothing
+    x = MatrixCovers._laplacian_solve!(zeros(BigFloat, nV), Fcg, b)
+    @test Fcg.fallback[] === nothing
+    @test maximum(abs, x - xtrue) <= 64 * eps(BigFloat) * norm(xtrue)
+    @test Fcg.err[] <= 8 * eps(BigFloat) * norm(x)
+    Fcg = MatrixCovers._laplacian_factor(Lb; cgmaxiter=0)
+    x = MatrixCovers._laplacian_solve!(zeros(BigFloat, nV), Fcg, b)
+    @test Fcg.fallback[] isa Cholesky
+    @test Fcg.err[] == 0
+    @test maximum(abs, x - xtrue) <= 1e-6 * norm(xtrue)
+    @test MatrixCovers._laplacian_factor(spzeros(BigFloat, 0, 0)) isa Cholesky
 end
 
 @testset "constraints on no cycle of the support" begin

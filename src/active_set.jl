@@ -223,7 +223,7 @@ function _TreeLaplacian(F::_Forest{T}, supp; budgets::NamedTuple=(;)) where {T}
     else
         idx, L = _tree_laplacian_triplets(F, supp)
     end
-    fac = L isa SparseMatrixCSC{Float64,Int} ? _laplacian_factor(L; budgets...) : _laplacian_factor(L)
+    fac = L isa SparseMatrixCSC ? _laplacian_factor(L; budgets...) : _laplacian_factor(L)
     return _TreeLaplacian{T,typeof(fac)}(idx, fac, size(L, 1))
 end
 
@@ -347,18 +347,21 @@ function _tree_laplacian_triplets(F::_Forest{T}, supp) where {T}
 end
 
 # Jacobi-preconditioned CG, with iterative refinement, on a pinned tree
-# Laplacian whose sparse Cholesky factor would exceed the fill or flop budget.
-# Such Laplacians arise from expander-like supports, which fill in under
-# elimination but have clustered spectra, so CG converges in few iterations. A
-# solve that CG does not finish falls back to the factorization.
-struct _LaplacianCG
-    L::SparseMatrixCSC{Float64,Int}   # upper triangle, as analyzed
-    S::SparseMatrixCSC{Float64,Int}   # both triangles, for products
-    dg::Vector{Float64}
-    F::SparseCholesky
-    factored::Base.RefValue{Bool}
+# Laplacian: in `Float64`, one whose sparse Cholesky factor would exceed the
+# fill or flop budget; in other element types, every sparse one, since CHOLMOD
+# factors only `Float64`. Such Laplacians arise from expander-like supports,
+# which fill in under elimination but have clustered spectra, so CG converges
+# in few iterations. A solve that refinement does not finish falls back to a
+# factorization: the analyzed CHOLMOD factor `F` in `Float64`, a dense Cholesky
+# factorization otherwise.
+struct _LaplacianCG{T}
+    L::SparseMatrixCSC{T,Int}         # upper triangle
+    S::SparseMatrixCSC{T,Int}         # both triangles, for products
+    dg::Vector{T}
+    F::Union{SparseCholesky,Nothing}  # analyzed, `Float64` only
+    fallback::Base.RefValue{Any}      # the factorization once CG gave up; `nothing` before
     maxiter::Int                      # CG iterations per pass
-    err::Base.RefValue{Float64}       # estimated 2-norm forward error of the last solve
+    err::Base.RefValue{T}             # estimated 2-norm forward error of the last solve
 end
 
 # Estimated 2-norm forward error of the last `_laplacian_solve!`. A
@@ -374,28 +377,33 @@ function _laplacian_factor(L::SparseMatrixCSC{Float64,Int}; fillbudget::Real=LSQ
     analyze!(F, L)
     if sizeof(Float64) * factor_entries(F) > fillbudget || factor_flops(F) > flopbudget * nnz(L)
         S = L + triu(L, 1)'
-        return _LaplacianCG(L, S, Vector(diag(S)), F, Ref(false), cgmaxiter, Ref(0.0))
+        return _LaplacianCG{Float64}(L, S, Vector(diag(S)), F, Ref{Any}(nothing), cgmaxiter, Ref(0.0))
     end
     factorize!(F, L)
     return F
 end
-# Wider types: dense Cholesky of the upper triangle.
-_laplacian_factor(L::SparseMatrixCSC) = _laplacian_factor(Matrix(L))
+# Element types CHOLMOD does not factor; the budgets do not apply.
+function _laplacian_factor(L::SparseMatrixCSC{T,Int}; fillbudget::Real=LSQR_FILL_BUDGET,
+                           flopbudget::Real=LSQR_FLOP_BUDGET, cgmaxiter::Int=10 * size(L, 1) + 100) where {T}
+    size(L, 1) == 0 && return _laplacian_factor(Matrix(L))
+    S = L + triu(L, 1)'
+    return _LaplacianCG{T}(L, S, Vector(diag(S)), nothing, Ref{Any}(nothing), cgmaxiter, Ref(zero(T)))
+end
 _laplacian_factor(L::Matrix) = LinearAlgebra.cholesky!(Symmetric(L, :U))
 
 _laplacian_solve!(x::Vector{Float64}, F::SparseCholesky, b::Vector{Float64}) =
     isempty(b) ? x : solve!(x, F, CHOLMOD_A, b)
 _laplacian_solve!(x, F::Cholesky, b) = ldiv!(x, F, b)
 
-function _laplacian_solve!(x::Vector{Float64}, C::_LaplacianCG, b::Vector{Float64})
-    if !C.factored[]
+function _laplacian_solve!(x::Vector{T}, C::_LaplacianCG{T}, b::Vector{T}) where {T}
+    if C.fallback[] === nothing
         n = length(b)
-        fill!(x, 0.0)
-        rdd, r, z, d, Ad, e = ntuple(_ -> zeros(n), 6)
+        fill!(x, zero(T))
+        rdd, r, z, d, Ad, e = ntuple(_ -> zeros(T, n), 6)
         Smul! = (y, v) -> mul!(y, C.S, v)
-        η = sqrt(eps(Float64))
+        η = sqrt(eps(T))
         _, ok = _pcg!(Smul!, x, C.dg, b, r, z, d, Ad, C.maxiter, η * norm(b))
-        # Iterative refinement with the residual in double-double arithmetic.
+        # Iterative refinement with the residual in compensated arithmetic.
         # CG leaves a forward error of its normwise backward error times the
         # condition number, and the multipliers, routed sums of the solution
         # along the trees, need the solution to the certification floor. A
@@ -403,36 +411,36 @@ function _laplacian_solve!(x::Vector{Float64}, C::_LaplacianCG, b::Vector{Float6
         # factor of about `κ η`, so the size of the last correction estimates
         # the error that remains. Refinement that stops contracting hands the
         # system to the factorization.
-        δprev = Inf
+        δprev = T(Inf)
         while ok
             _residual_dd!(rdd, b, C.S, x)
-            fill!(e, 0.0)
+            fill!(e, zero(T))
             _, ok = _pcg!(Smul!, e, C.dg, rdd, r, z, d, Ad, C.maxiter, η * norm(rdd))
             ok || break
             x .+= e
             δ = norm(e)
-            if δ <= 8 * eps(Float64) * norm(x)
+            if δ <= 8 * eps(T) * norm(x)
                 C.err[] = δ
                 return x
             end
             δ <= δprev / 100 || break
             δprev = δ
         end
-        factorize!(C.F, C.L)
-        C.factored[] = true
+        C.fallback[] = C.F === nothing ? _laplacian_factor(Matrix(C.L)) : factorize!(C.F, C.L)
     end
-    C.err[] = 0.0
-    return solve!(x, C.F, CHOLMOD_A, b)
+    C.err[] = zero(T)
+    return _laplacian_solve!(x, C.fallback[], b)
 end
 
-# `r = b - S x` with every product and sum carried in double-double arithmetic,
-# so that `r` is accurate to a few units of roundoff in its own magnitude
-# rather than in that of `b` and `S x`.
-function _residual_dd!(r::Vector{Float64}, b::Vector{Float64}, S::SparseMatrixCSC{Float64,Int}, x::Vector{Float64})
+# `r = b - S x` with every product and sum carried in twice the working
+# precision by error-free transformations, so that `r` is accurate to a few
+# units of roundoff in its own magnitude rather than in that of `b` and `S x`.
+# `fma` must be correctly rounded in `T`.
+function _residual_dd!(r::Vector{T}, b::Vector{T}, S::SparseMatrixCSC{T,Int}, x::Vector{T}) where {T}
     axes(r) == axes(b) == axes(x) == (axes(S, 1),) == (axes(S, 2),) ||
         throw(DimensionMismatch("residual, right-hand side, matrix, and solution must share axes"))
     copyto!(r, b)
-    lo = zeros(length(r))
+    lo = zeros(T, length(r))
     rv = rowvals(S)
     nz = nonzeros(S)
     for j in axes(S, 2)

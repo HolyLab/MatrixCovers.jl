@@ -73,6 +73,11 @@
         @test abig isa Vector{BigFloat}
         @test Float64.(abig) ≈ first(symcover_min(AbsLog{2}(), Float64.(Abig))) rtol=1e-6
         @test abig != BigFloat.(Float32.(abig))
+        # LSQR on such a type is preconditioned by the diagonal, since the
+        # factor preconditioners are CHOLMOD's.
+        abig_lsqr, sbig = symcover_min(AbsLog{2}(), sparse(Abig); linsolve=:lsqr)
+        @test MatrixCovers.converged(sbig) && sbig.precond === :diagonal
+        @test Float64.(abig_lsqr) ≈ Float64.(abig) rtol=1e-6
     end
 
     @testset "BigFloat flows through the family" begin

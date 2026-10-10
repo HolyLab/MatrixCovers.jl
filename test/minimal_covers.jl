@@ -458,12 +458,13 @@ end
     @test iscover(gf, hf, G) && iscover(gd, hd, G)
     @test cover_objective(AbsLog{2}(), gf, hf, G) ≈ cover_objective(AbsLog{2}(), gd, hd, G) rtol=1e-8
 
-    # The budget is a keyword of the public solvers, and the paths that never
-    # precondition say so.
+    # The budget is a keyword of the public solvers, the dense path never
+    # preconditions, and an element type CHOLMOD does not factor uses the
+    # diagonal.
     @test first(symcover_min(AbsLog{2}(), A; linsolve=:lsqr, fillbudget=0)) ≈ ad rtol=1e-6
     @test MatrixCovers._symcover_min_abslog2(A; linsolve=:dense)[2].precond === :none
     Abig = BigFloat.([4.0 1.0 0.5; 1.0 3.0 1.0; 0.5 1.0 2.5])
-    @test MatrixCovers._symcover_min_abslog2(Abig; linsolve=:lsqr)[2].precond === :none
+    @test MatrixCovers._symcover_min_abslog2(Abig; linsolve=:lsqr)[2].precond === :diagonal
 end
 
 """
