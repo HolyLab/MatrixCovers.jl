@@ -346,11 +346,11 @@ function _tree_laplacian_triplets(F::_Forest{T}, supp) where {T}
     return idx, sparse(I, J, V, nfree, nfree)
 end
 
-# Jacobi-preconditioned CG on a pinned tree Laplacian whose sparse Cholesky
-# factor would exceed the fill or flop budget. Such Laplacians arise from
-# expander-like supports, which fill in under elimination but are well
-# conditioned, so CG converges in few iterations. A solve that CG does not
-# finish falls back to the factorization.
+# Jacobi-preconditioned CG, with iterative refinement, on a pinned tree
+# Laplacian whose sparse Cholesky factor would exceed the fill or flop budget.
+# Such Laplacians arise from expander-like supports, which fill in under
+# elimination but have clustered spectra, so CG converges in few iterations. A
+# solve that CG does not finish falls back to the factorization.
 struct _LaplacianCG
     L::SparseMatrixCSC{Float64,Int}   # upper triangle, as analyzed
     S::SparseMatrixCSC{Float64,Int}   # both triangles, for products
@@ -358,7 +358,14 @@ struct _LaplacianCG
     F::SparseCholesky
     factored::Base.RefValue{Bool}
     maxiter::Int                      # CG iterations per pass
+    err::Base.RefValue{Float64}       # estimated 2-norm forward error of the last solve
 end
+
+# Estimated 2-norm forward error of the last `_laplacian_solve!`. A
+# factorization is taken as exact at the certification floor of the finish.
+_solve_error(::SparseCholesky) = 0.0
+_solve_error(::Cholesky) = 0.0
+_solve_error(C::_LaplacianCG) = C.err[]
 
 function _laplacian_factor(L::SparseMatrixCSC{Float64,Int}; fillbudget::Real=LSQR_FILL_BUDGET,
                            flopbudget::Real=LSQR_FLOP_BUDGET, cgmaxiter::Int=10 * size(L, 1) + 100)
@@ -367,7 +374,7 @@ function _laplacian_factor(L::SparseMatrixCSC{Float64,Int}; fillbudget::Real=LSQ
     analyze!(F, L)
     if sizeof(Float64) * factor_entries(F) > fillbudget || factor_flops(F) > flopbudget * nnz(L)
         S = L + triu(L, 1)'
-        return _LaplacianCG(L, S, Vector(diag(S)), F, Ref(false), cgmaxiter)
+        return _LaplacianCG(L, S, Vector(diag(S)), F, Ref(false), cgmaxiter, Ref(0.0))
     end
     factorize!(F, L)
     return F
@@ -384,24 +391,69 @@ function _laplacian_solve!(x::Vector{Float64}, C::_LaplacianCG, b::Vector{Float6
     if !C.factored[]
         n = length(b)
         fill!(x, 0.0)
-        work = ntuple(_ -> zeros(n), 4)
-        # The multipliers are routed sums of the solution along the trees, so
-        # certification needs a normwise backward error of a few units of
-        # roundoff, as from a factorization. `2 max(dg)` bounds `‖S‖₂` for a
-        # Laplacian; the first pass estimates `‖x‖`.
+        rdd, r, z, d, Ad, e = ntuple(_ -> zeros(n), 6)
         Smul! = (y, v) -> mul!(y, C.S, v)
-        _pcg!(Smul!, x, C.dg, b, work..., C.maxiter, sqrt(eps(Float64)) * norm(b))
-        tol = 8 * eps(Float64) * (2 * maximum(C.dg) * norm(x) + norm(b))
-        _, ok = _pcg!(Smul!, x, C.dg, b, work..., C.maxiter, tol)
-        ok && return x
+        η = sqrt(eps(Float64))
+        _, ok = _pcg!(Smul!, x, C.dg, b, r, z, d, Ad, C.maxiter, η * norm(b))
+        # Iterative refinement with the residual in double-double arithmetic.
+        # CG leaves a forward error of its normwise backward error times the
+        # condition number, and the multipliers, routed sums of the solution
+        # along the trees, need the solution to the certification floor. A
+        # correction solved to relative residual `η` shrinks the error by a
+        # factor of about `κ η`, so the size of the last correction estimates
+        # the error that remains. Refinement that stops contracting hands the
+        # system to the factorization.
+        δprev = Inf
+        while ok
+            _residual_dd!(rdd, b, C.S, x)
+            fill!(e, 0.0)
+            _, ok = _pcg!(Smul!, e, C.dg, rdd, r, z, d, Ad, C.maxiter, η * norm(rdd))
+            ok || break
+            x .+= e
+            δ = norm(e)
+            if δ <= 8 * eps(Float64) * norm(x)
+                C.err[] = δ
+                return x
+            end
+            δ <= δprev / 100 || break
+            δprev = δ
+        end
         factorize!(C.F, C.L)
         C.factored[] = true
     end
+    C.err[] = 0.0
     return solve!(x, C.F, CHOLMOD_A, b)
 end
 
-# Per-tree values `y` minimizing `½‖L y - rhs‖` with pinned trees at zero; `rhs`
-# is indexed by tree.
+# `r = b - S x` with every product and sum carried in double-double arithmetic,
+# so that `r` is accurate to a few units of roundoff in its own magnitude
+# rather than in that of `b` and `S x`.
+function _residual_dd!(r::Vector{Float64}, b::Vector{Float64}, S::SparseMatrixCSC{Float64,Int}, x::Vector{Float64})
+    axes(r) == axes(b) == axes(x) == (axes(S, 1),) == (axes(S, 2),) ||
+        throw(DimensionMismatch("residual, right-hand side, matrix, and solution must share axes"))
+    copyto!(r, b)
+    lo = zeros(length(r))
+    rv = rowvals(S)
+    nz = nonzeros(S)
+    for j in axes(S, 2)
+        xj = x[j]
+        for k in nzrange(S, j)
+            i = rv[k]
+            p = nz[k] * xj
+            pe = fma(nz[k], xj, -p)   # `p + pe` is the exact product
+            hi = r[i]
+            s = hi - p
+            t = s - hi
+            lo[i] += (hi - (s - t)) + (-p - t) - pe
+            r[i] = s
+        end
+    end
+    r .+= lo
+    return r
+end
+
+# Per-tree values `y` minimizing `½‖L y - rhs‖` with pinned trees at zero, and
+# the estimated 2-norm error of the solve; `rhs` is indexed by tree.
 function _tree_solve(K::_TreeLaplacian, rhs::Vector{T}) where {T}
     b = zeros(T, K.nfree)
     for (t, i) in enumerate(K.idx)
@@ -413,10 +465,11 @@ function _tree_solve(K::_TreeLaplacian, rhs::Vector{T}) where {T}
     for (t, i) in enumerate(K.idx)
         i > 0 && (y[t] = x[i])
     end
-    return y
+    return y, _solve_error(K.fac)
 end
 
-# Minimizer of the objective with every edge of `F` tight.
+# Minimizer of the objective with every edge of `F` tight, and the estimated
+# error of the Laplacian solve behind it.
 function _tight_minimizer(F::_Forest{T}, K::_TreeLaplacian, supp::EdgeList) where {T}
     rhs = zeros(T, F.ntree)
     for (e, (p, q)) in enumerate(supp.edges)
@@ -426,8 +479,8 @@ function _tight_minimizer(F::_Forest{T}, K::_TreeLaplacian, supp::EdgeList) wher
         rhs[tp] -= k
         rhs[tq] += k
     end
-    y = _tree_solve(K, rhs)
-    return [y[F.tree[v]] + F.off[v] for v in eachindex(F.tree)]
+    y, δ = _tree_solve(K, rhs)
+    return [y[F.tree[v]] + F.off[v] for v in eachindex(F.tree)], δ
 end
 
 function _tight_minimizer(F::_Forest{T}, K::_TreeLaplacian, s::_DiffGridQP) where {T}
@@ -438,8 +491,8 @@ function _tight_minimizer(F::_Forest{T}, K::_TreeLaplacian, s::_DiffGridQP) wher
     for v in eachindex(F.tree, g)
         rhs[F.tree[v]] -= g[v]
     end
-    y = _tree_solve(K, rhs)
-    return [y[F.tree[v]] + F.off[v] for v in eachindex(F.tree)]
+    y, δ = _tree_solve(K, rhs)
+    return [y[F.tree[v]] + F.off[v] for v in eachindex(F.tree)], δ
 end
 
 # Add `∑ₑ dₑ gₑ` to `g`, where `dₑ = v[p] - v[q] - c[e]` when `withc` and
@@ -544,16 +597,22 @@ vector of nonnegative weights indexed like the constraints (edge positions of
 an `EdgeList`, linear indices of a `DiffGrid`'s `C`), such as the multipliers of
 an augmented-Lagrangian iteration, the candidates are the constraints with
 positive weight or residual below `ptol`, largest weight first and then
-tightest first. `certified` reports that the returned `u` satisfies the KKT
-conditions to tolerances proportional to the largest magnitude in `c` and `u0`;
-when it is false, `u` is `u0`. `kkt = (; primal, ptol, dual, dtol)` gives the
-largest constraint violation of the returned `u` and the most negative active
-multiplier (as nonnegative magnitudes), with the tolerances they were certified
-against; `primal` and `dual` are `NaN` when `certified` is false. Each step
-solves a graph-Laplacian system, and `maxsteps` bounds their number. `budgets`, a `NamedTuple` with fields
-`fillbudget` and/or `flopbudget`, sets the limits above which these systems are
-solved by conjugate gradients rather than a sparse Cholesky factorization.
-The constant on each connected component of the graph is taken from `u0`.
+tightest first. Constraints on no cycle of the support graph are activated
+ahead of the candidates: they are tight with zero multiplier at the minimizer,
+so a solve error must not let them appear violated. `certified` reports that the
+returned `u` satisfies the KKT conditions to tolerances proportional to the
+largest magnitude in `c` and `u0`; when it is false, `u` is `u0`.
+`kkt = (; primal, ptol, dual, dtol)` gives the largest constraint violation of
+the returned `u` and the most negative active multiplier (as nonnegative
+magnitudes), with the tolerances they were certified against; `primal` and
+`dual` are `NaN` when `certified` is false. Each step solves a graph-Laplacian
+system, and `maxsteps` bounds their number. `budgets`, a `NamedTuple` with
+fields `fillbudget` and/or `flopbudget`, sets the limits above which these
+systems are solved by conjugate gradients rather than a sparse Cholesky
+factorization; the tolerances of the certificate then rise to twice the
+estimated error of the solve, so that `certified` never claims more accuracy
+than the solve delivers. The constant on each connected component of the graph
+is taken from `u0`.
 """
 function _polish_difference_qp(edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, u0::Vector{T}; kwargs...) where {T}
     return _polish_difference_qp(EdgeList{T}(edges, cvals, -oneunit(T)), u0; kwargs...)
@@ -581,6 +640,8 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
                      _seed_candidates(u0, s, ptol))
         sort!(cand; by=e -> (-seed[e], _resid(u0, s, e)))
     end
+    # Constraints on no cycle come first; Kruskal then skips them if they recur.
+    cand = vcat(_acyclic_constraints(s, nV), cand)
     uf = collect(1:nV)
     find(x) = (while uf[x] != x; uf[x] = uf[uf[x]]; x = uf[x]; end; x)
     inW = _active_flags(s)
@@ -600,13 +661,13 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
     r = zeros(T, E)
     nsteps = 0
     u = u0
-    u, nsteps = _dual_feasible!(inW, W, λ, s, nV, dtol, nsteps, maxsteps; budgets)
+    u, nsteps, ptol_eff, dtol_eff = _dual_feasible!(inW, W, λ, s, nV, ptol, nsteps, maxsteps; budgets)
     certified = false
     nokkt = (; primal=T(NaN), ptol, dual=T(NaN), dtol)
     while nsteps <= maxsteps
-        e, de = _most_violated(u, inW, s, -ptol)
+        e, de = _most_violated(u, inW, s, -ptol_eff)
         if e == 0
-            certified = all(k -> λ[k] >= -dtol, W)
+            certified = all(k -> λ[k] >= -dtol_eff, W)
             break
         end
         p, q = _edge(s, e)
@@ -635,7 +696,7 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
             rhs = zeros(T, F.ntree)
             rhs[F.tree[p]] += one(T)
             rhs[F.tree[q]] -= one(T)
-            y = _tree_solve(K, rhs)
+            y, _ = _tree_solve(K, rhs)
             z = [y[F.tree[v]] for v in 1:nV]
             a = z[p] - z[q]
             a > 0 || return u0, false, nsteps, nokkt
@@ -663,14 +724,14 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
         end
         added || break
         # Recompute from `W` alone, so rounding does not accumulate.
-        u, nsteps = _dual_feasible!(inW, W, λ, s, nV, dtol, nsteps, maxsteps; budgets)
+        u, nsteps, ptol_eff, dtol_eff = _dual_feasible!(inW, W, λ, s, nV, ptol, nsteps, maxsteps; budgets)
     end
     certified || return u0, false, nsteps, nokkt
     # Restore each component's constant from `u0`. (`u` is reassigned above, so
     # capturing it in a closure would box it; `ustar` is bound once.)
     ustar = u
-    kkt = (; primal=max(zero(T), -minimum(e -> _resid(ustar, s, e), 1:_nconstraints(s))), ptol,
-           dual=max(zero(T), -minimum(k -> λ[k], W; init=zero(T))), dtol)
+    kkt = (; primal=max(zero(T), -minimum(e -> _resid(ustar, s, e), 1:_nconstraints(s))), ptol=ptol_eff,
+           dual=max(zero(T), -minimum(k -> λ[k], W; init=zero(T))), dtol=dtol_eff)
     uf .= 1:nV
     _foreach_constraint(s) do p, q
         rp, rq = find(p), find(q)
@@ -693,20 +754,28 @@ function _deactivate!(inW, W::Vector{Int}, λ, w::Int)
 end
 
 # Drop the edges of `W` with negative multipliers until none remain, and return
-# the tight minimizer of `W` with the step count; `λ` holds the multipliers.
-function _dual_feasible!(inW, W::Vector{Int}, λ::Vector{T}, supp, nV::Int, dtol,
+# the tight minimizer of `W`, the step count, and the primal and dual
+# tolerances that minimizer can be certified against; `λ` holds the
+# multipliers. The tolerances start from `ptol` and `ptol` times the number of
+# constraints and rise with the error of the Laplacian solve: an error `δ` in
+# the per-tree values moves a residual by at most `2δ`, and a routed
+# multiplier, a sum of residuals over a subtree, by at most `2δ` per constraint.
+function _dual_feasible!(inW, W::Vector{Int}, λ::Vector{T}, supp, nV::Int, ptol,
                          nsteps::Int, maxsteps::Int; budgets::NamedTuple=(;)) where {T}
+    E = max(1, _nsupported(supp))
     while true
         F = _Forest(nV, supp, W)
         K = _TreeLaplacian(F, supp; budgets)
-        u = _tight_minimizer(F, K, supp)
+        u, δ = _tight_minimizer(F, K, supp)
+        ptol_eff = max(ptol, T(2δ))
+        dtol_eff = ptol_eff * E
         _route!(λ, _difference_gradient(u, supp), F, supp)
         nW = length(W)
         for e in W
-            λ[e] < -dtol && (inW[e] = false)
+            λ[e] < -dtol_eff && (inW[e] = false)
         end
         filter!(e -> inW[e], W)
-        (length(W) < nW && nsteps < maxsteps) || return u, nsteps
+        (length(W) < nW && nsteps < maxsteps) || return u, nsteps, ptol_eff, dtol_eff
         nsteps += 1
     end
 end
@@ -819,4 +888,82 @@ function _unfold_symcover(x::Vector{T}, (u, certified, nsteps, kkt)) where {T}
     n = length(x)
     xnew = (u[1:n] .- u[n+1:2n]) ./ 2
     return xnew, certified, nsteps, kkt
+end
+
+# Constraints on no cycle of the support graph, found by peeling vertices of
+# degree one. Each is tight with zero multiplier at the minimizer: the vertices
+# beyond it enter no other constraint, so their scales make it tight at no cost
+# and the gradient vanishes there. Seeding them keeps the finish from chasing
+# roundoff-level violations of constraints that are tight by structure.
+function _acyclic_constraints(s::EdgeList, nV::Int)
+    E = length(s.edges)
+    ptr = zeros(Int, nV + 1)
+    for (p, q) in s.edges
+        ptr[p+1] += 1
+        ptr[q+1] += 1
+    end
+    ptr[1] = 1
+    cumsum!(ptr, ptr)
+    adj = zeros(Int, ptr[end] - 1)
+    cursor = ptr[1:nV]
+    for (e, (p, q)) in enumerate(s.edges)
+        adj[cursor[p]] = e
+        cursor[p] += 1
+        adj[cursor[q]] = e
+        cursor[q] += 1
+    end
+    deg = [ptr[v+1] - ptr[v] for v in 1:nV]
+    alive = trues(E)
+    stack = [v for v in 1:nV if deg[v] == 1]
+    out = Int[]
+    while !isempty(stack)
+        v = pop!(stack)
+        deg[v] == 1 || continue
+        for k in ptr[v]:ptr[v+1]-1
+            e = adj[k]
+            alive[e] || continue
+            alive[e] = false
+            push!(out, e)
+            deg[v] -= 1
+            p, q = s.edges[e]
+            w = p == v ? q : p
+            deg[w] -= 1
+            deg[w] == 1 && push!(stack, w)
+        end
+    end
+    return out
+end
+
+function _acyclic_constraints(s::_DiffGridQP, nV::Int)
+    C = s.C
+    L = LinearIndices(C)
+    m, n = size(C)
+    degr = copy(s.nfr)
+    degc = copy(s.nfc)
+    alive = isfinite.(C)
+    out = Int[]
+    rows = [i for i in 1:m if degr[i] == 1]
+    cols = [j for j in 1:n if degc[j] == 1]
+    while !(isempty(rows) && isempty(cols))
+        if !isempty(rows)
+            i = pop!(rows)
+            degr[i] == 1 || continue
+            j = findfirst(view(alive, i, :))
+            alive[i, j] = false
+            push!(out, L[i, j])
+            degr[i] -= 1
+            degc[j] -= 1
+            degc[j] == 1 && push!(cols, j)
+        else
+            j = pop!(cols)
+            degc[j] == 1 || continue
+            i = findfirst(view(alive, :, j))
+            alive[i, j] = false
+            push!(out, L[i, j])
+            degc[j] -= 1
+            degr[i] -= 1
+            degr[i] == 1 && push!(rows, i)
+        end
+    end
+    return out
 end

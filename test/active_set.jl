@@ -162,6 +162,7 @@ end
     @test !Fcg.factored[]
     @test xcg ≈ xch rtol=1e-13
     @test norm(S * xcg - b) <= 8 * eps() * (opnorm(Matrix(S)) * norm(xcg) + norm(b))
+    @test Fcg.err[] <= 8 * eps() * norm(xcg)
     # A solve that CG does not finish falls back to the factorization, which
     # later solves reuse.
     Fcg = MatrixCovers._laplacian_factor(L; flopbudget=0, cgmaxiter=0)
@@ -188,6 +189,66 @@ end
     acg, bcg, scg = _cover_min_abslog2(Aasym; linsolve=:lsqr, maxouter=2, flopbudget=0)
     @test sref.polish.certified && scg.polish.certified
     @test acg .* bcg' ≈ aref .* bref' rtol=1e-10
+end
+
+@testset "refined conjugate-gradient Laplacian solves" begin
+    # A path Laplacian pinned at one end has condition number of order `nV²`.
+    # CG alone leaves a forward error of that times roundoff; refinement with a
+    # double-double residual brings the solve to the roundoff level of the
+    # solution. The right-hand side is exact, so the error is known.
+    rng = StableRNG(23)
+    function path_laplacian(nV)
+        S = spdiagm(-1 => fill(-1.0, nV - 1), 0 => [fill(2.0, nV - 1); 1.0], 1 => fill(-1.0, nV - 1))
+        return S, sparse(triu(S))
+    end
+    for nV in (300, 3000)
+        S, L = path_laplacian(nV)
+        xtrue = Float64.(rand(rng, -5:5, nV))
+        b = S * xtrue
+        Fcg = MatrixCovers._laplacian_factor(L; flopbudget=0)
+        @test Fcg isa MatrixCovers._LaplacianCG
+        x = MatrixCovers._laplacian_solve!(zeros(nV), Fcg, b)
+        @test !Fcg.factored[]
+        @test maximum(abs, x - xtrue) <= 64 * eps() * norm(xtrue)
+        @test Fcg.err[] <= 8 * eps() * norm(x)
+        # The residual helper: exact at the solution, accurate for a perturbed one.
+        @test all(iszero, MatrixCovers._residual_dd!(zeros(nV), b, S, xtrue))
+        y = xtrue .+ 1e-9 .* randn(rng, nV)
+        @test MatrixCovers._residual_dd!(zeros(nV), b, S, y) ≈ Vector(S * (xtrue - y)) rtol=1e-5
+    end
+end
+
+@testset "constraints on no cycle of the support" begin
+    # Rows and columns with a single stored entry, and chains hanging off the
+    # rest of the support, give constraints that are tight with zero multiplier
+    # at the minimizer. The finish activates them before anything else.
+    rng = StableRNG(29)
+    m, n = 14, 12
+    core = [(i, m + j) for j in 1:10 for i in 1:10]
+    # Single-entry rows 11 and 12, a single-entry column 11, and the chain
+    # row 13 – column 12 – row 14 – column 5 into the core.
+    tail = [(11, m + 1), (12, m + 2), (3, m + 11), (13, m + 12), (14, m + 12), (14, m + 5)]
+    edges = vcat(core, tail)
+    cvals = randn(rng, length(edges))
+    nV = m + n
+    s = MatrixCovers.EdgeList{Float64}(edges, cvals, -1.0)
+    acy = MatrixCovers._acyclic_constraints(s, nV)
+    @test sort(acy) == collect(length(core)+1:length(edges))
+    C = fill(-Inf, m, n)
+    for (e, (p, q)) in enumerate(edges)
+        C[p, q-m] = cvals[e]
+    end
+    grid = MatrixCovers._qp_support(MatrixCovers.DiffGrid{Float64}(C, collect(1:m), collect(m+1:m+n)))
+    @test Set(C[MatrixCovers._acyclic_constraints(grid, nV)]) == Set(cvals[length(core)+1:end])
+    # The finish certifies the minimizer of a cover whose support has these
+    # appendages, whether the Laplacians are factored or solved by CG.
+    A = sparse(first.(edges), last.(edges) .- m, exp.(cvals), m, n)
+    aj, bj = MatrixCovers.cover_min_jump(AbsLog{2}(), Matrix(A))
+    for flopbudget in (Inf, 0)
+        a, b, st = _cover_min_abslog2(A; maxouter=2, linsolve=:lsqr, flopbudget)
+        @test st.polish.certified
+        @test a .* b' ≈ aj .* bj' rtol=1e-6
+    end
 end
 
 @testset "difference-grid active-set solver" begin
