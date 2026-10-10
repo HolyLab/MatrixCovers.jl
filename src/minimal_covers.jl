@@ -52,10 +52,11 @@ For `Float64`, `:lsqr` uses a Cholesky preconditioner when its predicted storage
 does not exceed `fillbudget` bytes (default `2^30`) and its predicted numeric-
 factorization flop count does not exceed `flopbudget` (default `8e3`) times the
 number of stored entries in `A`'s support, where a symmetric off-diagonal entry
-counts twice, as `nnz` counts it for a fully stored matrix. Otherwise it
-factors a sparser matrix that keeps the couplings only among entries whose
-constraints are active and the diagonal contributions of the rest; whenever
-that factor also exceeds the budgets, it uses a diagonal preconditioner.
+counts twice, as `nnz` counts it for a fully stored matrix. Otherwise, and for
+every other element type, it preconditions with a maximum-weight spanning
+forest of the couplings among entries whose constraints are active, together
+with the diagonal contributions of all entries; that factorization has no fill
+and needs no budget.
 `fillbudget=Inf` and `flopbudget=Inf` together always select the full Cholesky
 preconditioner; `fillbudget=0` or `flopbudget=0` always select the diagonal
 one. The same budgets apply to the active-set method that finishes an
@@ -1382,12 +1383,10 @@ _dense_factor_type(::Type{T}) where {T} = LinearAlgebra.LU{T,Matrix{T},Vector{In
 # the `linsolve` and `precond` choices, the full Cholesky preconditioner's
 # predicted entry count `fill_entries` and flop count `factor_flops` (`0` and
 # `0.0` without a factor), the number of numeric factorizations `nrefactor`
-# (full or heavy-forest), the numbers of LSQR solves
-# preconditioned by the heavy-forest factor (`nforest`) and by the diagonal
-# (`ndiagonal`) when the full factor is over budget, and the number `nzeroed`
-# of positive multipliers zeroed directly on entries with slack while the
-# penalty sat at its cap. `precond` is `:factor` (full factor), `:forest` (the
-# heavy-forest factor served at least one solve), `:diagonal`, or `:none`.
+# (full or forest), the number of LSQR solves preconditioned by the forest
+# factor (`nforest`), and the number `nzeroed` of positive multipliers zeroed
+# directly on entries with slack while the penalty sat at its cap. `precond` is
+# `:factor` (full factor), `:forest`, or `:none`.
 # With `zeroslack=false` the iteration stops at a stall at the penalty cap
 # instead of zeroing such multipliers, for callers that finish the solve by the
 # active-set method of `_polish_cover` or `_polish_symcover`.
@@ -1415,8 +1414,10 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     use_cg = use_woodbury || use_cg_diff
     ne = supp isa EdgeList ? length(supp.edges) : 0
     use_lsqr = linsolve === :lsqr
-    # CHOLMOD preconditioning is limited to Float64.
-    use_precond = use_lsqr && T === Float64
+    use_precond = use_lsqr
+    # The full-factor preconditioner is a CHOLMOD factorization, so other
+    # element types use the forest preconditioner throughout.
+    use_cholmod = T === Float64
     # Residual multiplicity of each stored entry.
     symmetric = sys.symmetric
     mult = (p, q) -> (symmetric && p != q) ? 2 : 1
@@ -1436,7 +1437,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     cv = zeros(T, ne + 1)   # √weight · log|A_ij|, with a trailing 0 gauge target
     # Violated entries under the current frozen weights.
     vpat = _violation_pattern(supp)
-    # The dense and factor-preconditioned solves (full or heavy-forest factor)
+    # The dense and factor-preconditioned solves (full or forest factor)
     # refactor only when the weights change, and the weights depend only on
     # (κ, active set): cache that key.
     prevκ = Ref(zero(T))
@@ -1477,7 +1478,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     # stages. Use its diagonal if the predicted Cholesky factor exceeds the fill
     # or flop budget.
     Msp = _precond_pattern(T, supp, v0, use_precond ? N : 0, mult)
-    MF, fill_entries, flops = use_precond ? _precond_analysis(Msp) : (nothing, 0, 0.0)
+    MF, fill_entries, flops = use_precond && use_cholmod ? _precond_analysis(Msp) : (nothing, 0, 0.0)
     # Number of stored entries of the user's support, counted as `nnz` counts
     # the input matrix: a symmetric off-diagonal entry is stored in both
     # triangles and so counts twice, and every other stored entry counts once.
@@ -1488,7 +1489,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
         end
     end
     flopcap = flopbudget * nstored   # largest affordable predicted flop count
-    use_factor = use_precond && sizeof(T) * fill_entries <= fillbudget &&
+    use_factor = use_precond && use_cholmod && sizeof(T) * fill_entries <= fillbudget &&
                  (flopbudget == Inf || flops <= flopcap)
     # Positions of the entries each factored solve overwrites: the diagonal, and
     # both copies of each off-diagonal support entry.
@@ -1501,18 +1502,18 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
             epos[2 * e] = _nzindex(Msp, q, p)
         end
     end
-    psqrt = zeros(T, use_factor ? 0 : (use_precond ? N : 0))  # `K` of the diagonal preconditioner
-    # Heavy-forest preconditioner, used when the full factor is over budget:
-    # violated entries keep their off-diagonal couplings and the others
-    # contribute only to the diagonal. Its pattern follows the violation
-    # pattern, so each new `(κ, vpat)` gets its own symbolic analysis and budget
-    # check; `forestok` records whether the current one passed.
-    HF = use_precond && !use_factor ? SparseCholesky() : nothing
-    HP = Ref(spzeros(T, 0, 0))
-    forestok = Ref(false)
+    # Forest preconditioner, used when the full factor is over budget or the
+    # element type is not CHOLMOD's: a maximum-weight spanning forest of the
+    # couplings among violated entries, every entry's contribution to the
+    # diagonal, the diagonal of `v0 v0ᵀ`, and a ridge. The couplings among
+    # violated entries form a forest up to a few edges in practice, so little is
+    # lost, and the factorization has no fill, no symbolic analysis, and no
+    # budget. It is rebuilt for each new `(κ, vpat)`.
+    HF = Ref{Union{Nothing,TreeCholesky{T}}}(nothing)
     hI = Int[]
     hJ = Int[]
     hV = T[]
+    hW = T[]
     rhs = zeros(T, use_woodbury ? N : 0, size(U, 2) + 1)
     wsol = similar(rhs)
     WF = use_woodbury ? SparseCholesky() : nothing
@@ -1531,7 +1532,6 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     nchol = Ref(0)
     nrefactor = Ref(0)
     nforest = Ref(0)
-    ndiagonal = Ref(0)
     solve_weighted = function (x, κ)
         nsolves[] += 1
         if supp isa Grid
@@ -1687,10 +1687,11 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                 return solve_up!(soly, MF, soly)
             elseif use_precond
                 if prevκ[] != κl || vpat != prevpat
-                    # Heavy-forest matrix: the violated part of `RᵀWR`, the
-                    # diagonal of the rest, the diagonal of `v0 v0ᵀ`, and a
-                    # ridge. `sparse` sums duplicates.
-                    empty!(hI); empty!(hJ); empty!(hV)
+                    # Forest matrix: a maximum-weight spanning forest of the
+                    # violated couplings of `RᵀWR`, the diagonal of all of
+                    # `RᵀWR` and of `v0 v0ᵀ`, and a ridge. The diagonal
+                    # dominates the kept couplings, so the pivots stay positive.
+                    empty!(hI); empty!(hJ); empty!(hV); empty!(hW)
                     fill!(mdiag, zero(T))
                     for (e, (p, q)) in enumerate(edges)
                         w = ws[e]^2
@@ -1700,7 +1701,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                             mdiag[p] += w
                             mdiag[q] += w
                             if vpat[e]
-                                push!(hI, p, q); push!(hJ, q, p); push!(hV, qs * w, qs * w)
+                                push!(hI, p); push!(hJ, q); push!(hV, qs * w); push!(hW, w)
                             end
                         end
                     end
@@ -1710,27 +1711,15 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                         dmax = max(dmax, mdiag[p])
                     end
                     ρ = _precond_ridge(dmax)
-                    for p in 1:N
-                        push!(hI, p); push!(hJ, p); push!(hV, mdiag[p] + ρ)
-                    end
-                    HP[] = sparse(hI, hJ, hV, N, N)
-                    HFa = HF::SparseCholesky
-                    analyze!(HFa, HP[])
-                    forestok[] = sizeof(T) * factor_entries(HFa) <= fillbudget &&
-                                 (flopbudget == Inf || factor_flops(HFa) <= flopcap)
-                    if forestok[]
-                        factorize!(HFa, HP[])
-                        nrefactor[] += 1
-                    end
+                    keep = max_weight_forest(N, hI, hJ, hW)
+                    HF[] = tree_cholesky(N, hI[keep], hJ[keep], hV[keep], mdiag .+ ρ)
+                    nrefactor[] += 1
                     prevκ[] = κl
                     copyto!(prevpat, vpat)
                 end
-            end
-            if use_precond && !use_factor && forestok[]
                 nforest[] += 1
-                HFc = HF::SparseCholesky
-                HPc = HP[]
-                # `K = P'L` from the heavy-forest factor, as in the full-factor branch.
+                HFc = HF[]::TreeCholesky{T}
+                # `K = L` from the forest factor, as `K = P'L` in the full-factor branch.
                 Fmul! = function (y, yv)
                     solve_up!(pxv, HFc, yv)
                     for (e, (p, q)) in enumerate(edges)
@@ -1750,55 +1739,11 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                     solve_ptl!(z, HFc, pg)
                     return z
                 end
-                mul!(px, HPc, x)
-                solve_ptl!(px, HFc, px)
+                lt_mul!(px, HFc, x)
                 soly, it = _lsqr(Fmul!, Ftmul!, cv, px)
                 nlsqr[] += it
                 push!(lsqrtrace, it)
                 return solve_up!(soly, HFc, soly)
-            elseif use_precond && !use_factor
-                # The heavy-forest factor is over budget for this pattern.
-                ndiagonal[] += 1
-                # Weighted degrees, the diagonal of `RᵀWR`.
-                fill!(mdiag, zero(T))
-                for (e, (p, q)) in enumerate(edges)
-                    w = ws[e]^2
-                    if p == q
-                        mdiag[p] += 4 * w
-                    else
-                        mdiag[p] += w
-                        mdiag[q] += w
-                    end
-                end
-                # An unknown outside the support gets an identity row.
-                for p in 1:N
-                    d = mdiag[p] + v0[p]^2
-                    psqrt[p] = sqrt(d > 0 ? d : oneunit(T))
-                end
-                # Diagonal `K` needs only elementwise scaling.
-                Dmul! = function (y, yv)
-                    @. px = yv / psqrt
-                    for (e, (p, q)) in enumerate(edges)
-                        y[e] = ws[e] * (px[p] + qs * px[q])
-                    end
-                    y[g] = dot(v0, px)
-                    return y
-                end
-                Dtmul! = function (z, y)
-                    fill!(pg, zero(T))
-                    for (e, (p, q)) in enumerate(edges)
-                        t = ws[e] * y[e]
-                        pg[p] += t
-                        pg[q] += qs * t
-                    end
-                    @. pg += v0 * y[g]
-                    @. z = pg / psqrt
-                    return z
-                end
-                soly, it = _lsqr(Dmul!, Dtmul!, cv, psqrt .* x)
-                nlsqr[] += it
-                push!(lsqrtrace, it)
-                return soly ./ psqrt
             end
             Amul! = function (y, xx)
                 for (e, (p, q)) in enumerate(edges)
@@ -1966,8 +1911,8 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                drops=Tuple(drops), kkt=Tuple(viols), κs=Tuple(κtrace),
                converged, tol=vtol, polish=nothing,
                linsolve=(use_lsqr ? :lsqr : use_cg ? :woodbury : :dense),
-               precond=(!use_precond ? :none : use_factor ? :factor : nforest[] > 0 ? :forest : :diagonal),
-               nrefactor=nrefactor[], nforest=nforest[], ndiagonal=ndiagonal[], fill_entries, factor_flops=flops, nzeroed)
+               precond=(!use_precond ? :none : use_factor ? :factor : :forest),
+               nrefactor=nrefactor[], nforest=nforest[], fill_entries, factor_flops=flops, nzeroed)
 end
 
 # Worker for `symcover_min(::AbsLog{2})`, returning `(a, stats)`. A supplied

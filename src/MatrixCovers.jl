@@ -33,6 +33,7 @@ include("initializers.jl")   # the start menu; consumed by both solver families 
 include("soft_covers.jl")
 include("powermean.jl")        # the PowerMean soft covers, the soft-cover default
 include("sparse_cholesky.jl")  # CHOLMOD factorizations for the minimal-cover solvers
+include("tree_cholesky.jl")    # fill-free factorization of forest-patterned matrices, for preconditioning
 include("minimal_covers.jl")
 include("active_set.jl")       # exact solution of the AbsLog{2} problem from a near-optimal point
 include("transversal.jl")      # transversal-tight minimal covers

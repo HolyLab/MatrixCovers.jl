@@ -27,6 +27,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
     include("powermean.jl")         # the PowerMean soft covers (the soft default)
     include("initializers.jl")      # initialize_symcover/initialize_cover strategies
     include("sparse_cholesky.jl")   # the CHOLMOD driver and the multi-array eachindex helper
+    include("tree_cholesky.jl")     # the fill-free forest factorization behind the LSQR preconditioner
     include("minimal_covers.jl")    # the *_min family (native solvers)
     include("transversal.jl")       # cover_transversal and the maximum-product transversal
     include("active_set.jl")        # exact solution of stalled AbsLog{2} minimal covers
