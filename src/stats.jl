@@ -102,8 +102,7 @@ otherwise `last(kkt)` and `tol`). `iterations` counts multiplier updates.
 - The remaining fields count the inner linear-algebra work and describe the
   preconditioner; their names and meanings may change between releases:
   `nsolves`, `lsqriters`, `lsqrtrace`, `cgiters`, `cholsolves`, `precond`,
-  `nrefactor`, `nforest`, `ndiagonal`, `fill_entries`, `factor_flops`,
-  `nzeroed`.
+  `nrefactor`, `nforest`, `fill_entries`, `factor_flops`, `nzeroed`.
 """
 struct AugmentedLagrangianStats{T} <: AbstractCoverStats
     converged::Bool
@@ -123,7 +122,6 @@ struct AugmentedLagrangianStats{T} <: AbstractCoverStats
     precond::Symbol
     nrefactor::Int
     nforest::Int
-    ndiagonal::Int
     fill_entries::Int
     factor_flops::Float64
     nzeroed::Int
@@ -183,7 +181,7 @@ function AugmentedLagrangianStats{T}(nt::NamedTuple) where {T}
                                        collect(T, nt.drops), polish, nt.linsolve, nt.nsolves,
                                        nt.lsqriters, collect(Int, nt.lsqrtrace), nt.cgiters,
                                        nt.cholsolves, nt.precond, nt.nrefactor, nt.nforest,
-                                       nt.ndiagonal, nt.fill_entries, nt.factor_flops, nt.nzeroed)
+                                       nt.fill_entries, nt.factor_flops, nt.nzeroed)
 end
 
 LeastSquaresStats(nt::NamedTuple) =

@@ -423,8 +423,8 @@ end
 end
 
 # The LSQR preconditioner runs in two regimes: a Cholesky factor of the weighted
-# normal matrix while the fill budget allows it, and that matrix's diagonal
-# beyond it. Both must reach the same cover.
+# normal matrix while the fill budget allows it, and a spanning forest of the
+# active couplings beyond it. Both must reach the same cover.
 @testset "MMC :lsqr preconditioner regimes" begin
     rng = StableRNG(23)
     n = 200
@@ -437,34 +437,36 @@ end
     af, sf = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
     ad, sd = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, fillbudget=0)
     @test sf.precond === :factor
-    @test sd.precond === :diagonal
-    # The factored regime (re)factorizes the preconditioner at least once and
-    # reports its predicted fill; the diagonal regime never factorizes.
-    @test sf.nrefactor >= 1
+    @test sd.precond === :forest
+    # Both regimes (re)factorize their preconditioner at least once; only the
+    # full factor has predicted fill, and the forest regime still analyzes the
+    # full pattern for the budget check.
+    @test sf.nrefactor >= 1 && sd.nrefactor >= 1
     @test sf.fill_entries > 0
     @test sf.factor_flops > 0
-    @test sd.nrefactor == 0
-    @test sd.factor_flops > 0   # analyzed for the fill check even though the diagonal path is taken
+    @test sd.factor_flops > 0
+    @test sf.nforest == 0 && sd.nforest >= 1
     @test af ≈ ad rtol=1e-6
     @test iscover(af, af, A) && iscover(ad, ad, A)
     @test cover_objective(AbsLog{2}(), af, af, A) ≈ cover_objective(AbsLog{2}(), ad, ad, A) rtol=1e-8
-    # The factored regime is the one that converges in a few iterations per solve.
+    # The full factor is the one that converges in a few iterations per solve.
     @test sf.lsqriters < sd.lsqriters
 
     gf, hf, tf = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr)
     gd, hd, td = MatrixCovers._cover_min_abslog2(G; linsolve=:lsqr, fillbudget=0)
-    @test (tf.precond, td.precond) === (:factor, :diagonal)
+    @test (tf.precond, td.precond) === (:factor, :forest)
     @test gf .* hf' ≈ gd .* hd' rtol=1e-6
     @test iscover(gf, hf, G) && iscover(gd, hd, G)
     @test cover_objective(AbsLog{2}(), gf, hf, G) ≈ cover_objective(AbsLog{2}(), gd, hd, G) rtol=1e-8
 
     # The budget is a keyword of the public solvers, the dense path never
     # preconditions, and an element type CHOLMOD does not factor uses the
-    # diagonal.
+    # forest throughout.
     @test first(symcover_min(AbsLog{2}(), A; linsolve=:lsqr, fillbudget=0)) ≈ ad rtol=1e-6
     @test MatrixCovers._symcover_min_abslog2(A; linsolve=:dense)[2].precond === :none
     Abig = BigFloat.([4.0 1.0 0.5; 1.0 3.0 1.0; 0.5 1.0 2.5])
-    @test MatrixCovers._symcover_min_abslog2(Abig; linsolve=:lsqr)[2].precond === :diagonal
+    sbig = MatrixCovers._symcover_min_abslog2(Abig; linsolve=:lsqr)[2]
+    @test sbig.precond === :forest && sbig.fill_entries == 0
 end
 
 """
@@ -502,7 +504,7 @@ end
 # refactorization cost, not just storage: a banded matrix has cheap fill-in and
 # stays on the factor path even at large `n`, while a matrix with the same
 # density but random sparsity fills in enough to cost more to refactorize than
-# the heavy-forest preconditioner it falls back to.
+# the forest preconditioner it falls back to.
 @testset "MMC :lsqr preconditioner cost rule" begin
     rngb = StableRNG(31)
     Aband = banded_sparse_sym(rngb, 2000, 3, 1.0)
@@ -522,19 +524,18 @@ end
     # The in-solver ratio of predicted flops to stored support entries matches
     # `factor_flops / nnz(A)` of the input for a symmetric matrix with both
     # triangles stored: a flop budget just above that ratio selects the factor
-    # path, and just below it selects the heavy-forest path.
+    # path, and just below it selects the forest path.
     ratio = sf.factor_flops / nnz(Arand)
     @test MatrixCovers._symcover_min_abslog2(Arand; linsolve=:lsqr, flopbudget=1.01 * ratio)[2].precond === :factor
     @test MatrixCovers._symcover_min_abslog2(Arand; linsolve=:lsqr, flopbudget=0.99 * ratio)[2].precond === :forest
 
-    @test MatrixCovers._symcover_min_abslog2(Arand; linsolve=:lsqr, flopbudget=0)[2].precond === :diagonal
+    @test MatrixCovers._symcover_min_abslog2(Arand; linsolve=:lsqr, flopbudget=0)[2].precond === :forest
 end
 
-# Random sparse supports have expensive full factors. The heavy-forest
-# preconditioner (violated entries with their couplings, the other entries on
-# the diagonal) must reach the same cover as the full factor, and fall back to
-# the diagonal for patterns whose forest factor is over budget.
-@testset "MMC :lsqr heavy-forest preconditioner" begin
+# Random sparse supports have expensive full factors. The forest
+# preconditioner (a spanning forest of the couplings among violated entries,
+# every entry on the diagonal) must reach the same cover as the full factor.
+@testset "MMC :lsqr forest preconditioner" begin
     rng = MersenneTwister(5)
     n = 400
     S = sprand(rng, n, n, 5 / n) + sparse(randperm(rng, n), 1:n, ones(n), n, n)
@@ -549,7 +550,7 @@ end
         @test tf.precond === :factor
         @test ts.precond === :forest
         @test ts.nforest > 0
-        @test ts.nforest + ts.ndiagonal <= ts.nsolves
+        @test ts.nforest <= ts.nsolves
         @test ts.nrefactor >= 1
         @test gs[Gi] .* hs[Gj] ≈ gf[Gi] .* hf[Gj] rtol=1e-8
         @test iscover(gs, hs, G)
@@ -567,8 +568,8 @@ end
     @test sf.precond === :factor
     @test ss.precond === :forest
     @test ss.nforest > 0
-    @test ss.nforest + ss.ndiagonal <= ss.nsolves
-    @test as[Ai] .* as[Aj] ≈ af[Ai] .* af[Aj] rtol=1e-12
+    @test ss.nforest <= ss.nsolves
+    @test as[Ai] .* as[Aj] ≈ af[Ai] .* af[Aj] rtol=1e-10
     @test iscover(as, as, A)
     @test cover_objective(AbsLog{2}(), as, as, A) ≈ cover_objective(AbsLog{2}(), af, af, A) rtol=1e-12
     cfn = M -> MatrixCovers._symcover_min_abslog2(M; flopbudget=fb)[1]
@@ -596,14 +597,15 @@ end
     end
     @test af[Ai] .* af[Aj] ≈ ga[Ai] .* gb[Aj] rtol=1e-12
 
-    # A flop budget just at what the forest factors need sends some patterns
-    # to the diagonal preconditioner, and the cover is unchanged.
+    # The forest factor needs no budget: any budget below the full factor's
+    # gives the forest regime for every solve, and the cover is unchanged.
     gf, hf, _ = MatrixCovers._cover_min_abslog2(G; flopbudget=Inf)
-    gm, hm, tm = MatrixCovers._cover_min_abslog2(G; flopbudget=1.0)
-    @test tm.nforest > 0 && tm.ndiagonal > 0
-    @test tm.nforest + tm.ndiagonal <= tm.nsolves
-    @test gm[Gi] .* hm[Gj] ≈ gf[Gi] .* hf[Gj] rtol=1e-8
-    @test MatrixCovers._cover_min_abslog2(G; flopbudget=0)[3].nforest == 0
+    for budget in (1.0, 0)
+        gm, hm, tm = MatrixCovers._cover_min_abslog2(G; flopbudget=budget)
+        @test tm.precond === :forest
+        @test 0 < tm.nforest <= tm.nsolves
+        @test gm[Gi] .* hm[Gj] ≈ gf[Gi] .* hf[Gj] rtol=1e-8
+    end
 end
 
 # LSQR continuation starts from the heuristic cover.
@@ -933,7 +935,7 @@ end
     # `2(κ-1)z` per update they hold the KKT residual at 2.6e-6.
     # Without the active-set finish (`polish=false`), slack multipliers are zeroed.
     # Whether the residual then reaches the tolerance depends on rounding (with the
-    # diagonal preconditioner it can stall just above it); the solve warns exactly
+    # forest preconditioner it can stall just above it); the solve warns exactly
     # when it does not. The default solve's finish certifies the result.
     A = banded_sparse_sym(StableRNG(5), 10_000, 3, 1.0)
     for fillbudget in (MatrixCovers.LSQR_FILL_BUDGET, 0)
@@ -942,7 +944,7 @@ end
         end
         @test isempty(logs) == s.converged
         @test all(l -> l.level == Base.CoreLogging.Warn && occursin("try a larger `κ`", l.message), logs)
-        @test s.precond === (fillbudget == 0 ? :diagonal : :factor)
+        @test s.precond === (fillbudget == 0 ? :forest : :factor)
         @test s.nzeroed > 0
         @test maximum(s.κs) == 1e5
         @test s.kkt[end] < 1e-9

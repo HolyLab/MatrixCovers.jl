@@ -73,11 +73,20 @@
         @test abig isa Vector{BigFloat}
         @test Float64.(abig) ≈ first(symcover_min(AbsLog{2}(), Float64.(Abig))) rtol=1e-6
         @test abig != BigFloat.(Float32.(abig))
-        # LSQR on such a type is preconditioned by the diagonal, since the
-        # factor preconditioners are CHOLMOD's.
+        # LSQR on such a type is preconditioned by the forest factor, since the
+        # full factor is CHOLMOD's.
         abig_lsqr, sbig = symcover_min(AbsLog{2}(), sparse(Abig); linsolve=:lsqr)
-        @test MatrixCovers.converged(sbig) && sbig.precond === :diagonal
+        @test MatrixCovers.converged(sbig) && sbig.precond === :forest
         @test Float64.(abig_lsqr) ≈ Float64.(abig) rtol=1e-6
+        # Double64 goes through the same path at its own precision, and the
+        # forest keeps the iteration count near Float64's.
+        Adbl = Double64.(sparse(Asym))
+        adbl, sdbl = symcover_min(AbsLog{2}(), Adbl; linsolve=:lsqr)
+        a64, s64 = symcover_min(AbsLog{2}(), Float64.(sparse(Asym)); linsolve=:lsqr, fillbudget=0)
+        @test adbl isa Vector{Double64}
+        @test MatrixCovers.converged(sdbl) && sdbl.precond === :forest
+        @test Float64.(adbl) ≈ a64 rtol=1e-8
+        @test sdbl.lsqriters <= 4 * s64.lsqriters
     end
 
     @testset "BigFloat flows through the family" begin
