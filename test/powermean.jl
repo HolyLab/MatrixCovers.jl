@@ -176,6 +176,13 @@ end
             MatrixCovers._log_support(MatrixCovers._col_support(B, Float64)),
             2.0, 10^5, 4096 * eps())[2]
         @test nsweeps < 10_000
+        # With the factor at its cap, roundoff holds the imbalance of this problem
+        # near 1e-12. A tighter tolerance is reached only once the windows without
+        # progress lower the factor.
+        a, b, st = @test_logs soft_cover!(PowerMean{2}(), ones(100), ones(100), B;
+                                          tol=1e-14, maxiter=20_000, newton=false)
+        @test st.converged
+        @test pm_imbalance(2, a, b, B) < 1e-13
         # Wide dynamic range with sparse support.
         Ssp = sprand(rng, 200, 200, 0.03) + I
         Ssp.nzval .= exp.(4.6 .* randn(rng, nnz(Ssp)))
@@ -185,6 +192,36 @@ end
         T = SymTridiagonal(fill(10.0, 100), ones(99))
         a, _ = @test_logs soft_symcover(T)
         @test pm_imbalance(2, a, a, T) < 1e-11
+    end
+
+    @testset "overrelaxation: a plateau does not set the factor" begin
+        # From a flat start the imbalance stays nearly constant over the first sweeps
+        # and then contracts quickly: plain sweeps take 55 (`p = 1`) and 70 (`p = 2`).
+        # A factor read from the first sweeps' rate is near its cap, where the
+        # relaxed iteration takes thousands.
+        A = [3.5 0.0; 0.0 1.1; 0.38 4.3e6]
+        for (p, nplain) in ((1, 55), (2, 70))
+            a, b, st = @test_logs soft_cover!(PowerMean{p}(), ones(3), ones(2), A; newton=false)
+            @test st.converged && st.nsweeps <= nplain
+            @test pm_imbalance(p, a, b, A) < 1e-11
+        end
+        # The first relaxed sweeps run below the factor the plain estimate implies.
+        # The handoff to Newton is predicted at the implied factor's rate; at the
+        # rate of the factor in use, this solve (73 plain sweeps) would hand over.
+        A = [49000.0 0.00067 9.2; 0.072 46.0 0.83]
+        _, _, st = @test_logs soft_cover!(PowerMean{1}(), ones(2), ones(3), A)
+        @test st.converged && !st.newton && st.nsweeps <= 73
+    end
+
+    @testset "overrelaxation: a window is judged against the window before it" begin
+        # Plain sweeps take over 10^5 here. The imbalance level rises each time the
+        # factor does, so windows judged against the smallest imbalance of all earlier
+        # ones show no progress and the factor is halved instead of raised, which
+        # takes the iteration past the default sweep limit.
+        A = [44.0 0.013 0.0 0.15 36.0; 0.086 6.3 0.02 150.0 0.087; 0.0 0.0021 0.39 0.0 1.7]
+        a, b, st = @test_logs soft_cover(PowerMean{2}(), A; newton=false)
+        @test st.converged
+        @test pm_imbalance(2, a, b, A) < 1e-11
     end
 
     @testset "start independence and the bipartite gauge" begin

@@ -17,15 +17,21 @@ const POWERMEAN_MAXITER = 10_000
 const POWERMEAN_TOL_EPS = 4096
 
 # Overrelaxation: the number of plain sweeps whose imbalance contraction gives the
-# first estimate of the rate; the window (in sweeps) over which a relaxed rate is
-# measured, which lengthens as `ω → 2` because the rate per sweep is at best
+# first estimate of the rate; the factor by which the log of that contraction may
+# grow from one sweep's estimate to the next and still count as steady; the
+# largest `ω` a plain estimate may set; the window (in sweeps) over which a relaxed
+# rate is measured, which lengthens as `ω → 2` because the rate per sweep is at best
 # `ω - 1`, so one factor of `e` takes about `1/(2 - ω)` sweeps, and the oscillating
-# imbalance shows no net decrease over shorter windows; the number of consecutive
-# windows without progress that halve `ω - 1`; the number of halvings a single
-# group's relaxed step may try; and the largest relaxation factor used.
+# imbalance shows no net decrease over shorter windows; the largest factor by
+# which one window may shrink `2 - ω`; the number of consecutive windows without
+# progress that halve `ω - 1`; the number of halvings a single group's relaxed
+# step may try; and the largest relaxation factor used.
 const POWERMEAN_NESTIMATE = 4
+const POWERMEAN_STEADY = 1.25
+const POWERMEAN_OMEGA_START = 1.5
 const POWERMEAN_WINDOW = 16
 const POWERMEAN_WINDOW_SCALE = 4.0
+const POWERMEAN_RAISE = 8
 const POWERMEAN_NSTALL = 4
 const POWERMEAN_NBACKTRACK = 4
 const POWERMEAN_OMEGA_MAX = 1.995
@@ -339,18 +345,35 @@ end
 # plain rate per sweep is `σ²` (the second singular value squared of the
 # normalized weight matrix) and whose optimal overrelaxation is
 # `ω* = 2/(1 + sqrt(1 - σ²))`, with rate `ω* - 1`. Plain sweeps give a first
-# estimate of `σ²` from the contraction of the imbalance. Each relaxed window
-# re-estimates it from the observed rate `λ` through the SOR eigenvalue relation
-# `sqrt(λ) = (ωμ + sqrt(ω²μ² - 4(ω - 1)))/2`, which raises `ω` when it is below
-# `ω*`. The imbalance of a relaxed iteration is not monotone, so progress is
-# judged by the smallest imbalance within each window; after several consecutive
-# windows without progress `ω - 1` is halved, down to plain sweeps and a fresh
-# estimate.
+# estimate of `σ²` from the contraction of the imbalance.
+#
+# Above `ω*` the relaxed rate is `ω - 1` whatever `σ²` is, so the windows below
+# read an `ω` that is too large as steady progress and never lower it. The plain
+# estimate is the one that can be too large: far from the fixed point the
+# imbalance can stay nearly constant for several sweeps before it contracts at a
+# much faster rate. Two conditions on the estimate guard against that. It waits
+# while the contraction is still improving from one sweep to the next, and it
+# sets `ω` no higher than `POWERMEAN_OMEGA_START`, where a relaxed sweep contracts
+# by at least half even above `ω*`. Only a window's measured rate takes `ω` higher.
+#
+# Each relaxed window re-estimates `σ²` from its observed rate `λ` through the SOR
+# eigenvalue relation `sqrt(λ) = (ωμ + sqrt(ω²μ² - 4(ω - 1)))/2`, which raises `ω`
+# when it is below `ω*`. The imbalance of a relaxed iteration is not monotone, so
+# a window is represented by its smallest imbalance, and its rate is measured
+# against the window before it. The imbalance is the size of the plain step, which
+# a relaxed iterate overshoots by `ω - 1` times, so its level rises with `ω`:
+# against the smallest imbalance of all earlier windows, windows at a raised `ω`
+# could show no progress while the iteration converges. The first window after
+# `ω` changes is still measured against one at the old `ω`, whose lower level
+# makes it read as slow, so one window shrinks `2 - ω` by at most a factor of
+# `POWERMEAN_RAISE`. After several consecutive windows without progress `ω - 1` is
+# halved, down to plain sweeps and a fresh estimate.
 #
 # With `budget`, the iteration also returns early, unconverged, once the rate
 # estimates predict that more than `budget` further sweeps are needed: from the
-# plain estimate, at the rate of the relaxed iteration it implies, and at the end
-# of each relaxed window, at the observed rate.
+# plain estimate, at the rate of the relaxed iteration with the factor that
+# estimate implies (which the windows raise `ω` toward), and at the end of each
+# relaxed window, from that window's smallest imbalance at the observed rate.
 _powermean_sinkhorn!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}, p::T,
                      maxiter::Integer, tol::T) where {T} =
     _powermean_sinkhorn!(α, β, R, C, p, maxiter, tol, typemax(Int))
@@ -360,8 +383,8 @@ function _powermean_sinkhorn!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}
     ωmax = T(POWERMEAN_OMEGA_MAX)
     ω = one(T)
     nplain = 0                  # consecutive plain sweeps in the current estimate
-    r1 = r2 = T(Inf)            # imbalance one and two plain sweeps back
-    rbest = T(Inf)              # smallest imbalance of the completed relaxed windows
+    r1 = r2 = r3 = T(Inf)       # imbalance one, two and three plain sweeps back
+    rprev = T(Inf)              # smallest imbalance of the previous relaxed window
     rwin = T(Inf)               # smallest imbalance of the current window
     nwin = 0                    # sweeps in the current window
     nstall = 0                  # consecutive windows without progress
@@ -376,39 +399,41 @@ function _powermean_sinkhorn!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}
         if ω == 1
             nplain += 1
             if nplain >= POWERMEAN_NESTIMATE
-                ρ = sqrt(r / r2)
-                if zero(T) < ρ < one(T)
-                    ω = min(ωmax, 2 / (1 + sqrt(1 - ρ)))
-                    rbest, rwin, nwin, nstall = r, T(Inf), 0, 0
-                    _powermean_nsweeps(r, tol, _sor_rate(ρ, ω)) > budget && break
+                ρ, ρprev = sqrt(r / r2), sqrt(r1 / r3)
+                if zero(T) < ρ < one(T) && zero(T) < ρprev < one(T) &&
+                        log(ρ) >= POWERMEAN_STEADY * log(ρprev)
+                    ωopt = min(ωmax, 2 / (1 + sqrt(1 - ρ)))
+                    ω = min(ωopt, T(POWERMEAN_OMEGA_START))
+                    rprev, rwin, nwin, nstall = r, T(Inf), 0, 0
+                    _powermean_nsweeps(r, tol, _sor_rate(ρ, ωopt)) > budget && break
                 end
             end
-            r2, r1 = r1, r
+            r3, r2, r1 = r2, r1, r
         else
             nwin += 1
             rwin = min(rwin, r)
             wlen = _powermean_window(ω)
             nwin < wlen && continue
-            λ = (rwin / rbest)^(one(T) / wlen)
+            λ = (rwin / rprev)^(one(T) / wlen)
             if !(λ < 1)
                 nstall += 1
                 if nstall >= POWERMEAN_NSTALL
                     nstall = 0
                     ω = 1 + (ω - 1) / 2
                     if ω - 1 < (ωmax - 1) / 16
-                        ω, nplain, r1, r2 = one(T), 0, T(Inf), T(Inf)
+                        ω, nplain, r1, r2, r3 = one(T), 0, T(Inf), T(Inf), T(Inf)
                     end
                 end
             else
                 nstall = 0
                 if λ > ω - 1
                     μ2 = (λ + ω - 1)^2 / (ω^2 * λ)
-                    μ2 < 1 && (ω = max(ω, min(ωmax, 2 / (1 + sqrt(1 - μ2)))))
+                    μ2 < 1 && (ω = max(ω, min(ωmax, 2 - (2 - ω) / POWERMEAN_RAISE, 2 / (1 + sqrt(1 - μ2)))))
                 end
             end
-            rbest = min(rbest, rwin)
+            rprev = rwin
             rwin, nwin = T(Inf), 0
-            λ < 1 && _powermean_nsweeps(rbest, tol, λ) > budget && break
+            λ < 1 && _powermean_nsweeps(rprev, tol, λ) > budget && break
         end
     end
     imb = max(_powermean_imbalance(α, β, R, p), _powermean_imbalance(β, α, C, p))
