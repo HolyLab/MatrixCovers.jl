@@ -145,6 +145,46 @@
         end
     end
 
+    @testset "squares that underflow or overflow" begin
+        # Column 2-norms in BigFloat, where no square leaves the representable range.
+        colnorms(B, w) = [sqrt(sum(abs(big(w[i])) * big(B[i, j])^2 for i in axes(B, 1))) for j in axes(B, 2)]
+        # The squares in columns 1 and 2 leave the representable range; those in
+        # column 3 do not; column 4 mixes squares that vanish with one that does not.
+        B = [1.0e-170  1.0e170 4.0 1.0e-170
+             -2.0e-170 2.0e170 1.0 2.0
+             0.0       1.0e160 3.0 3.0e-200]
+        for w in (ones(3), [1.0e-20, -3.0, 1.0e20], [1.0e200, -1.0e-200, 2.0])
+            ref = colnorms(B, w)
+            unweighted = all(isone, w)
+            for BB in (B, sparse(B))
+                s = unweighted ? gramcover(BB) : gramcover(BB, w)
+                @test all(isfinite, s)
+                @test all(s .>= ref)
+                @test all(s .<= ref .* (1 + 16eps()))
+                @test covers_gram(s, B, Diagonal(w))
+            end
+        end
+        @test gramcover([1.0e-170 1.0])[1] >= 1.0e-170
+        # A norm beyond `floatmax` is `Inf`, and non-finite entries propagate.
+        @test gramcover(fill(1.0e308, 4, 1)) == [Inf]
+        @test gramcover([Inf 1.0; 1.0e-170 1.0])[1] == Inf
+        @test isnan(gramcover([NaN 1.0; 1.0e-170 1.0])[1])
+        # A zero weight on every supported row leaves the scale at zero.
+        @test gramcover([1.0e-170 1.0; 0.0 2.0], [0.0, 1.0])[1] == 0
+        # Subnormal entries.
+        @test gramcover(fill(5.0e-324, 1, 1)) == [5.0e-324]
+        # The thresholds follow the element type.
+        s32 = gramcover(Float32[1.0f-30 1.0f30; 2.0f-30 2.0f30])
+        @test eltype(s32) == Float32
+        @test s32 ≈ sqrt(5.0f0) .* Float32[1.0f-30, 1.0f30]
+        @test all(big.(s32) .>= sqrt(big(5)) .* big.(Float32[1.0f-30, 1.0f30]))
+        # `norm` of the factored columns scales, so the `Cholesky` method covers too.
+        W = [2.0 1.0 0.0; 1.0 3.0 1.0; 0.0 1.0 2.0]
+        sc = gramcover(B, cholesky(W))
+        @test covers_gram(sc, B, W)
+        @test all(big.(sc) .^ 2 .<= diag(big.(B)' * big.(W) * big.(B)) .* (1 + 64eps()))
+    end
+
     @testset "generic axes" begin
         w = [1.0, -2.0, 0.5, 3.0, -0.25]
         W = randn(rng, m, m)

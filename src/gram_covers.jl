@@ -25,7 +25,8 @@ multiplies `s` by `diag(D2)`.
 - **Diagonal weight** (`w`, `Diagonal(w)`, or none):
   `s[j] = sqrt(Σ_i abs(w[i]) * abs(A[i,j])^2)`. The weights may have any sign.
   When `w .>= 0` this is `sqrt(G[j,j])`, which is the minimal symmetric cover of
-  `G`. One pass over the stored nonzeros of `A`.
+  `G`. One pass over the stored nonzeros of `A`, and a second when the squares
+  in some column underflow or overflow.
 - **`Cholesky` weight**: for `W = L*L'`, `s[j] = norm(L'*A[:,j]) = sqrt(G[j,j])`,
   the minimal symmetric cover of the positive semidefinite `G`. Passing the
   factorization is the caller's assertion that `W` is positive semidefinite.
@@ -42,7 +43,10 @@ multiplies `s` by `diag(D2)`.
 `W` must be square with both axes equal to `axes(A, 1)`, and `s` has axes
 `(axes(A, 2),)`. The bounds hold in floating-point arithmetic: `s` is inflated
 by a relative `O(n_j * eps)` to absorb the rounding of the sums. For the
-`Cholesky` method the bound is relative to the computed factor.
+`Cholesky` method the bound is relative to the computed factor. With a diagonal
+weight, `s[j]` has this accuracy whenever the largest
+`sqrt(abs(w[i])) * abs(A[i,j])` in column `j` is at least `floatmin`, even if
+its square is not representable; an `s[j]` beyond `floatmax` is `Inf`.
 
 See also: [`gramcover!`](@ref), [`symcover`](@ref), [`cover`](@ref), [`iscover`](@ref).
 
@@ -105,24 +109,18 @@ See also: [`gramcover`](@ref).
 """
 function gramcover!(s::AbstractVector, A::AbstractMatrix)
     _check_gramcover_s(s, A)
-    m, n = _gc_accumulators(A, _gc_term(A))
-    foreach_support(A) do _, j, x
-        m[j] += x * x
-        n[j] += 1
-    end
-    return _write_sqrt!(s, m, n)
+    return _gramcover!(s, A, nothing)
 end
 
 function gramcover!(s::AbstractVector, A::AbstractMatrix, w::AbstractVector)
     _check_gramcover_s(s, A)
     eachindex(w) == axes(A, 1) ||
         throw(DimensionMismatch("`w` holds one weight per row of `A`: eachindex(w) must be $(string(axes(A, 1))), got $(string(eachindex(w)))"))
-    m, n = _gc_accumulators(A, _gc_term(A, w))
-    foreach_support(A) do i, j, x
-        m[j] += abs(w[i]) * x * x
-        n[j] += 1
+    r = similar(Array{typeof(sqrt(abs(zero(eltype(w)))))}, axes(w, 1))
+    for i in eachindex(r, w)
+        r[i] = sqrt(abs(w[i]))
     end
-    return _write_sqrt!(s, m, n)
+    return _gramcover!(s, A, r)
 end
 
 gramcover!(s::AbstractVector, A::AbstractMatrix, W::Diagonal) = gramcover!(s, A, W.diag)
@@ -137,7 +135,7 @@ function gramcover!(s::AbstractVector, A::AbstractMatrix, W::Cholesky)
     B = copyto!(Matrix{T}(undef, size(A)), A)
     lmul!(W.U, B)
     # Each entry of `B` is a length-`size(A, 1)` dot product; as for the sums in
-    # `_write_sqrt!`, the factor absorbs their rounding, the norm's, and its own.
+    # `_gramcover!`, the factor absorbs their rounding, the norm's, and its own.
     scalarT = scalar_type(eltype(s))
     inflate = 1 + (size(A, 1) + 3) * eps(scalarT)
     for (k, j) in zip(axes(B, 2), axes(A, 2))
@@ -259,26 +257,63 @@ function _gc_accumulators(A::AbstractMatrix, term)
     return m, n
 end
 
-# Accumulator types for the sums, preserving units and precision.
-_gc_term(A::AbstractMatrix) = float(abs(zero(eltype(A))))^2
-_gc_term(A::AbstractMatrix, w::AbstractVector) = abs(zero(eltype(w))) * _gc_term(A)
+# The term `t = r[i] * abs(A[i,j])` of a column 2-norm, and its zero, preserving
+# units and precision. `r === nothing` stands for unit row scales.
+_gc_term(::Nothing, i, x) = float(x)
+_gc_term(r::AbstractVector, i, x) = r[i] * float(x)
+_gc_zero(A::AbstractMatrix, ::Nothing) = float(abs(zero(eltype(A))))
+_gc_zero(A::AbstractMatrix, r::AbstractVector) = zero(eltype(r)) * float(abs(zero(eltype(A))))
 _gc_linterm(A::AbstractMatrix, v::AbstractVector) = zero(eltype(v)) * float(abs(zero(eltype(A))))
 
 # Element type of the output scale.
-_gc_eltype(A::AbstractMatrix) = typeof(sqrt(_gc_term(A)))
-_gc_eltype(A::AbstractMatrix, w::AbstractVector) = typeof(sqrt(_gc_term(A, w)))
+_gc_eltype(A::AbstractMatrix) = typeof(_gc_zero(A, nothing))
+_gc_eltype(A::AbstractMatrix, w::AbstractVector) = typeof(sqrt(abs(zero(eltype(w)))) * _gc_zero(A, nothing))
 _gc_eltype(A::AbstractMatrix, W::Cholesky) = typeof(sqrt(abs(zero(eltype(W)))) * float(abs(zero(eltype(A)))))
 _gc_eltype(A::AbstractMatrix, W::AbstractMatrix, v::AbstractVector) = typeof(_gc_linterm(A, v))
 
-# Write `s[j] = sqrt(m[j])`, inflated so the cover holds in floating point without
-# forming `A'*W*A`: naive summation of `n[j]` nonnegative terms, each formed with
-# up to two roundings, falls short of the exact sum by at most a relative
-# `(n[j] + 1) * eps/2`; the `sqrt`, the factor, and the multiply by it each add
-# one more rounding.
-function _write_sqrt!(s::AbstractVector, m::AbstractVector, n::AbstractVector{Int})
+# Write `s[j] = sqrt(Σ_i t[i,j]^2)` for the terms `t[i,j] = r[i] * abs(A[i,j])`,
+# inflated so the cover holds in floating point without forming `A'*W*A`.
+#
+# `m[j]` is the plain sum of squares. Wherever `_gc_rescale` finds it unreliable,
+# the column norm is accumulated again as a running `hypot`, which is far slower
+# per term but forms no square that can overflow or underflow.
+#
+# The factor `1 + (n[j] + 3) * eps` bounds the shortfall of either form. A term
+# carries up to two roundings. In the plain form its square carries up to five;
+# summing `n[j]` nonnegative squares adds a relative `(n[j] - 1) * eps/2`;
+# squares that underflow lose at most `eps/2 * floatmin` each, a relative
+# `eps/2` of a sum that is at least `floatmin`; and the `sqrt` halves the total
+# and adds a rounding. In the running form each `hypot` adds at most a relative
+# `eps`. The factor and the multiply by it add one rounding each.
+function _gramcover!(s::AbstractVector, A::AbstractMatrix, r::Union{Nothing,AbstractVector})
+    z = _gc_zero(A, r)
+    m, n = _gc_accumulators(A, z * z)
+    foreach_support(A) do i, j, x
+        t = _gc_term(r, i, x)
+        m[j] += t * t
+        n[j] += 1
+    end
     scalarT = scalar_type(eltype(m))
+    rescale = false
     for j in _eachindex(s, m, n)
         s[j] = sqrt(m[j]) * (1 + (n[j] + 3) * eps(scalarT))
+        rescale |= _gc_rescale(m[j], n[j])
+    end
+    rescale || return s
+    h = similar(Array{typeof(z)}, axes(A, 2))
+    fill!(h, z)
+    foreach_support(A) do i, j, x
+        _gc_rescale(m[j], n[j]) && (h[j] = hypot(h[j], _gc_term(r, i, x)))
+    end
+    for j in _eachindex(s, m, n, h)
+        _gc_rescale(m[j], n[j]) || continue
+        s[j] = h[j] * (1 + (n[j] + 3) * eps(scalarT))
     end
     return s
 end
+
+# Whether the plain sum `m` of the squares of `n` terms misrepresents its column:
+# it overflowed or is `NaN`, or it is below `floatmin`, where squares lose
+# relative accuracy or vanish.
+_gc_rescale(m, n::Int) =
+    n > 0 && !(floatmin(scalar_type(typeof(m))) * oneunit(m) <= m && isfinite(m))
