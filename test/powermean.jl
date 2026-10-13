@@ -176,6 +176,13 @@ end
             MatrixCovers._log_support(MatrixCovers._col_support(B, Float64)),
             2.0, 10^5, 4096 * eps())[2]
         @test nsweeps < 10_000
+        # With the factor at its cap, roundoff holds the imbalance of this problem
+        # near 1e-12. A tighter tolerance is reached only once the windows without
+        # progress lower the factor.
+        a, b, st = @test_logs soft_cover!(PowerMean{2}(), ones(100), ones(100), B;
+                                          tol=1e-14, maxiter=20_000, newton=false)
+        @test st.converged
+        @test pm_imbalance(2, a, b, B) < 1e-13
         # Wide dynamic range with sparse support.
         Ssp = sprand(rng, 200, 200, 0.03) + I
         Ssp.nzval .= exp.(4.6 .* randn(rng, nnz(Ssp)))
