@@ -277,6 +277,11 @@
         s = gramcover(J)
         @test all(==(u"N/m"), unit.(s))
         @test all(ustrip.(s * s') .>= ustrip.(abs.(J' * J)))
+        # Entries whose squares underflow keep their units and their norm.
+        st = gramcover(J .* 1.0e-170)
+        @test all(==(u"N/m"), unit.(st))
+        @test ustrip.(st) ≈ 1.0e-170 .* ustrip.(s)
+        @test all(big.(ustrip.(st)) .^ 2 .>= big(1.0e-170)^2 .* diag(big.(ustrip.(J))' * big.(ustrip.(J))))
 
         # A dimensioned diagonal weight: `s` picks up `sqrt(unit(w))`.
         w = [1.0, -2.0, 0.5] .* u"s"
