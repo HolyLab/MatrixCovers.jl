@@ -1,0 +1,15 @@
+name = "matrixcovers"
+uuid = "9a0ce11c-0abe-4c5a-899b-d53d9853b6d8"
+version = "0.0.1"
+
+[deps]
+JLWInterop = "65e54657-ed21-41a3-96db-71ab7fa6d94b"
+MatrixCovers = "727e6139-ff52-4636-a344-ed1d23e73ffc"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+
+# `build.jl` adds the local MatrixCovers source to a temporary copy.
+
+[compat]
+JLWInterop = "0.2"
+MatrixCovers = "1"
+julia = "1.13"

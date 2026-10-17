@@ -1,0 +1,16 @@
+# Pin the `@main` ref to a JuliaLibWrapping release tag once one containing
+# build-wrappers.yml exists.
+name: Python wheel
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  wheel:
+    uses: JuliaInterop/JuliaLibWrapping.jl/.github/workflows/build-wrappers.yml@main
+    with:
+      build-dir: lib
+      cpu-target: "generic;sandybridge,-xsaveopt,clone_all;haswell,-rdrnd,base(1)"
+      smoke-test: lib/test/python/test_smoke.py
