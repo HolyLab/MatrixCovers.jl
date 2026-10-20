@@ -17,4 +17,3 @@ jobs:
           # use a PAT with `workflow` scope instead of GITHUB_TOKEN.
           # See: https://github.com/JuliaRegistries/TagBot#commits-that-modify-workflow-files
           ssh: ${{ secrets.DOCUMENTER_KEY }}
-          registry: HolyLab/HolyLabRegistry

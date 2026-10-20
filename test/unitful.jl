@@ -120,8 +120,8 @@
         # No `a`, `b` exist with unit(A[i,j]) == unit(a[i])*unit(b[j]).
         E = Quantity[1.0u"m^2" 1.0u"s"; 1.0u"s" 1.0u"kg^2"]
         @test_throws "units of `A` do not factor" symcover(E)
-        @test_throws "unit(A[2,2])*unit(A[1,1]) = kg^2 m^2" symcover(E)
-        @test_throws "unit(A[2,1])^2 = s^2" symcover(E)
+        @test_throws "unit(A[2,2])*unit(A[1,1]) = $(u"kg^2 * m^2")" symcover(E)
+        @test_throws "unit(A[2,1])^2 = $(u"s^2")" symcover(E)
         @test_throws "terms in a row of `A*x` can have incompatible units" symcover(E)
         @test_throws "units of `A` do not factor" cover(E)
         @test_throws DimensionMismatch cover(E)
