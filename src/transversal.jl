@@ -9,6 +9,9 @@ the hard covers with `prod(a) * prod(b) == π*`, where
 
     π* = max over permutations σ of ∏ᵢ |A[i,σ(i)]|.
 
+A *transversal* of `A` is a set of entries `A[i,σ(i)]`, one in each row and
+each column, for a permutation `σ`.
+
 Every hard cover has `prod(a) * prod(b) >= π*`, with equality exactly when it
 is tight (`a[i]*b[j] == |A[i,j]|`) on every entry of every transversal whose
 product is `π*`. Among hard covers, these maximize `|det(A ./ (a .* b'))|`.

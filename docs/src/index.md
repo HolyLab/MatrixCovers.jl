@@ -66,447 +66,200 @@ A cover exists only when the units of `A` factor as
 `unit(A[i,j]) == unit(a[i])*unit(b[j])`. But this is not an onerous requirement, as it is the same one that lets expressions like `A*x` be well-defined. 
 If a matrix can be used in matrix-vector multiplication, it has a cover.
 
-## Penalty functions
+## Conditioning and the error in `A \ y`
 
-A cover is valid as long as every constraint is satisfied, but tighter covers
-better capture the scaling of `A`.  Cover quality is measured through the ratios
-`r[i, j] = |A[i,j]| / (a[i] * b[j])`: a hard cover has every `0 ≤ r[i, j] ≤ 1`,
-and `r[i, j] == 1` means the constraint is exactly tight.
+The matrix below has a smallest singular value near `η`, so its condition
+number is about `1/η`:
 
-A **penalty function** `ϕ` combines those ratios into a scalar objective
-
-```math
-\sum_{i,j} \phi\!\left(\frac{|A_{ij}|}{a_i\, b_j}\right),
-```
-
-Three penalty families are provided:
-
-- [`AbsLog`](@ref)`{p}`: `ϕ(r) = |log r|^p`, with `ϕ(0) = 0`. It is convex in
-  log space and is the default for hard covers.
-- [`PowerMean`](@ref)`{p}`: `ϕ(r) = (r^p - 1 - p log r)/p`, with `ϕ(0) = 0`. It
-  is strictly convex in log space and is the default for soft covers. Its
-  minimizer makes the mean of `r^p` over the nonzero entries of every row and
-  column equal to one.
-- [`AbsLinear`](@ref)`{p}`: `ϕ(r) = |1-r|^p`. It is nonconvex and finite at
-  zero, so an entry that shrinks to zero drops out of the soft cover
-  continuously.
-
-[`cover_objective`](@ref) evaluates any penalty for a given cover:
-
-```jldoctest quality; filter = r"(\d+\.\d{6})\d+" => s"\1"
-julia> using MatrixCovers
-
-julia> A = [4.0 2.0; 2.0 16.0];
-
-julia> a = symcover(A)
-2-element Vector{Float64}:
- 2.0
- 4.0
-
-julia> cover_objective(AbsLog{1}(), a, A)   # sum of log-excesses (L1)
-2.772588722239781
-
-julia> cover_objective(AbsLog{2}(), a, A)   # sum of squared log-excesses (L2)
-3.843624111345611
-```
-
-Pass a penalty as the first solver argument to override the default.
-
-## Choosing a cover algorithm
-
-| Function | Symmetric | Constraint | Default (or alternative) objective | Requires |
-|---|---|---|---|---|
-| [`symcover`](@ref) | yes | hard (`r ≤ 1`) | heuristic | — |
-| [`cover`](@ref) | no | hard (`r ≤ 1`) | heuristic | — |
-| [`symcover_min`](@ref) | yes | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
-| [`cover_min`](@ref) | no | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
-| [`cover_transversal`](@ref) | no | hard, tight on a maximum-product transversal | `AbsLog{2}` | — |
-| [`soft_symcover`](@ref) | yes | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog`, `AbsLinear`) | native for `PowerMean`, `AbsLog{2}`; else JuMP |
-| [`soft_cover`](@ref) | no | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog`, `AbsLinear`) | native for `PowerMean`, `AbsLog{2}`; else JuMP |
-
-For hard covers, [`symcover`](@ref) and [`cover`](@ref) are fast heuristics;
-their `_min` counterparts minimize the selected objective.
-[`cover_transversal`](@ref) minimizes the `AbsLog{2}` objective of a square,
-structurally nonsingular matrix among the hard covers that are tight on a
-transversal of maximum product, the covers that maximize `|det|` of the scaled
-matrix. For such matrices [`cover`](@ref) returns a heuristic cover with the
-same tightness by default (`start=:transversal`); a cover that leaves a
-maximum-product transversal loose can make the scaled matrix far more
-ill-conditioned than necessary. A soft cover has no
-constraint to satisfy, so there is no separate heuristic tier:
-[`soft_symcover`](@ref) and [`soft_cover`](@ref) always minimize the objective.
-
-- `PowerMean` (native) uses power-mean scaling iterations (damped simultaneous
-  updates for the symmetric problem, overrelaxed alternating updates for the
-  asymmetric one), followed by damped Newton steps when those iterations
-  converge slowly.
-- `AbsLog{2}` (native) is one linear least-squares solve.
-- `AbsLog{1}` is a linear program solved with JuMP and HiGHS.
-- `AbsLinear` is not convex; several starts are each refined to a local minimum
-  with JuMP and Ipopt, and the best is returned.
-
-The heuristics cost ``O(mn)``, except that the transversal start of
-[`cover`](@ref) also solves an assignment problem by shortest augmenting paths;
-native iterative solvers cost roughly ``O(mn)`` per iteration.
-
-### Covariance of the heuristics
-
-[`symcover`](@ref) is exactly covariant whenever every connected component of
-the support contains a nonzero diagonal entry:
-
-```jldoctest covariance
+```jldoctest conditioning
 julia> using MatrixCovers, LinearAlgebra
 
-julia> A = [1.0 1 0; 1 1 1; 0 1 1];
+julia> η = 1e-8;
 
-julia> d = [1.0, 6.0, 0.5]; D = Diagonal(d);
+julia> A = [1 η 0; η 1 1; 1 0 0]
+3×3 Matrix{Float64}:
+ 1.0     1.0e-8  0.0
+ 1.0e-8  1.0     1.0
+ 1.0     0.0     0.0
 
-julia> a1 = symcover(A); a2 = symcover(D * A * D);
+julia> round.(svdvals(A); sigdigits=3)
+3-element Vector{Float64}:
+ 1.41
+ 1.41
+ 5.0e-9
 
-julia> P1 = (d .* a1) * (d .* a1)'; P2 = a2 * a2';
-
-julia> round.(extrema(P2 ./ P1); digits=3)
-(1.0, 1.0)
+julia> round(eps() * cond(A); sigdigits=2)
+6.3e-8
 ```
 
-[`cover`](@ref) is covariant on any support: positive diagonal rescaling of
-`A` rescales the cover products identically wherever `A` is nonzero.
-This holds for both the default transversal start (square, structurally
-nonsingular `A`) and the `:covariant` start, and for any number of
-conjugate-gradient refinement iterations (`cgiter`):
+The classical rule of thumb is that solving `A x = y` by a backward-stable
+method loses a factor of about `cond(A)` in relative accuracy, so we might
+expect a relative error near `6e-8`. Yet the computed solution is far more
+accurate than that:
 
-```jldoctest covariance
-julia> e = [2.0, 0.3, 5.0]; E = Diagonal(e);
+```jldoctest conditioning
+julia> y = [1.0, 2.0, 3.0];
 
-julia> function covariance_spread(cgiter; start=:auto)
-           r1, c1 = cover(A; cgiter, start)
-           r2, c2 = cover(D * A * E; cgiter, start)
-           Q1 = (d .* r1) * (e .* c1)'
-           Q2 = r2 * c2'
-           return round.(extrema(Q2 ./ Q1); digits=3)
-       end;
+julia> x = A \ y;
 
-julia> covariance_spread(0)
-(1.0, 1.0)
+julia> xbig = big.(A) \ big.(y);
 
-julia> covariance_spread(4)
-(1.0, 1.0)
+julia> norm(x - xbig) / norm(xbig) < 10 * eps()
+true
 ```
 
-The `start=:geomean` alternative begins from the row and column geometric means.
-Unless the support is rank one, that point depends on the units `A` is written in, so the cover becomes scale-covariant only as the refinement converges:
+The reason is that `A` is a row and column rescaling of a well-conditioned
+matrix, and `cond(A)` measures the scaling as well as the matrix. Its cover
+finds the scales, and dividing by the cover removes them:
 
-```jldoctest covariance
-julia> covariance_spread(0; start=:geomean)
-(0.846, 1.236)
-
-julia> covariance_spread(4; start=:geomean)
-(1.0, 1.0)
-```
-
-For symmetric support components without a nonzero diagonal entry, use
-[`symcover_min`](@ref) when covariance is required.
-
-### Objective-minimal covers
-
-[`symcover_min`](@ref) and [`cover_min`](@ref) minimize the chosen penalty
-subject to the hard constraint. The built-in `AbsLog{2}` solver uses penalty
-continuation with a damped semismooth Newton iteration:
-
-```jldoctest qmin; filter = r"(\d+\.\d{6})\d+" => s"\1"
-julia> using MatrixCovers
-
-julia> A = [1 2 3; 6 5 4];
-
+```jldoctest conditioning
 julia> a, b = cover(A);
 
-julia> aq, bq = cover_min(AbsLog{2}(), A);
+julia> round.(a; sigdigits=3), round.(b; sigdigits=3)
+([0.0001, 10000.0, 0.0001], [10000.0, 0.0001, 0.0001])
 
-julia> a * b'
-2×3 Matrix{Float64}:
- 2.17597  2.03823  3.0
- 6.0      5.62019  8.27216
+julia> Ahat = A ./ (a .* b')
+3×3 Matrix{Float64}:
+ 1.0      1.0  0.0
+ 1.0e-16  1.0  1.0
+ 1.0      0.0  0.0
 
-julia> aq * bq'
-2×3 Matrix{Float64}:
- 2.21042  2.0      3.0
- 6.0      5.42884  8.14325
-
-julia> round(cover_objective(AbsLog{2}(), a, b, A); digits=6)
-1.146449
-
-julia> round(cover_objective(AbsLog{2}(), aq, bq, A); digits=6)
-1.141281
+julia> round.(svdvals(Ahat); sigdigits=3)
+3-element Vector{Float64}:
+ 1.8
+ 1.25
+ 0.445
 ```
 
-`AbsLog{1}` and `AbsLinear` use [JuMP](https://jump.dev/) with HiGHS and Ipopt,
-respectively:
+The cover is tight on `A[1,2]`, `A[2,3]`, and `A[3,1]`, one entry in each row
+and each column. Such a set of entries is called a *transversal*, and a cover
+that leaves the transversals of `A` loose can fail to remove the scaling (see
+[Transversals and conditioning](@ref)).
 
-```jldoctest jumpmin
-julia> using MatrixCovers, JuMP, HiGHS
+Rescaling the rows and columns of `A` rescales its cover identically (see
+[Covariance](@ref)), so `Ahat` and its singular values do not depend on the
+units of `A`. A cover removes only the ill-conditioning that comes from
+scaling: nearly dependent rows or columns remain, and show up as small singular
+values of `Ahat`.
 
-julia> S = [4 1 0; 1 1 5; 0 5 2];
+A better approach is to express the error in terms of scale-invariant
+quantities. `A x = y` is equivalent to `Ahat * (b .* x) = y ./ a`, and the
+matrix and both vectors in the latter form are scale-invariant. Thus, we should
+measure the "size" of `x` (and of its errors) as `norm(b .* x)` and the "size"
+of `y` as `norm(y ./ a)`. In these terms, the rule of thumb involves
+`cond(Ahat)`, which is about 4, rather than `cond(A)`, which is about 3e8. This
+explains why the solve is so accurate: the large condition number of `A` comes
+from its scaling, which does not affect the error measured this way.
 
-julia> a, stats = symcover_min(AbsLog{1}(), S);
+`cond(Ahat)` governs perturbations of `A` bounded in norm. The affiliated
+manuscript demonstrates the corresponding result for perturbations bounded
+entry by entry (which follows from classical results applied to the
+scale-invariant form): suppose the computed solution `x̂` exactly solves
+`(A + ΔA) x̂ = y` with `|ΔA[i,j]| ≤ ε * a[i] * b[j]`, a perturbation of each
+entry by at most a fraction `ε` of its cover value. Then
 
-julia> round.(a; digits=6)
-3-element Vector{Float64}:
- 2.0
- 1.0
- 5.0
-
-julia> A = [1 2 3; 6 5 4];
-
-julia> a, b = cover_min(AbsLog{1}(), A);
-
-julia> round.(a * b'; digits=6)
-2×3 Matrix{Float64}:
- 2.4  2.0  3.0
- 6.0  5.0  7.5
+```math
+\frac{\lVert b \odot (\hat x - x) \rVert_2}{\lVert b \odot x \rVert_2}
+\;\le\; \frac{\epsilon\, c}{1 - \epsilon\, c},
+\qquad
+c = \sqrt{n}\, \bigl\lVert\, |\hat A^{-1}|\, e \,\bigr\rVert_2,
 ```
 
-[`soft_symcover`](@ref) and [`soft_cover`](@ref) solve `PowerMean` and
-`AbsLog{2}` natively, and use JuMP with HiGHS for `AbsLog{1}` and with Ipopt for
-`AbsLinear`.
+provided that `ε * c < 1`, where `e` is the vector of ones and `⊙` denotes
+elementwise multiplication. Like `cond(Ahat)`, the constant `c` depends only on
+`Ahat`. For a dense square matrix, `\` uses LU factorization with partial
+pivoting, which yields a perturbation of this form with `ε` a modest multiple
+of `eps()` when the entries of the computed factors do not grow much relative
+to the cover.
 
-### Uniqueness
+For this matrix `c` is about 6.5, and the error in the cover-weighted norm is
+within this much tighter bound:
 
-For asymmetric covers, `a → γ*a`, `b → b/γ` leaves `a*b'` unchanged. The package
-chooses a unique representative using
-`∑ n_i log a[i] = ∑ m_j log b[j]`, where `n_i`, `m_j` are the nonzero counts
-of row `i` and column `j`. The convention is applied separately to each
-connected component of the bipartite support graph. It affects the factors but
-not their products.
+```jldoctest conditioning
+julia> c = sqrt(3) * norm(abs.(inv(Ahat)) * ones(3));
 
-`AbsLog{2}` has a unique minimizer except when the support pattern leaves a
-scaling freedom, as in `[0 1; 1 0]`, where every `a` with `a[1]*a[2] = 1` is
-optimal. `PowerMean` has unique products `a[i]*b[j]` on the support, and a
-symmetric matrix has a symmetric minimizer; where a symmetric support leaves a
-scaling freedom, the two sides of the bipartition are balanced as above. If
-`AbsLog{1}()` has multiple minima, the implementation chooses the one with the
-smallest `AbsLog{2}` objective. `AbsLinear` may have several local minima.
+julia> round(c; sigdigits=3)
+6.48
 
-### Starting points: initialize and refine
-
-For objectives with multiple minima, the result can depend on its starting
-point. The interface separates initialization, refinement, and multistart
-selection:
-
-- **Initializers** [`initialize_symcover`](@ref) and [`initialize_cover`](@ref)
-  build a named `strategy`. Their `feasible` keyword selects uniform inflation,
-  selective boosting, or no feasibility step.
-- **Refiners** are the `!`-suffixed forms of the
-  solvers: [`symcover_min!`](@ref), [`cover_min!`](@ref), [`soft_symcover!`](@ref),
-  and [`soft_cover!`](@ref) optimize a supplied point. Hard refiners require a
-  cover; soft refiners do not.
-- **Solvers** [`symcover_min`](@ref), [`cover_min`](@ref),
-  [`soft_symcover`](@ref), and [`soft_cover`](@ref) refine several starts and
-  return the best objective
-  (for the convex penalties, one start suffices).
-
-Plain forms choose their starts; `!` forms refine the supplied start, except
-[`symcover!`](@ref), [`cover!`](@ref), and [`cover_transversal!`](@ref), which
-write their result in place.
-
-```jldoctest manualstart
-julia> using MatrixCovers, JuMP, Ipopt
-
-julia> S = [4 1 0; 1 1 5; 0 5 2];
-
-julia> a, stats = symcover_min(AbsLinear{2}(), S);
-
-julia> round.(a; digits=6)
-3-element Vector{Float64}:
- 2.0
- 1.0
- 5.0
-
-julia> a, stats = symcover_min(AbsLinear{2}(), S; strategies=(:geomean,));
-
-julia> round.(a; digits=6)
-3-element Vector{Float64}:
- 2.0
- 1.0
- 5.0
-
-julia> a0 = initialize_symcover(S; strategy=:geomean);
-
-julia> symcover_min!(AbsLinear{2}(), a0, S);
-
-julia> round.(a0; digits=6)
-3-element Vector{Float64}:
- 2.0
- 1.0
- 5.0
-```
-
-For the convex `AbsLog` and `PowerMean` penalties, the start does not change the
-result.
-
-## Convergence and solver statistics
-
-The optimizing solvers return statistics as their last output, reporting
-whether the solver met its stopping criterion (the heuristics, which run a fixed
-number of steps, return none):
-
-```jldoctest stats
-julia> using MatrixCovers
-
-julia> A = [1 2 3; 6 5 4];
-
-julia> a, b, stats = cover_min(A);
-
-julia> MatrixCovers.converged(stats)
-true
-
-julia> MatrixCovers.residual(stats) <= MatrixCovers.tolerance(stats)
+julia> norm(b .* (x - xbig)) / norm(b .* xbig) <= c * eps()
 true
 ```
 
-`a, b = cover_min(A)` discards the statistics, but `a = symcover_min(A)` binds
-the pair; write `a, stats = symcover_min(A)`.
+## Making a symmetric matrix positive definite
 
-Each solver family returns its own subtype of
-[`AbstractCoverStats`](@ref MatrixCovers.AbstractCoverStats). The accessors
-[`converged`](@ref MatrixCovers.converged),
-[`iterations`](@ref MatrixCovers.iterations),
-[`residual`](@ref MatrixCovers.residual), and
-[`tolerance`](@ref MatrixCovers.tolerance) are public but not exported, and each
-subtype implements those that apply to its solver.
+Tikhonov regularization and modified Newton methods shift a symmetric matrix,
+`H + τ*I`, to make it positive definite. The identity has no units, so the
+same `τ` perturbs different variables by amounts that depend on their units.
+Consider a matrix with two blocks whose variables have different scales:
 
-A native solver that stops before meeting its criterion warns and returns its
-result; a hard cover returned this way still covers `A`. Test
-`MatrixCovers.converged(stats)` to reject such results. The JuMP-backed solvers
-throw a [`SolverFailure`](@ref MatrixCovers.SolverFailure) instead.
-
-## Consuming one factor alone: gauges and Gram covers
-
-The balanced factors of an asymmetric cover are deterministic but not
-individually covariant under one-sided scaling. This matters when consuming one
-factor, for example when covering `J'*J` from a cover of `J`.
-
-[`gramcover`](@ref)`(J[, W])` constructs a symmetric cover of `J'*W*J`
-directly from `J` and `W`, without a cover of `J`, and covaries with
-right-scaling of `J`. [`cover`](@ref)`(J, a)` gives the tightest cover of `J`
-for a fixed row scale `a`.
-
-```jldoctest gauge
+```jldoctest posdef
 julia> using MatrixCovers, LinearAlgebra
 
-julia> J = [1.0 2; 3 4; 5 6];
+julia> H0 = [1.0 2; 2 1];
 
-julia> D = Diagonal([100.0, 1.0]);
+julia> H = cat(1e6 * H0, H0; dims=(1, 2))
+4×4 Matrix{Float64}:
+ 1.0e6  2.0e6  0.0  0.0
+ 2.0e6  1.0e6  0.0  0.0
+ 0.0    0.0    1.0  2.0
+ 0.0    0.0    2.0  1.0
 
-julia> a1, b1 = cover(J); a2, b2 = cover(J * D);
-
-julia> r = b2 ./ (D.diag .* b1); all(x -> x ≈ first(r), r)
-true
-
-julia> first(r) ≈ 1
-false
-
-julia> s1 = gramcover(J); s2 = gramcover(J * D);
-
-julia> s2 ≈ D.diag .* s1
-true
+julia> round(eigmin(H); sigdigits=6)
+-1.0e6
 ```
 
-## Worked example: roundoff in `A \ b`
+The identity shift needs `τ ≥ 1e6` to make `H` positive semidefinite, which
+swamps the entries of the second block. Replacing `I` with the diagonal of a
+cover, `H + τ * Diagonal(a .^ 2)`, shifts each variable in proportion to its
+own scale. The smallest sufficient `τ` is `-eigmin(Hhat)` for the
+cover-normalized matrix `Hhat`:
 
-For `x = A \ b`, diagonal rescaling sends `x → x ./ d` and a symmetric cover
-`a → d .* a`. Thus `sum(abs.(x .* a))` is invariant. The quantity can be
-estimated without solving for `x`:
+```jldoctest posdef
+julia> a = symcover(H);
 
-```jldoctest roundoff
-julia> using MatrixCovers, LinearAlgebra
+julia> Hhat = H ./ (a .* a');
 
-julia> A = [1e6 1e3; 1e3 4.0];
+julia> τ = round(-eigmin(Hhat); digits=6)
+0.5
 
-julia> b = [1.5e3, 6.0];
-
-julia> a = symcover(A);
-
-julia> round.(a; digits=6)
-2-element Vector{Float64}:
- 1000.0
-    2.0
-
-julia> mag = sum(abs(bi / ai) for (bi, ai) in zip(b, a));
-
-julia> round(mag; digits=6)
-4.5
+julia> round.(τ .* a .^ 2; sigdigits=3)
+4-element Vector{Float64}:
+ 1.0e6
+ 1.0e6
+ 1.0
+ 1.0
 ```
 
-Here `mag` is within a factor of 1.5 of the scaled solution norm:
+The shift `τ * Diagonal(a .^ 2)` perturbs both blocks by the same relative
+amount, whatever the units. Measured in the cover norm (the spectral norm of
+the cover-normalized perturbation), no symmetric perturbation smaller than this
+shift makes `H` positive semidefinite. When the eigenvalue computation is
+unwanted, a bound is available: every entry of `Hhat` has magnitude at most
+one, so its eigenvalues lie in `[-q, q]`, where `q` is the largest number of
+nonzeros in any row of `H`. For a hard cover, the shift with `τ = q`
+therefore always makes `H` positive semidefinite, and any larger `τ` makes it
+positive definite. Here `q = 2`, and the eigenvalues of `Hhat` are `-0.5` and
+`1.5`, so `τ = 2` gives a positive definite matrix:
 
-```jldoctest roundoff
-julia> x = A \ b;
-
-julia> round(sum(abs.(x .* a)); digits=6)
-3.0
-```
-
-The estimate is unchanged by diagonal rescaling:
-
-```jldoctest roundoff
-julia> d = [0.05, 3.0];
-
-julia> Ad, bd = d .* A .* d', d .* b;
-
-julia> ad = symcover(Ad);
-
-julia> round(sum(abs(bi / ai) for (bi, ai) in zip(bd, ad)); digits=6)
-4.5
-```
-
-For well-conditioned `A`, `eps(mag)` estimates the roundoff floor:
-
-```jldoctest roundoff
-julia> xbig = big.(A) \ big.(b);
-
-julia> abs(sum(abs.(x .* a)) - sum(abs.(Float64.(xbig) .* a))) <= 2 * eps(mag)
+```jldoctest posdef
+julia> isposdef(H + 2 * Diagonal(a .^ 2))
 true
 ```
 
-For ill-conditioned `A`, the error can be much larger:
+## Which function to use
 
-```jldoctest roundoff
-julia> Aill = [1.0 -0.9999; -0.9999 1.0];
+For many practical uses, [`symcover`](@ref) (symmetric matrices) and
+[`cover`](@ref) (general matrices) suffice: they cost ``O(mn)`` and are
+covariant under rescaling. [`symcover_min`](@ref) and [`cover_min`](@ref)
+compute covers that minimize a chosen penalty, at greater cost (see
+[Objective-minimal covers](@ref)). A minimal cover is not necessarily better
+for conditioning: on the matrix of the example above, [`cover_min`](@ref)
+leaves `cond(Ahat)` near `3e8`, because it is not tight on the transversal.
+[`cover_transversal`](@ref) minimizes the penalty among the covers that are.
 
-julia> bill = [0.75, 7.0];
-
-julia> aill = symcover(Aill);
-
-julia> magill = sum(abs(bi / ai) for (bi, ai) in zip(bill, aill));
-
-julia> xill = Aill \ bill;
-
-julia> xbigill = big.(Aill) \ big.(bill);
-
-julia> err = abs(sum(abs.(xill .* aill)) - sum(abs.(Float64.(xbigill) .* aill)));
-
-julia> err > 1e6 * eps(magill)
-true
-```
-
-The condition number of the normalized matrix provides a corresponding bound:
-
-```jldoctest roundoff
-julia> κ = cond(Aill ./ (aill .* aill'));
-
-julia> err <= 1e3 * eps(κ * magill)
-true
-```
-
-## Index of available tools
-
-```@index
-Modules = [MatrixCovers]
-```
-
-## Reference documentation
-
-```@autodocs
-Modules = [MatrixCovers]
-Private = false
-```
+For applications that focus on standardizing data rather than on the
+conditioning of a solver, consider [`soft_cover`](@ref) and
+[`soft_symcover`](@ref). A soft cover need not satisfy every inequality
+`|A[i,j]| ≤ a[i] * b[j]`; with the default `PowerMean{2}` penalty, the ratios
+`|A[i,j]| / (a[i] * b[j])` over the nonzero entries of each row and column have
+root-mean-square equal to one (see [Penalty functions](@ref)).

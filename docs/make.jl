@@ -19,7 +19,11 @@ makedocs(;
     # there the check falls back to the exported set.
     checkdocs=(VERSION >= v"1.11" ? :public : :exports),
     pages=[
-        "Home" => "index.md",
+        "Introduction" => "index.md",
+        "Cover objectives" => "objectives.md",
+        "Solver invariants" => "invariants.md",
+        "Starting points and convergence" => "solvers.md",
+        "Reference" => "reference.md",
     ],
 )
 
