@@ -8,29 +8,33 @@
     a, stats = soft_symcover(ϕ, A; kwargs...)
     a, stats = soft_symcover(A; kwargs...)
 
-Minimize `∑ ϕ(|A[i,j]|/(a[i]*a[j]))` for symmetric `A`, without a hard coverage
-constraint. The default penalty is `PowerMean{2}()`.
+Return the scales `a` that minimize `∑ ϕ(|A[i,j]|/(a[i]*a[j]))` for symmetric
+`A`. Unlike a hard cover, this soft cover penalizes violations of
+`a[i]*a[j] >= |A[i,j]|` rather than forbidding them. The default penalty is
+`PowerMean{2}()`.
 
 Supported penalties and their keywords are:
 
-- `PowerMean{p}()` (default): the convex minimum, computed by damped simultaneous power-mean updates
-  `a[k] ← sqrt(a[k] * M_p(|A[k,j]|/a[j]))`, where `M_p` is the `p`-power mean
-  over the nonzeros of row `k`, followed when they are slow by Newton steps
-  with backtracking on the objective. Every update
-  decreases the objective. The iteration stops when, in every nonzero row, the mean of `r^p`
-  over the ratios `r = |A[k,j]|/(a[k]*a[j])` of the nonzero entries is within
-  `tol` of one. It computes in at least `Float64`, and `tol` defaults to
-  `4096*eps` of that type, and a warning reports an iteration that ends without
-  reaching it. The keywords `maxiter`, `newton`, `maxnewton`, and `linsolve` are
-  described in the extended help.
+- `PowerMean{p}()` (default): the convex minimum. The solver applies damped
+  simultaneous power-mean updates `a[k] ← sqrt(a[k] * M_p(|A[k,j]|/a[j]))`,
+  where `M_p` is the `p`-power mean over the nonzeros of row `k`, and switches
+  to Newton steps with backtracking on the objective when the updates are slow.
+  Every update decreases the objective. The iteration stops when, in every
+  nonzero row, the mean of `r^p` over the ratios `r = |A[k,j]|/(a[k]*a[j])` of
+  the nonzero entries is within `tol` of one. The computation uses at least
+  `Float64` precision; `tol` defaults to `4096*eps` of the working type, and a
+  warning is issued if the iteration ends without reaching it. The keywords
+  `maxiter`, `newton`, `maxnewton`, and `linsolve` are described in the
+  extended help.
 - `AbsLog{2}()`: the convex minimum, computed by one linear solve; `linsolve`
   has the same meaning as in [`symcover_min`](@ref).
 - `AbsLog{1}()`: the convex minimum, computed as a linear program; requires JuMP
   and HiGHS. The minimizer need not be unique, and among the minimizers the one
   with the least `AbsLog{2}` objective is returned.
-- `AbsLinear{1}()`, `AbsLinear{2}()`: the objective is not convex. Several starts are each refined to a local minimum, and the one with
-  the least objective is returned; requires JuMP and Ipopt. `starts`
-  (default 5) is the number of starts: a few deterministic starts, then
+- `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt. The objective is
+  not convex, so several starts are each refined to a local minimum, and the
+  result with the least objective is returned. `starts` (default 5) is the
+  number of starts: a few deterministic starts, then
   log-normal perturbations of the first deterministic start with spread `σ`
   (default 2.0; `sigma` is an alias), drawn from `rng` (default
   `MersenneTwister(0)`). A perturbed start whose refinement throws a
@@ -60,7 +64,7 @@ true
 
 julia> R = abs.(A) ./ (a .* a');
 
-julia> round.(sum(R .^ 2; dims=2); digits=8)   # each row's mean square ratio is one
+julia> round.(sum(R .^ 2; dims=2); digits=8)   # 2 nonzeros per row: each mean square ratio is one
 2×1 Matrix{Float64}:
  2.0
  2.0
@@ -146,45 +150,48 @@ end
     a, b, stats = soft_cover(ϕ, A; kwargs...)
     a, b, stats = soft_cover(A; kwargs...)
 
-Minimize `∑ ϕ(|A[i,j]|/(a[i]*b[j]))` without a hard coverage constraint. This is
-the asymmetric form of [`soft_symcover`](@ref). The default penalty is
+Return the scales `a`, `b` that minimize `∑ ϕ(|A[i,j]|/(a[i]*b[j]))`. This is
+the asymmetric counterpart of [`soft_symcover`](@ref): it penalizes violations
+of `a[i]*b[j] >= |A[i,j]|` rather than forbidding them. The default penalty is
 `PowerMean{2}()`. `stats` and the failure behavior are as for
 `soft_symcover`.
 
 Supported penalties and their keywords are:
 
-- `PowerMean{p}()` (default): the convex minimum, computed by alternating
-  power-mean updates of the row and column scales (Sinkhorn scaling of
-  `abs.(A).^p` to row sums `n_i` and column sums `m_j`, the nonzero counts),
-  with adaptive overrelaxation, followed when the sweeps are slow by Newton
-  steps with backtracking on the objective. The iteration stops when, in every
-  nonzero row and column, the mean of `r^p` over the ratios `r` of the nonzero
-  entries is within `tol` of one. It computes in at least `Float64`, and `tol`
-  defaults to `4096*eps` of that type; a warning reports an iteration that ends
-  without reaching it. `maxiter` (default `10_000`) bounds the sweeps, each an
+- `PowerMean{p}()` (default): the convex minimum. The solver alternates
+  power-mean updates of the row and column scales, with adaptive
+  overrelaxation, and switches to Newton steps with backtracking on the
+  objective when these sweeps are slow. The sweeps amount to Sinkhorn scaling
+  of `abs.(A).^p` to row sums `n_i` and column sums `m_j`, the nonzero counts.
+  The iteration stops when, in every nonzero row and column, the mean of `r^p`
+  over the ratios `r` of the nonzero entries is within `tol` of one. The
+  computation uses at least `Float64` precision; `tol` defaults to `4096*eps`
+  of the working type, and a warning is issued if the iteration ends without
+  reaching it. `maxiter` (default `10_000`) bounds the number of sweeps, each an
   update of all rows and then all columns. The sweeps hand over to Newton when
-  their rate predicts more than 100 further sweeps, and after at most
-  `min(maxiter, 200)` sweeps. `newton`, `maxnewton`, and `linsolve` have the
-  meanings given in the extended help of [`soft_symcover`](@ref). When
-  `abs.(A)` is exactly symmetric, the minimizer has `b == a` under the balance
-  convention, and `soft_cover` instead computes `a` by the algorithm of
-  [`soft_symcover`](@ref) (with the same keywords; `maxiter` then counts its
-  updates) and returns `(a, copy(a), stats)`. The in-place
-  [`soft_cover!`](@ref) always uses the alternating iteration.
+  their rate of progress predicts more than 100 further sweeps, and after at
+  most `min(maxiter, 200)` sweeps. `newton`, `maxnewton`, and `linsolve` have
+  the meanings given in the extended help of [`soft_symcover`](@ref).
 - `AbsLog{2}()`: the convex minimum, computed by one linear solve; `linsolve` has
   the same meaning as in [`cover_min`](@ref).
 - `AbsLog{1}()`: the convex minimum, computed as a linear program; requires JuMP
   and HiGHS. Among the minimizers, the one with the least `AbsLog{2}` objective
   is returned.
-- `AbsLinear{1}()`, `AbsLinear{2}()`: the objective is not convex. Several starts
-  are each refined to a local minimum, and the one with the least objective is
-  returned; requires JuMP and Ipopt. `starts` (default 4) is the number of
-  starts: the boosted covariant start of [`cover`](@ref) and the hard cover
+- `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt. The objective is
+  not convex, so several starts are each refined to a local minimum, and the
+  result with the least objective is returned. `starts` (default 4) is the
+  number of starts: the boosted covariant start of [`cover`](@ref) and the hard cover
   tightened from it, then log-normal perturbations of the first with spread `σ`
   (default 2.0; `sigma` is an alias), drawn from `rng` (default
   `MersenneTwister(0)`). A perturbed start whose refinement throws a
   [`SolverFailure`](@ref) is left out of the selection; a failing deterministic
   start throws.
+
+When `abs.(A)` is exactly symmetric, the `PowerMean` minimizer has `b == a`
+under the balance convention. In that case `soft_cover` computes `a` by the
+algorithm of [`soft_symcover`](@ref) (with the same keywords; `maxiter` then
+counts its updates) and returns `(a, copy(a), stats)`. The in-place
+[`soft_cover!`](@ref) always uses the alternating iteration.
 
 Unsupported rows and columns receive zero scale. The factors use the balance
 convention of [`cover_min`](@ref).

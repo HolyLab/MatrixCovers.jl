@@ -12,18 +12,21 @@ const COVER_MIN_STRATEGIES = (:hardcover, :covariant)
     a = initialize_symcover(A; strategy=:hardcover, feasible=:inflate, kwargs...)
 
 Build a symmetric starting point for [`symcover_min`](@ref) or
-[`soft_symcover`](@ref). Strategies depend only on `A`:
+[`soft_symcover`](@ref). The point depends only on `A`, not on a penalty.
 
-`strategy` names the point:
+`strategy` selects the point:
 
 - `:geomean` — the unconstrained `AbsLog{2}` start of [`symcover`](@ref):
   geometric means of the diagonally normalized entries in each row.
-- `:leaveout` — the geometric mean recomputed with the most-underweighted
-  support entry omitted. It fails if removing that entry empties a row.
+- `:leaveout` — the geometric mean recomputed with one support entry omitted:
+  the entry that the `:geomean` scales overestimate the most, i.e., the one with
+  the smallest ratio `abs(A[i, j]) / (a[i] * a[j])`. It throws an
+  `ArgumentError` if removing that entry empties a row.
 - `:diagfeasible` — a cover grown from the diagonal by nearest-neighbor
   propagation.
-- `:hardcover` — the result of [`symcover`](@ref). It forwards `maxiter` and
-  ignores `feasible`.
+- `:hardcover` — the result of [`symcover`](@ref), which is already a cover, so
+  `feasible` is ignored. Additional keywords (`maxiter`) are passed to
+  `symcover`; the other strategies accept none.
 
 `feasible` controls whether and how the point is made into a cover:
 
@@ -77,8 +80,9 @@ Build an asymmetric starting point for [`cover_min`](@ref) or
 - `:geomean` — geometric means of the nonzero entries in each row and column.
 - `:covariant` — the scale-covariant start of [`cover`](@ref), without
   conjugate-gradient refinement. It agrees with `:geomean` on complete support.
-- `:hardcover` — the result of [`cover`](@ref). It forwards `maxiter`,
-  `cgiter`, and `start`, and ignores `feasible`.
+- `:hardcover` — the result of [`cover`](@ref), which is already a cover, so
+  `feasible` is ignored. Additional keywords (`maxiter`, `cgiter`, `start`) are
+  passed to `cover`; the other strategies accept none.
 
 Supported rows and columns receive positive scales; unsupported ones receive
 zero. The factors use the balance convention of [`cover_min`](@ref).

@@ -17,10 +17,14 @@ Supported ϕ values:
 - `AbsLog{2}()`: native.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
 - `AbsLinear{1}()` and `AbsLinear{2}()`: require JuMP and Ipopt and return the
-  best local minimum found from `strategies`.
+  best local minimum found from `strategies`, a collection of
+  [`initialize_symcover`](@ref) strategy names (default
+  `(:hardcover, :geomean, :leaveout)`; a strategy that cannot build a start is
+  skipped).
 
-`AbsLog` is convex in the log scales. If `AbsLog{1}` has multiple minima, the
-method selects the one with the smallest `AbsLog{2}` objective.
+The `AbsLog` objectives are convex in the logarithms of the scales, so their
+local minima are global. When the `AbsLog{1}` minimum is not unique, the method
+returns the minimizer with the smallest `AbsLog{2}` objective.
 
 `stats` is an [`AbstractCoverStats`](@ref MatrixCovers.AbstractCoverStats);
 [`MatrixCovers.converged(stats)`](@ref MatrixCovers.converged) reports whether
@@ -48,20 +52,21 @@ on the KKT residual, default `1000*eps` of the working type), `fillbudget` and
 The solver increases `κ` when the KKT residual contracts slowly, and when a
 positive multiplier remains on an entry with slack.
 
-For `Float64`, `:lsqr` uses a Cholesky preconditioner when its predicted storage
-does not exceed `fillbudget` bytes (default `2^30`) and its predicted numeric-
-factorization flop count does not exceed `flopbudget` (default `8e3`) times the
-number of stored entries in `A`'s support, where a symmetric off-diagonal entry
-counts twice, as `nnz` counts it for a fully stored matrix. Otherwise, and for
-every other element type, it preconditions with a maximum-weight spanning
-forest of the couplings among entries whose constraints are active, together
-with the diagonal contributions of all entries; that factorization has no fill
-and needs no budget.
-`fillbudget=Inf` and `flopbudget=Inf` together always select the full Cholesky
-preconditioner; `fillbudget=0` or `flopbudget=0` always select the diagonal
-one. The same budgets apply to the active-set method that finishes an
-unconverged solve: graph-Laplacian systems whose sparse Cholesky factor would
-exceed them are solved by conjugate gradients instead.
+The budgets choose the preconditioner of `:lsqr`. For `Float64`, it is a sparse
+Cholesky factorization when the factor's predicted storage is at most
+`fillbudget` bytes (default `2^30`) and its predicted flop count is at most
+`flopbudget` (default `8e3`) times the number of stored entries in the support
+of `A`, counting each symmetric off-diagonal pair twice, as `nnz` does for a
+fully stored matrix. Otherwise, and for every other element type, it is a
+factorization of a maximum-weight spanning forest of the couplings among
+entries whose constraints are active, together with the diagonal contributions
+of all entries; this factorization has no fill and needs no budget.
+`fillbudget=Inf` and `flopbudget=Inf` together always select the Cholesky
+preconditioner; `fillbudget=0` or `flopbudget=0` always select the
+spanning-forest one. The same budgets apply to the active-set method that
+finishes an unconverged solve (see [`cover_min`](@ref)): graph-Laplacian
+systems whose sparse Cholesky factor would exceed them are solved by conjugate
+gradients instead.
 
 If the solver warns that the result may not minimize the objective, follow the
 advice in the warning: increase `maxouter` when the update limit was reached,
@@ -91,10 +96,14 @@ symcover_min(A::AbstractMatrix; kwargs...) = symcover_min(AbsLog{2}(), A; kwargs
 
 Return the ϕ-minimal asymmetric hard cover of `A`: vectors `a`, `b` minimizing
 `∑ ϕ(|A[i,j]|/(a[i]*b[j]))` subject to `a[i]*b[j] >= |A[i,j]|`. The
-default penalty is `AbsLog{2}()`. Within each support component, the factors use
-the balance convention
-`∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` (`nzaᵢ`, `nzbⱼ` = nonzero counts of row `i`,
-column `j`).
+default penalty is `AbsLog{2}()`.
+
+The objective and the constraints depend only on the products `a[i]*b[j]`,
+which do not change when `a` is multiplied by `c` and `b` divided by `c` on one
+connected component of the support of `A`. The returned factors are fixed by
+the balance convention `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` within each
+component, where `nzaᵢ` and `nzbⱼ` are the nonzero counts of row `i` and
+column `j`.
 
 The factors of a nonsymmetric band matrix can vary geometrically along the
 band. For the tridiagonal Toeplitz matrix with subdiagonal `s` and
@@ -111,10 +120,12 @@ Supported ϕ values, `stats`, and the failure behavior are as for
 - `AbsLog{2}()`: native.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
 - `AbsLinear{1}()` and `AbsLinear{2}()`: require JuMP and Ipopt and return the
-  best local minimum found from `strategies`.
+  best local minimum found from `strategies`, a collection of
+  [`initialize_cover`](@ref) strategy names (default `(:hardcover, :covariant)`).
 
-`AbsLog` is convex in the log scales. If `AbsLog{1}` has multiple minima, the
-method selects the one with the smallest `AbsLog{2}` objective.
+The `AbsLog` objectives are convex in the logarithms of the scales, so their
+local minima are global. When the `AbsLog{1}` minimum is not unique, the method
+returns the minimizer with the smallest `AbsLog{2}` objective.
 
 # Extended help
 
@@ -130,11 +141,12 @@ approximate those of `cover_min(A)` divided by `d[i]*e[j]`.
 When the multiplier iteration stops before its KKT residual reaches the
 tolerance, an active-set method (the dual method of Goldfarb and Idnani)
 continues from its result. The entries that are tight at the solution form a
-graph, and each step solves the objective with a spanning forest of them held
-tight, a sparse graph Laplacian with one unknown per tree. The method ends when
-the KKT conditions hold to rounding error, which makes the result the exact
-minimizer; `stats.polish` records it. When it fails, the solver returns the
-multiplier iterate and warns.
+graph. Each step minimizes the objective with the entries of a spanning forest
+of this graph held tight, which requires solving a sparse graph-Laplacian
+system with one unknown per tree. The method ends when the KKT conditions hold
+to rounding error, which makes the result the exact minimizer; `stats.polish`
+records the outcome. If the method fails, the solver returns the multiplier
+iterate and warns.
 
 See also: [`symcover_min`](@ref), [`cover`](@ref), [`cover_min!`](@ref).
 """

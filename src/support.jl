@@ -25,19 +25,18 @@ end
 """
     foreach_support(f, A)
 
-Call `f(i, j, abs(A[i,j]))` once per nonzero entry and return `nothing`.
-Traversal order is unspecified; indices follow `axes(A)`.
-
-Specialize this hook to support custom sparse storage in O(nnz) time.
+Call `f(i, j, abs(A[i,j]))` once for each nonzero entry of `A`, in unspecified
+order, and return `nothing`. The indices `i`, `j` are those of `axes(A)`.
 
 # Extending
 
-To support a new matrix type, define
+To visit only the stored entries of a new sparse matrix type, in O(nnz) time,
+define
 
     MatrixCovers.foreach_support(f, A::MyMatrix)
 
-It must emit each nonzero entry exactly once, skip stored zeros, ignore callback
-return values, and return `nothing`.
+The method must visit each nonzero entry exactly once, skip stored zeros,
+ignore the return values of `f`, and return `nothing`.
 
 See also: [`foreach_support_sym`](@ref).
 """
@@ -54,16 +53,18 @@ end
 """
     foreach_support_sym(f, A)
 
-Symmetric counterpart of [`foreach_support`](@ref): call `f(i, j, v)` once per
-nonzero unordered pair in canonical order `i <= j`, including the diagonal.
+Symmetric counterpart of [`foreach_support`](@ref): call `f(i, j, abs(A[i,j]))`
+once for each nonzero pair `{i, j}`, with `i <= j`, including diagonal entries.
 
-`A` must be square and `abs.(A)` symmetric. Public symmetric solvers check this
-precondition before calling the traversal.
+`A` must be square and `abs.(A)` symmetric. The traversal checks only that `A`
+is square; the package's symmetric solvers check symmetry before calling it.
 
 # Objective weighting
 
-For full-grid objective weighting, use multiplicity 1 on the diagonal and 2
-off-diagonal. Constraints need no multiplicity.
+Because each off-diagonal pair is visited once, a sum over all entries of `A`
+must weight off-diagonal pairs by 2 and diagonal entries by 1. A coverage
+constraint `a[i]*a[j] >= |A[i,j]|` is the same for `(i, j)` and `(j, i)`, so
+constraints need no weighting.
 
 # Extending
 
@@ -71,9 +72,10 @@ To support a new matrix type, define
 
     MatrixCovers.foreach_support_sym(f, A::MyMatrix)
 
-It must emit each nonzero pair once in canonical order, skip zero pairs, ignore
-callback return values, and return `nothing`. Triangular storage must map lower
-entries back to `(j, i)`.
+The method must visit each nonzero pair once with `i <= j`, skip zero pairs,
+ignore the return values of `f`, and return `nothing`. For storage that holds
+only the lower triangle, an entry stored at `(i, j)` with `i > j` must be passed
+as `(j, i)`.
 
 See also: [`foreach_support`](@ref).
 """
