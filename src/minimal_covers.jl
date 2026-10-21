@@ -1283,14 +1283,14 @@ _precond_pattern(::Type{T}, ::Union{Grid,DiffGrid}, v0, N::Int, mult) where {T} 
 _precond_ridge(dmax::T) where {T} = (dmax > 0 ? dmax : oneunit(T)) * sqrt(eps(T))
 
 # Default storage limit, in bytes, for the LSQR Cholesky preconditioner.
-# Tripping this switches to diagonal preconditioning, reducing memory
-# consumption but increasing the number of iterations for convergence.
+# Tripping this switches to spanning-forest preconditioning, which has no fill
+# but needs more iterations for convergence.
 const LSQR_FILL_BUDGET = 1 << 30
 
 # Largest predicted numeric-factorization flop count per stored entry of the
 # support for which the LSQR Cholesky preconditioner is used. Above it,
 # repeated refactorization of the preconditioner costs more than the extra
-# LSQR iterations of diagonal preconditioning.
+# LSQR iterations of spanning-forest preconditioning.
 const LSQR_FLOP_BUDGET = 8.0e3
 
 # Return the symbolic factorization of `M`, its predicted number of values,
