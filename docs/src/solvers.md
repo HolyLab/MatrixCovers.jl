@@ -6,25 +6,31 @@ CurrentModule = MatrixCovers
 
 ## Starting points: initialize and refine
 
-For objectives with multiple minima, the result can depend on its starting
-point. The interface separates initialization, refinement, and multistart
-selection:
+For the convex `AbsLog` and `PowerMean` penalties, the result does not depend
+on the starting point. For the nonconvex `AbsLinear` penalty, it can. To give
+control over the start, the interface separates initialization, refinement,
+and selection among several starts:
 
 - **Initializers** [`initialize_symcover`](@ref) and [`initialize_cover`](@ref)
-  build a named `strategy`. Their `feasible` keyword selects uniform inflation,
-  selective boosting, or no feasibility step.
-- **Refiners** are the `!`-suffixed forms of the
-  solvers: [`symcover_min!`](@ref), [`cover_min!`](@ref), [`soft_symcover!`](@ref),
-  and [`soft_cover!`](@ref) optimize a supplied point. Hard refiners require a
-  cover; soft refiners do not.
+  build a starting point from a named `strategy`. Their `feasible` keyword
+  selects how the start is made into a hard cover: uniform inflation, selective
+  boosting, or no feasibility step.
+- **Refiners** are the `!`-suffixed forms of the solvers:
+  [`symcover_min!`](@ref), [`cover_min!`](@ref), [`soft_symcover!`](@ref), and
+  [`soft_cover!`](@ref) optimize a supplied point. Hard refiners require the
+  supplied point to be a cover; soft refiners do not.
 - **Solvers** [`symcover_min`](@ref), [`cover_min`](@ref),
   [`soft_symcover`](@ref), and [`soft_cover`](@ref) refine several starts and
-  return the best objective
-  (for the convex penalties, one start suffices).
+  return the one with the best objective (for the convex penalties, one start
+  suffices).
 
-Plain forms choose their starts; `!` forms refine the supplied start, except
-[`symcover!`](@ref), [`cover!`](@ref), and [`cover_transversal!`](@ref), which
-write their result in place.
+In general, plain forms choose their own starts, and `!` forms refine the
+supplied start. The exceptions are [`symcover!`](@ref), [`cover!`](@ref), and
+[`cover_transversal!`](@ref), which write their result in place.
+
+The three calls below (the default multistart solver, the solver restricted to
+the `:geomean` start, and an explicit initialization followed by refinement)
+reach the same cover for this matrix:
 
 ```jldoctest manualstart
 julia> using MatrixCovers, JuMP, Ipopt
@@ -58,14 +64,11 @@ julia> round.(a0; digits=6)
  5.0
 ```
 
-For the convex `AbsLog` and `PowerMean` penalties, the start does not change the
-result.
-
 ## Convergence and solver statistics
 
 The optimizing solvers return statistics as their last output, reporting
-whether the solver met its stopping criterion (the heuristics, which run a fixed
-number of steps, return none):
+whether the solver met its stopping criterion. The heuristics run a fixed
+number of steps and return no statistics.
 
 ```jldoctest stats
 julia> using MatrixCovers
@@ -81,8 +84,9 @@ julia> MatrixCovers.residual(stats) <= MatrixCovers.tolerance(stats)
 true
 ```
 
-`a, b = cover_min(A)` discards the statistics, but `a = symcover_min(A)` binds
-the pair; write `a, stats = symcover_min(A)`.
+Destructuring with `a, b = cover_min(A)` discards the statistics. For the
+symmetric solvers, however, `a = symcover_min(A)` assigns the tuple
+`(a, stats)` to `a`; write `a, stats = symcover_min(A)` instead.
 
 Each solver family returns its own subtype of
 [`AbstractCoverStats`](@ref MatrixCovers.AbstractCoverStats). The accessors
@@ -92,8 +96,7 @@ Each solver family returns its own subtype of
 [`tolerance`](@ref MatrixCovers.tolerance) are public but not exported, and each
 subtype implements those that apply to its solver.
 
-A native solver that stops before meeting its criterion warns and returns its
-result; a hard cover returned this way still covers `A`. Test
-`MatrixCovers.converged(stats)` to reject such results. The JuMP-backed solvers
+A native solver that stops before meeting its criterion issues a warning and
+returns its result; a hard cover returned this way still covers `A`. To reject
+such results, test `MatrixCovers.converged(stats)`. The JuMP-backed solvers
 throw a [`SolverFailure`](@ref MatrixCovers.SolverFailure) instead.
-

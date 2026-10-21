@@ -6,15 +6,15 @@ CurrentModule = MatrixCovers
 
 ## Penalty functions
 
-A cover is valid as long as every constraint is satisfied, but tighter covers
-better capture the scaling of `A`.  Cover quality is measured through the ratios
+Any hard cover is valid, but tighter covers better capture the scaling of `A`.
+The tightness of a cover is measured through the ratios
 `r[i, j] = |A[i,j]| / (a[i] * b[j])`: a hard cover has every `0 ≤ r[i, j] ≤ 1`,
 and `r[i, j] == 1` means the constraint is exactly tight.
 
-A **penalty function** `ϕ` combines those ratios into a scalar objective
+A **penalty function** `ϕ` combines those ratios into a scalar objective:
 
 ```math
-\sum_{i,j} \phi\!\left(\frac{|A_{ij}|}{a_i\, b_j}\right),
+\sum_{i,j} \phi\!\left(\frac{|A_{ij}|}{a_i\, b_j}\right).
 ```
 
 Three penalty families are provided:
@@ -25,9 +25,9 @@ Three penalty families are provided:
   is strictly convex in log space and is the default for soft covers. Its
   minimizer makes the mean of `r^p` over the nonzero entries of every row and
   column equal to one.
-- [`AbsLinear`](@ref)`{p}`: `ϕ(r) = |1-r|^p`. It is nonconvex and finite at
-  zero, so an entry that shrinks to zero drops out of the soft cover
-  continuously.
+- [`AbsLinear`](@ref)`{p}`: `ϕ(r) = |1-r|^p`. It is nonconvex but finite and
+  continuous at zero, so an entry that shrinks to zero drops out of the soft
+  cover continuously.
 
 [`cover_objective`](@ref) evaluates any penalty for a given cover:
 
@@ -48,9 +48,9 @@ julia> cover_objective(AbsLog{2}(), a, A)   # sum of squared log-excesses (L2)
 3.843624111345611
 ```
 
-Pass a penalty as the first solver argument to override the default.
+To override a solver's default penalty, pass a penalty as its first argument.
 
-## Choosing a penalty function
+## Functions and their objectives
 
 | Function | Symmetric | Constraint | Default (or alternative) objective | Requires |
 |---|---|---|---|---|
@@ -66,28 +66,33 @@ For hard covers, [`symcover`](@ref) and [`cover`](@ref) are fast heuristics;
 their `_min` counterparts minimize the selected objective.
 [`cover_transversal`](@ref) minimizes the `AbsLog{2}` objective among the hard
 covers that are tight on a maximum-product transversal (see
-[Transversals and conditioning](@ref)). A soft cover has no
-constraint to satisfy, so there is no separate heuristic tier:
-[`soft_symcover`](@ref) and [`soft_cover`](@ref) always minimize the objective.
+[Transversals and conditioning](@ref)). A soft cover has no constraint to
+satisfy, so there is no separate heuristic: [`soft_symcover`](@ref) and
+[`soft_cover`](@ref) always minimize the objective.
+
+The method used to minimize the objective depends on the penalty:
 
 - `PowerMean` (native) uses power-mean scaling iterations (damped simultaneous
   updates for the symmetric problem, overrelaxed alternating updates for the
   asymmetric one), followed by damped Newton steps when those iterations
   converge slowly.
-- `AbsLog{2}` (native) is one linear least-squares solve.
+- `AbsLog{2}` (native) is a single linear least-squares solve for soft covers;
+  for hard covers, see [Objective-minimal covers](@ref).
 - `AbsLog{1}` is a linear program solved with JuMP and HiGHS.
 - `AbsLinear` is not convex; several starts are each refined to a local minimum
   with JuMP and Ipopt, and the best is returned.
 
 The heuristics cost ``O(mn)``, except that the transversal start of
-[`cover`](@ref) also solves an assignment problem by shortest augmenting paths;
-native iterative solvers cost roughly ``O(mn)`` per iteration.
+[`cover`](@ref) also solves an assignment problem by shortest augmenting paths.
+The native iterative solvers cost roughly ``O(mn)`` per iteration.
 
 ## Objective-minimal covers
 
 [`symcover_min`](@ref) and [`cover_min`](@ref) minimize the chosen penalty
-subject to the hard constraint. The built-in `AbsLog{2}` solver uses penalty
-continuation with a damped semismooth Newton iteration:
+subject to the hard constraint. The built-in `AbsLog{2}` solver uses an
+augmented-Lagrangian iteration, with Newton steps between multiplier updates.
+For the matrix below, the heuristic [`cover`](@ref) is already close to
+minimal: the minimal cover lowers the objective by less than 1%.
 
 ```jldoctest qmin; filter = r"(\d+\.\d{6})\d+" => s"\1"
 julia> using MatrixCovers
@@ -116,7 +121,7 @@ julia> round(cover_objective(AbsLog{2}(), aq, bq, A); digits=6)
 ```
 
 `AbsLog{1}` and `AbsLinear` use [JuMP](https://jump.dev/) with HiGHS and Ipopt,
-respectively:
+respectively, and are available once those packages are loaded:
 
 ```jldoctest jumpmin
 julia> using MatrixCovers, JuMP, HiGHS
@@ -147,15 +152,21 @@ julia> round.(a * b'; digits=6)
 
 ## Transversals and conditioning
 
-For a symmetric positive-definite matrix `A`, the diagonal plays a special
-role: `a * a'` covers `A` exactly when `a[i] ≥ sqrt(A[i,i])` for every `i`.
-The diagonal entries require this, and it suffices because
-`abs(A[i,j]) ≤ sqrt(A[i,i] * A[j,j])`. The minimal symmetric cover is
-therefore `a = sqrt.(diag(A))`, which is tight on the whole diagonal and gives
-`Ahat` a unit diagonal; [`symcover`](@ref) and [`symcover_min`](@ref) both
-return it, to within roundoff. A general square matrix has no distinguished
-diagonal, but it has an analog that matters for the asymmetric covers computed
-by [`cover`](@ref), [`cover_min`](@ref), and [`cover_transversal`](@ref).
+Minimizing a penalty does not ensure that the cover-normalized matrix
+`Ahat = A ./ (a .* b')` is well conditioned. What matters for conditioning is
+whether the cover is tight on a suitable *transversal*, which plays the role
+for a general matrix that the diagonal plays for a symmetric positive-definite
+one.
+
+For a symmetric positive-definite matrix `A`, `a * a'` covers `A` exactly when
+`a[i] ≥ sqrt(A[i,i])` for every `i`. The diagonal entries require this, and it
+suffices because `abs(A[i,j]) ≤ sqrt(A[i,i] * A[j,j])`. The minimal symmetric
+cover is therefore `a = sqrt.(diag(A))`, which is tight on the whole diagonal
+and gives `Ahat` a unit diagonal; [`symcover`](@ref) and [`symcover_min`](@ref)
+both return it, to within roundoff. A general square matrix has no
+distinguished diagonal, but transversals provide an analog that matters for the
+asymmetric covers computed by [`cover`](@ref), [`cover_min`](@ref), and
+[`cover_transversal`](@ref).
 
 A *transversal* of an `n×n` matrix is a set of `n` entries with exactly one in
 each row and each column: `A[1,σ[1]], A[2,σ[2]], …, A[n,σ[n]]` for some
@@ -165,9 +176,8 @@ up to the ordering of the columns; some authors call it a *diagonal* or
 *generalized diagonal*. "Transversal" is the usual term in the literature on
 sparse direct solvers. It comes from combinatorics, where a
 [transversal](https://en.wikipedia.org/wiki/Transversal_(combinatorics)) of a
-collection of sets picks a distinct element from each set. A transversal of
-nonzero entries is one in this sense, where each row contributes the set of
-columns of its nonzero entries. The products
+collection of sets picks a distinct element from each set; here each row
+contributes the set of columns of its nonzero entries. The products
 `prod(A[i,σ[i]] for i in 1:n)` are, up to sign, the terms of `det(A)`, so a
 nonsingular matrix has at least one transversal of nonzero entries. A matrix
 with such a transversal is *structurally nonsingular*. A *maximum-product
@@ -175,15 +185,16 @@ transversal* is one for which `prod(abs(A[i,σ[i]]) for i in 1:n)` is largest.
 By the inequality above, the main diagonal of a symmetric positive-definite
 matrix is a maximum-product transversal.
 
-Transversals limit how well-conditioned the cover-normalized matrix
-`Ahat = A ./ (a .* b')` can be. If every transversal of `Ahat` contains an
-entry of magnitude at most `t`, then the smallest singular value of `Ahat` is
-at most `(n+1)/2 * t`, however well its rows and columns are otherwise
-balanced. For any hard cover, `prod(a) * prod(b)` is at least the product of
-the magnitudes on every transversal of `A`, with equality exactly when
+Transversals limit how well conditioned `Ahat` can be. If every transversal of
+`Ahat` contains an entry of magnitude at most `t`, then the smallest singular
+value of `Ahat` is at most `(n+1)/2 * t`, however well its rows and columns are
+otherwise balanced.
+
+For any hard cover, `prod(a) * prod(b)` is at least the product of the
+magnitudes on any transversal of `A`, with equality exactly when
 `abs(Ahat[i,σ[i]]) == 1` on every entry of that transversal. Since
-`det(Ahat) = det(A) / (prod(a) * prod(b))`, the hard covers that are tight on
-a maximum-product transversal are those that maximize `abs(det(Ahat))`. Such
+`det(Ahat) = det(A) / (prod(a) * prod(b))`, the hard covers that are tight on a
+maximum-product transversal are those that maximize `abs(det(Ahat))`. Such
 scalings are a standard preprocessing step for Gaussian elimination, where they
 favor the maximum-product transversal as the pivots (M. Olschowka and
 A. Neumaier, *Linear Algebra Appl.* 240:131–151, 1996; I. S. Duff and
@@ -192,9 +203,10 @@ J. Koster, *SIAM J. Matrix Anal. Appl.* 22:973–996, 2001).
 A cover that minimizes a penalty need not be tight on any transversal. The
 matrix of [Conditioning and the error in `A \ y`](@ref) has a single
 transversal of nonzero entries, `A[1,2]`, `A[2,3]`, and `A[3,1]`, which
-includes the small entry `A[1,2] = η`. The `AbsLog{2}`-minimal cover leaves `A`
-unchanged, while [`cover_transversal`](@ref) and the default start of
-[`cover`](@ref) are tight on the transversal:
+includes the small entry `A[1,2] = η`. The `AbsLog{2}`-minimal cover does not
+rescale `A` at all, so `Ahat` keeps the condition number of `A`. In contrast,
+[`cover_transversal`](@ref) and the default start of [`cover`](@ref) are tight
+on the transversal:
 
 ```jldoctest transversal
 julia> using MatrixCovers, LinearAlgebra
@@ -221,8 +233,8 @@ julia> a, b = cover(A); scaledcond(a, b)
 4.05
 ```
 
-For a square, structurally nonsingular matrix, [`cover`](@ref) uses this
-tightness by default (`start=:transversal`). The `:covariant` and `:geomean`
-starts, and the `_min` solvers, do not guarantee it. Tightness on a transversal
-prevents only this one cause of ill-conditioning, and it costs a somewhat larger
-objective than the minimal cover.
+For a square, structurally nonsingular matrix, [`cover`](@ref) is tight on a
+transversal by default (`start=:transversal`). The `:covariant` and `:geomean`
+starts, and the `_min` solvers, do not guarantee this. Tightness on a
+transversal prevents only this one cause of ill-conditioning, and it comes at
+the cost of a somewhat larger objective than that of the minimal cover.
