@@ -40,8 +40,9 @@ Penalty type for
     φ(r) = |log(r)|^p  if r > 0
            0           if r = 0
 
-The `r=0` convention keeps zero entries finite. The objective is convex in log
-space; `AbsLog{1}` may have multiple minima.
+Defining `φ(0) = 0` makes zero entries of `A`, for which `log(r) = -∞`,
+contribute nothing to the objective. The objective is convex in the logarithms
+of the scales; `AbsLog{1}` may have multiple minima.
 
 See also: [`AbsLinear`](@ref).
 """
@@ -51,10 +52,10 @@ struct AbsLog{p} <: AbstractCoverPenalty end
     AbsLinear{p}
 
 Penalty type for `φ(r) = |1 - r|^p`. Unlike [`AbsLog`](@ref), this penalty is
-continuous at `r = 0` (`φ(0) = 1`), so zero entries in `A` naturally contribute a
-constant penalty.
+continuous at `r = 0`, so each zero entry of `A` contributes `φ(0) = 1` to the
+objective.
 
-The resulting optimization problems are non-convex and may have multiple local
+The resulting optimization problems are not convex and may have multiple local
 minima.
 """
 struct AbsLinear{p} <: AbstractCoverPenalty end
@@ -67,8 +68,12 @@ Penalty type for
     φ(r) = (r^p - 1 - p*log(r)) / p  if r > 0
            0                         if r = 0
 
-with `p > 0`. As for [`AbsLog`](@ref), the `r=0` convention keeps zero entries
-finite, so structural zeros of `A` contribute nothing.
+with `p > 0`. As for [`AbsLog`](@ref), defining `φ(0) = 0` makes zero entries
+of `A` contribute nothing.
+
+`PowerMean{2}` is the default penalty for soft covers. For entries modeled as
+independent normal variables with standard deviations `a[i]*b[j]`, it gives the
+maximum-likelihood scales.
 
 The objective is strictly convex in the log scales, so the soft cover it defines
 has unique products `a[i]*b[j]` on the support of `A`, and a symmetric `A` has a
@@ -77,10 +82,6 @@ symmetric minimizer. At the minimum, the `p`-power mean of the ratios
 equals one: `∑_j r[i,j]^p = n_i` and `∑_i r[i,j]^p = m_j`, where `n_i` and `m_j`
 count the nonzeros of row `i` and column `j`. Consequently no ratio exceeds
 `min(n_i, m_j)^(1/p)`.
-
-`PowerMean{2}` is the default penalty for soft covers. For entries modeled as
-independent normal variables with standard deviations `a[i]*b[j]`, it gives the
-maximum-likelihood scales.
 
 See also: [`soft_cover`](@ref), [`soft_symcover`](@ref).
 """
@@ -133,8 +134,8 @@ end
 Compute `∑ ϕ(|A[i,j]|/(a[i]*b[j]))`. The shorter form uses the symmetric cover
 `a*a'`.
 
-Both forms use full-grid weighting: symmetric off-diagonal pairs contribute
-twice and diagonal entries once.
+Both forms sum over every entry of `A`, so in the symmetric form each
+off-diagonal pair contributes twice and each diagonal entry once.
 
 Zero entries of `A` are handled according to `ϕ`:
 - `AbsLog{p}`, `PowerMean{p}`: zero entries contribute 0 (φ(0) = 0 by convention).
@@ -142,11 +143,11 @@ Zero entries of `A` are handled according to `ϕ`:
 
 `eachindex(a)` must match `axes(A, 1)` and `eachindex(b)` must match `axes(A, 2)`.
 
-`A` is read through [`foreach_support`](@ref).
+The nonzero entries of `A` are enumerated by [`foreach_support`](@ref).
 
 See also:
 - Penalty types (options for `ϕ`): [`AbsLog`](@ref), [`AbsLinear`](@ref), [`PowerMean`](@ref).
-- Solvers: [`symcover`](@ref), [`cover`](@ref), [`soft_symcover`](@ref), [`soft_cover`](@ref).
+- Solvers that minimize it: [`symcover_min`](@ref), [`cover_min`](@ref), [`soft_symcover`](@ref), [`soft_cover`](@ref).
 """
 function cover_objective(ϕ, a, b, A)
     eachindex(a) == axes(A, 1) ||

@@ -9,17 +9,17 @@
     a = symcover(ϕ, A; maxiter=3)
     a = symcover(A; maxiter=3)
 
-Given a square matrix `A` assumed to be symmetric, return a vector `a`
-representing a symmetric hard cover of `A`: `a[i] * a[j] >= abs(A[i, j])` for
-all `i`, `j`.
+Return a vector `a` whose outer product `a*a'` is a hard cover of the square,
+symmetric matrix `A`: `a[i] * a[j] >= abs(A[i, j])` for all `i`, `j`. This is a
+fast heuristic; for the cover that minimizes a penalty `ϕ`, use
+[`symcover_min`](@ref).
 
-The method initializes from per-row geometric means of the diagonally
+The heuristic starts from the per-row geometric means of the diagonally
 normalized entries `abs(A[i, j]) / sqrt(abs(A[i, i] * A[j, j]))`, rescaled by
-`sqrt(abs(A[i, i]))`, raises the scales until every entry is covered, then
-applies `maxiter` tightening iterations.
+`sqrt(abs(A[i, i]))`. It then raises the scales until every entry is covered
+and applies `maxiter` tightening iterations.
 
-`ϕ` is accepted for API compatibility but is currently ignored.
-For a cover that provably minimizes a given `ϕ`, use [`symcover_min`](@ref).
+`ϕ` is accepted for API compatibility but is ignored.
 
 See also: [`symcover!`](@ref), [`symcover_min`](@ref), [`soft_symcover`](@ref), [`cover`](@ref).
 
@@ -41,9 +41,10 @@ julia> a * a'   # covers |A|: a[i]*a[j] >= abs(A[i, j])
 
 # Extended help
 
-The result is scale-covariant up to floating-point round-off whenever every
-connected component of the support has a nonzero diagonal entry (rows with a
-zero diagonal take their reference from neighbors that have one). Covariance is
+The result is scale-covariant up to floating-point round-off (covering
+`D * A * D` for positive diagonal `D` gives `diag(D) .* a`) whenever every
+connected component of the support has a nonzero diagonal entry; rows with a
+zero diagonal take their reference from neighbors that have one. Covariance is
 not exact even for power-of-two scalings, because the method works with
 logarithms of the entries.
 
@@ -99,16 +100,18 @@ end
     a, b = cover(A; maxiter, cgiter, start=:auto)
 
 Given a matrix `A`, return vectors `a` and `b` such that `a[i] * b[j] >=
-abs(A[i, j])` for all `i`, `j`. The heuristic uses up to `cgiter`
-conjugate-gradient iterations to refine its starting point, then ensures
-coverage and applies `maxiter` improvement passes. `cgiter=0` disables
-refinement.
+abs(A[i, j])` for all `i`, `j`. This is a fast heuristic; for the cover that
+minimizes a penalty `ϕ`, use [`cover_min`](@ref).
+
+The heuristic refines a starting point with up to `cgiter` conjugate-gradient
+iterations (`cgiter=0` disables refinement), raises the scales until every
+entry is covered, and then applies `maxiter` improvement passes.
 
 `start` selects the kind of cover and the point the refinement begins from:
 
 - `:transversal` returns a cover that is tight on every maximum-product
-  transversal of the square matrix `A`, a heuristic counterpart of
-  [`cover_transversal`](@ref). `A` must be square and structurally
+  transversal of the square matrix `A` (see the extended help), a heuristic
+  counterpart of [`cover_transversal`](@ref). `A` must be square and structurally
   nonsingular. Defaults: `cgiter=20`, `maxiter=5`.
 - `:covariant` ensures the result is scale-covariant (typically at the cost of
   permutation-equivariance). Defaults: `cgiter=16`, `maxiter=3`.
@@ -119,10 +122,7 @@ refinement.
   structurally nonsingular, and `:covariant` otherwise.
 
 The factors use the per-component balance convention described by
-[`cover_min`](@ref).
-
-`ϕ` is accepted for API compatibility but is currently ignored. For a cover that
-provably minimizes a given `ϕ`, use [`cover_min`](@ref).
+[`cover_min`](@ref). `ϕ` is accepted for API compatibility but is ignored.
 
 See also: [`cover!`](@ref), [`cover_transversal`](@ref), [`cover_min`](@ref), [`symcover`](@ref).
 
@@ -142,38 +142,40 @@ julia> a * b'
 
 # Extended help
 
+For square `A`, every hard cover has `prod(a) * prod(b) >= π*`, where `π*` is
+the largest product `∏ᵢ |A[i,σ(i)]|` over permutations `σ`. Equality holds
+exactly when the cover is tight on every entry of every transversal attaining
+`π*`, and these covers maximize `|det(A ./ (a .* b'))|`. A cover that leaves
+such a transversal loose can make the scaled matrix far more ill-conditioned
+than necessary. The `:transversal` start prevents this; the `:covariant` start
+does not.
+
+The `:transversal` start first finds a maximum-product transversal by shortest
+augmenting paths. Tightness on the maximum-product transversals fixes every row
+and column scale up to one unknown per group of rows and columns joined by
+their entries. These unknowns are then fitted to the remaining entries by a
+layer-average start on the graph of groups, `cgiter` conjugate-gradient
+iterations on the least-squares fit, a feasibility boost, and `maxiter`
+projected Gauss–Seidel sweeps that keep every entry covered. The transversal
+search typically dominates the cost.
+
+With `start=:covariant`, initialization and refinement approximate the
+least-squares fit of `log(a[i]) + log(b[j])` to `log(abs(A[i, j]))` over
+nonzero entries; coverage is then restored by boosting and `maxiter`
+tightening passes. The initialization alone gives the exact least-squares fit
+when each connected component of the support is a tree or is complete
+bipartite, so complete support needs no refinement. Each refinement iteration
+makes one pass over the support. The `:covariant` and `:geomean` starts
+coincide on complete support, where the geometric mean already solves the
+least-squares problem.
+
 With `start=:transversal` or `:covariant` the cover products are
 scale-covariant on the support: for positive diagonal `D1`, `D2`, covering
 `D1 * A * D2` multiplies each supported product by `D1[i, i] * D2[j, j]`. This
 holds in exact arithmetic for every `cgiter` and `maxiter`. In floating point,
 the products are covariant to within the roundoff accumulated by the
-conjugate-gradient iterations: typically near machine precision, and no worse
-than about `1e-9` on ill-conditioned supports. `cgiter` caps the iterations,
+conjugate-gradient iterations, typically near machine precision. `cgiter` caps the iterations,
 which stop earlier once the residual is at roundoff.
-
-For square `A`, every hard cover has `prod(a) * prod(b) >= π*`, where `π*` is
-the largest product `∏ᵢ |A[i,σ(i)]|` over permutations `σ`; equality holds
-exactly when the cover is tight on every entry of every transversal attaining
-`π*`, and these covers maximize `|det(A ./ (a .* b'))|`. A cover that leaves
-such a transversal loose can make the scaled matrix far more ill-conditioned
-than necessary, and the `:covariant` start has no mechanism to prevent this.
-The `:transversal` start finds a maximum-product transversal by shortest
-augmenting paths, fixes every row and column scale up to one unknown per group
-of rows and columns joined by entries on maximum-product transversals, and then
-fits the remaining entries: a layer-average start on the graph of groups, `cgiter`
-conjugate-gradient iterations on the least-squares fit, a feasibility boost,
-and `maxiter` projected Gauss–Seidel sweeps that keep every entry covered.
-The transversal search typically dominates the cost.
-
-With `start=:covariant`, initialization and refinement approximate the
-least-squares fit of `log(a[i]) + log(b[j])` to `log(abs(A[i, j]))` over
-nonzero entries; coverage is then restored by boosting and `maxiter`
-tightening passes. The `:covariant` start is exact on trees and complete
-bipartite components. Each refinement iteration makes one pass over the
-support; complete support needs no refinement.
-
-The `:covariant` and `:geomean` starts coincide on complete support, where the
-geometric mean already solves the least-squares problem.
 
 With `start=:geomean` the cover is permutation-equivariant up to floating-point
 round-off: covering `A[p, q]` for permutations `p`, `q` gives `a[p]` and `b[q]`.

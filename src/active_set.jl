@@ -597,7 +597,11 @@ end
 Minimize `½ ∑ₑ (u[p] - u[q] - c[e])²` subject to every term being nonnegative,
 starting from the near-optimal `u0`. The constraints are those of `supp`, an
 `EdgeList` with `qsign = -1` or a `DiffGrid`, or the edges `(p, q)` with costs
-`cvals`. The active set is seeded by adding candidate constraints in order and
+`cvals`. Each step solves a graph-Laplacian system, and `maxsteps` bounds their
+number. The constant on each connected component of the graph is taken from
+`u0`.
+
+The active set is seeded by adding candidate constraints in order and
 skipping any that would close a cycle; `ptol` is `1000 eps` times the largest
 magnitude in `c` and `u0`. Without `seed`, the candidates are the constraints
 with `u0[p] - u0[q] - c[e] < max(τ, ptol)`, tightest first. With `seed`, a
@@ -607,20 +611,22 @@ an augmented-Lagrangian iteration, the candidates are the constraints with
 positive weight or residual below `ptol`, largest weight first and then
 tightest first. Constraints on no cycle of the support graph are activated
 ahead of the candidates: they are tight with zero multiplier at the minimizer,
-so a solve error must not let them appear violated. `certified` reports that the
+so a solve error must not let them appear violated.
+
+`certified` reports that the
 returned `u` satisfies the KKT conditions to tolerances proportional to the
 largest magnitude in `c` and `u0`; when it is false, `u` is `u0`.
 `kkt = (; primal, ptol, dual, dtol)` gives the largest constraint violation of
 the returned `u` and the most negative active multiplier (as nonnegative
 magnitudes), with the tolerances they were certified against; `primal` and
-`dual` are `NaN` when `certified` is false. Each step solves a graph-Laplacian
-system, and `maxsteps` bounds their number. `budgets`, a `NamedTuple` with
+`dual` are `NaN` when `certified` is false.
+
+`budgets`, a `NamedTuple` with
 fields `fillbudget` and/or `flopbudget`, sets the limits above which these
 systems are solved by conjugate gradients rather than a sparse Cholesky
 factorization; the tolerances of the certificate then rise to twice the
 estimated error of the solve, so that `certified` never claims more accuracy
-than the solve delivers. The constant on each connected component of the graph
-is taken from `u0`.
+than the solve delivers.
 """
 function _polish_difference_qp(edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, u0::Vector{T}; kwargs...) where {T}
     return _polish_difference_qp(EdgeList{T}(edges, cvals, -oneunit(T)), u0; kwargs...)

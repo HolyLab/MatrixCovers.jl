@@ -18,19 +18,23 @@ Return a vector `s` whose outer product `s*s'` covers the Gram matrix
 `gramcover(A)` covers `A'*A`, and passing `w` is equivalent to passing
 `Diagonal(w)`. Columns of `A` with no stored nonzero get `s[j] = 0`.
 
-No cover of `A` is required. Every method is scale-covariant: replacing `A` by
-`D1*A*D2` and `W` by `inv(D1)*W*inv(D1)` (for positive diagonal `D1`, `D2`)
-multiplies `s` by `diag(D2)`.
+One might expect to start from a cover `a, b = cover(A)`, but none is needed:
+`W` supplies the row scale, which is held fixed while `s` is computed from the
+columns of `A`.
+
+Every method is scale-covariant: replacing `A` by `D1*A*D2` and `W` by
+`inv(D1)*W*inv(D1)` (for positive diagonal `D1`, `D2`) multiplies `s` by
+`diag(D2)`.
 
 - **Diagonal weight** (`w`, `Diagonal(w)`, or none):
   `s[j] = sqrt(Σ_i abs(w[i]) * abs(A[i,j])^2)`. The weights may have any sign.
   When `w .>= 0` this is `sqrt(G[j,j])`, which is the minimal symmetric cover of
-  `G`. One pass over the stored nonzeros of `A`, and a second when the squares
-  in some column underflow or overflow.
+  `G`. The cost is one pass over the stored nonzeros of `A`, plus a second pass
+  when the squares in some column underflow or overflow.
 - **`Cholesky` weight**: for `W = L*L'`, `s[j] = norm(L'*A[:,j]) = sqrt(G[j,j])`,
   the minimal symmetric cover of the positive semidefinite `G`. Passing the
   factorization is the caller's assertion that `W` is positive semidefinite.
-  Cost is that of the dense product `L'*A`, O(m²n) for `A` of size m×n.
+  The cost is that of the dense product `L'*A`, O(m²n) for `A` of size m×n.
 - **General weight** `W`: `s[j] = Σ_i v[i] * abs(A[i,j])`, where `v .>= 0`
   satisfies `abs(W[i,k]) <= v[i]*v[k]` for all `i`, `k`. `W` may be indefinite
   or asymmetric. This bound is looser than the other two: for diagonal `W` with
@@ -38,7 +42,7 @@ multiplies `s` by `diag(D2)`.
   is the number of nonzeros in column `j`. Prefer the `Diagonal` or `Cholesky`
   method whenever `W` has that structure. The default `v` is
   `symcover(max.(abs.(W), abs.(transpose(W))))`; a supplied `v` is checked for
-  these conditions. Cost is that of computing `v` plus one pass over `A`.
+  these conditions. The cost is that of computing `v` plus one pass over `A`.
 
 `W` must be square with both axes equal to `axes(A, 1)`, and `s` has axes
 `(axes(A, 2),)`. The bounds hold in floating-point arithmetic: `s` is inflated

@@ -14,15 +14,14 @@ requires `A` to be square.
 
 Both tolerances default to zero. A nonzero `atol` breaks scale invariance.
 
-`cover`, `symcover`, and native `AbsLog{2}` minimal covers certify their results
-at zero tolerance. Initializers and extension solvers may require a nonzero
-`rtol`.
+The results of `cover`, `symcover`, and the native `AbsLog{2}` minimal covers
+pass this test at zero tolerance. Initializers and extension solvers may
+require a nonzero `rtol`. Soft covers are not hard covers and in general fail
+it.
 
 `a` and `b` must be nonnegative; a negative scale raises an `ArgumentError`.
-Zero is allowed for unsupported rows and columns.
-
-`eachindex(a)` must match `axes(A, 1)` and `eachindex(b)` must match `axes(A,
-2)`.
+Zero is allowed for unsupported rows and columns. `eachindex(a)` must match
+`axes(A, 1)` and `eachindex(b)` must match `axes(A, 2)`.
 
 See also: [`cover_objective`](@ref), [`cover`](@ref), [`symcover`](@ref).
 
@@ -33,7 +32,7 @@ julia> A = [1.0 2.0; 3.0 4.0];
 
 julia> a, b = cover(A);
 
-julia> iscover(a, b, A; rtol=8eps())
+julia> iscover(a, b, A)
 true
 
 julia> iscover([1.0, 1.0], [1.0, 1.0], A)   # a*b' = ones, which does not reach A[2,2]
