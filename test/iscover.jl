@@ -90,3 +90,76 @@
         @test !iscover(first(soft_symcover(AbsLinear{2}(), Asoft)), Asoft)
     end
 end
+
+@testset "max_coverage_ratio" begin
+    A = [1.0 2.0; 3.0 4.0]
+
+    @testset "the worst entry, and agreement with iscover" begin
+        @test max_coverage_ratio([1.0, 3.0], [1.0, 2.0], A) == 1     # a*b' == A exactly
+        @test max_coverage_ratio([1.0, 1.0], [1.0, 1.0], A) == 4
+        @test max_coverage_ratio([8.0, 8.0], [1.0, 1.0], A) == 0.5
+        for (a, b) in (([1.0, 3.0], [1.0, 2.0]), ([1.0, 1.0], [1.0, 1.0]), ([8.0, 8.0], [1.0, 1.0]))
+            @test iscover(a, b, A) == (max_coverage_ratio(a, b, A) <= 1)
+            # Scaling the product by the ratio gives a cover that is tight at the worst entry.
+            r = max_coverage_ratio(a, b, A)
+            @test max_coverage_ratio(r .* a, b, A) ≈ 1
+        end
+    end
+
+    @testset "symmetric form" begin
+        Asym = [4.0 1.0; 1.0 3.0]
+        a = [1.0, 1.0]
+        @test max_coverage_ratio(a, Asym) == max_coverage_ratio(a, a, Asym) == 4
+        r = max_coverage_ratio(a, Asym)
+        @test max_coverage_ratio(sqrt(r) .* a, Asym) ≈ 1
+        @test_throws DimensionMismatch max_coverage_ratio([1.0, 1.0], [1.0 2.0 3.0; 4.0 5.0 6.0])
+    end
+
+    @testset "zero entries and zero scales" begin
+        @test max_coverage_ratio([1.0, 0.0], [1.0, 0.0], [1.0 0.0; 0.0 0.0]) == 1
+        @test max_coverage_ratio([1.0, 0.0], [1.0, 0.0], [1.0 0.0; 0.0 1.0]) == Inf
+        @test max_coverage_ratio([1.0, 1.0], [1.0, 1.0], zeros(2, 2)) === 0.0
+        @test max_coverage_ratio(zeros(2), zeros(2), zeros(2, 2)) === 0.0
+    end
+
+    @testset "argument checks" begin
+        @test_throws "max_coverage_ratio requires nonnegative scales" max_coverage_ratio([-1.0, 3.0], [1.0, 2.0], A)
+        @test_throws "max_coverage_ratio requires nonnegative scales" max_coverage_ratio([1.0, 3.0], [NaN, 2.0], A)
+        @test_throws DimensionMismatch max_coverage_ratio([1.0], [1.0, 2.0], A)
+        @test_throws DimensionMismatch max_coverage_ratio([1.0, 3.0], [1.0], A)
+    end
+
+    @testset "offset axes" begin
+        Ao = OffsetArray(A, -1:0, 3:4)
+        ao, bo = OffsetArray([1.0, 1.0], -1:0), OffsetArray([1.0, 2.0], 3:4)
+        @test max_coverage_ratio(ao, bo, Ao) == max_coverage_ratio([1.0, 1.0], [1.0, 2.0], A) == 3
+        @test_throws DimensionMismatch max_coverage_ratio([1.0, 1.0], [1.0, 2.0], Ao)
+    end
+
+    @testset "element types" begin
+        @test max_coverage_ratio(Float32[1, 1], Float32[1, 1], Float32[1 2; 3 4]) isa Float32
+        @test max_coverage_ratio([1, 1], [1, 1], [1 2; 3 4]) === 4.0
+    end
+
+    @testset "storage types agree with the dense reference: $(typeof(S))" for S in (
+            sparse([1.0 2.0; 3.0 4.0]),
+            Diagonal([2.0, 3.0]),
+            SymTridiagonal([2.0, 3.0], [1.0]),
+            Tridiagonal([1.0], [2.0, 3.0], [0.5]),
+            Bidiagonal([2.0, 3.0], [1.0], :U),
+            Symmetric(sparse([4.0 1.0; 1.0 3.0])))
+        D = Matrix(S)
+        for a in ([1.0, 1.0], [2.0, 0.5], [3.0, 3.0])
+            @test max_coverage_ratio(a, a, S) == max_coverage_ratio(a, a, D)
+        end
+    end
+
+    @testset "units cancel" begin
+        L = u"m"
+        Au = [1.0/L^2 2.0/L^2; 2.0/L^2 4.0/L^2]
+        @test max_coverage_ratio([1.0/L, 1.0/L], Au) === 4.0
+        # A change of units on each coordinate leaves the ratio unchanged.
+        d = [2.0, 0.25]
+        @test max_coverage_ratio([1.0, 1.0] .* d, A .* (d * d')) ≈ max_coverage_ratio([1.0, 1.0], A)
+    end
+end
