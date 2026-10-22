@@ -40,10 +40,7 @@ false
 ```
 """
 function iscover(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; rtol=0, atol=0)
-    eachindex(a) == axes(A, 1) ||
-        throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
-    eachindex(b) == axes(A, 2) ||
-        throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
+    _check_scale_axes(a, b, A, "a", "b")
     _require_nonneg(a, "a")
     _require_nonneg(b, "b")
     # Zero entries impose no constraint and are skipped by the traversal.
@@ -96,10 +93,7 @@ julia> max_coverage_ratio([2.0, 2.0], A)
 ```
 """
 function max_coverage_ratio(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
-    eachindex(a) == axes(A, 1) ||
-        throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
-    eachindex(b) == axes(A, 2) ||
-        throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
+    _check_scale_axes(a, b, A, "a", "b")
     _require_nonneg(a, "a"; fname=:max_coverage_ratio)
     _require_nonneg(b, "b"; fname=:max_coverage_ratio)
     T = promote_type(objective_type(A), objective_type(a), objective_type(b))
@@ -116,6 +110,88 @@ function max_coverage_ratio(a::AbstractVector, A::AbstractMatrix)
     axes(A, 1) == axes(A, 2) ||
         throw(DimensionMismatch("max_coverage_ratio(a, A) requires a square matrix, got axes $(string(axes(A)))"))
     return max_coverage_ratio(a, a, A)
+end
+
+"""
+    level_profile((a, b), (aref, bref), A)
+    level_profile(a, aref, A)
+
+Compare the product `a*b'` with the reference product `aref*bref'` on the
+nonzero entries of `A`, and return the named tuple `(; level, profile)`. With
+
+    ℓ[i,j] = log((a[i]*b[j]) / (aref[i]*bref[j]))
+
+`level` is the mean of `ℓ` over the nonzero entries of `A`, and `profile` is its
+standard deviation, normalized by the number of nonzero entries. The
+three-argument form compares the symmetric products `a*a'` and `aref*aref'`.
+
+A positive level means that `a*b'` is larger than the reference on average.
+Multiplying either product by a constant `c` shifts the level by `±log(c)` and
+leaves the profile unchanged. Bounds that rest on the cover inequality depend
+on both, whereas cover-normalized quantities such as condition numbers depend
+only on the profile. Both are unchanged when `A` and all four scales are
+rescaled together, as under a change of units.
+
+The products need not be covers, but each must be positive and finite on every
+nonzero entry of `A`, and `A` must have at least one nonzero entry. The scales
+must be nonnegative, and their indices must match those of `A`, as for
+[`iscover`](@ref).
+
+See also: [`max_coverage_ratio`](@ref), [`iscover`](@ref).
+
+# Examples
+
+```jldoctest
+julia> A = [1.0 2.0; 3.0 4.0];
+
+julia> a, b = cover(A);
+
+julia> level_profile((2a, b), (a, b), A)   # a pure level
+(level = 0.6931471805599453, profile = 0.0)
+
+julia> level_profile(([2.0, 0.5], [1.0, 1.0]), ([1.0, 1.0], [1.0, 1.0]), [1.0 0.0; 0.0 1.0])   # a pure profile
+(level = 0.0, profile = 0.6931471805599453)
+```
+"""
+function level_profile((a, b)::Tuple{AbstractVector,AbstractVector},
+                       (aref, bref)::Tuple{AbstractVector,AbstractVector}, A::AbstractMatrix)
+    _check_scale_axes(a, b, A, "a", "b")
+    _check_scale_axes(aref, bref, A, "aref", "bref")
+    _require_nonneg(a, "a"; fname=:level_profile)
+    _require_nonneg(b, "b"; fname=:level_profile)
+    _require_nonneg(aref, "aref"; fname=:level_profile)
+    _require_nonneg(bref, "bref"; fname=:level_profile)
+    T = promote_type(objective_type(A), objective_type(a), objective_type(b),
+                     objective_type(aref), objective_type(bref))
+    # Welford's running mean and sum of squared deviations
+    n, m, s = Ref(0), Ref(zero(T)), Ref(zero(T))
+    foreach_support(A) do i, j, v
+        p, pref = a[i] * b[j], aref[i] * bref[j]
+        r = p / pref
+        r > zero(r) && isfinite(r) ||
+            throw(ArgumentError("level_profile requires products that are positive and finite on the nonzero entries of `A`, with a finite positive ratio; at ($(string(i)), $(string(j))) got a[i]*b[j] = $(string(p)) and aref[i]*bref[j] = $(string(pref))"))
+        x = convert(T, log(r))
+        n[] += 1
+        d = x - m[]
+        m[] += d / n[]
+        s[] += d * (x - m[])
+    end
+    n[] > 0 || throw(ArgumentError("level_profile requires `A` to have at least one nonzero entry"))
+    return (; level=m[], profile=sqrt(s[] / n[]))
+end
+
+function level_profile(a::AbstractVector, aref::AbstractVector, A::AbstractMatrix)
+    axes(A, 1) == axes(A, 2) ||
+        throw(DimensionMismatch("level_profile(a, aref, A) requires a square matrix, got axes $(string(axes(A)))"))
+    return level_profile((a, a), (aref, aref), A)
+end
+
+function _check_scale_axes(a::AbstractVector, b::AbstractVector, A::AbstractMatrix, aname::String, bname::String)
+    eachindex(a) == axes(A, 1) ||
+        throw(DimensionMismatch("indices of `$aname` must match row-indexing of `A`, got eachindex($aname)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
+    eachindex(b) == axes(A, 2) ||
+        throw(DimensionMismatch("indices of `$bname` must match column-indexing of `A`, got eachindex($bname)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
+    return nothing
 end
 
 _iscovered(p, v, rtol, atol) = iszero(atol) ? p >= v * (1 - rtol) : p >= v * (1 - rtol) - atol
