@@ -60,14 +60,72 @@ function iscover(a::AbstractVector, A::AbstractMatrix; kwargs...)
     return iscover(a, a, A; kwargs...)
 end
 
+"""
+    max_coverage_ratio(a, b, A)
+    max_coverage_ratio(a, A)
+
+Return the largest coverage ratio `abs(A[i,j])/(a[i]*b[j])` over the nonzero
+entries of `A`. The two-argument form uses the symmetric cover `a*a'`, and
+requires `A` to be square.
+
+`a` and `b` cover `A` exactly when the result `r` is at most one, so this is the
+quantitative form of [`iscover`](@ref). Scaling the product `a*b'` by `r` makes
+it a cover that is tight at the worst entry, whether `r` is above or below one;
+in the symmetric form that scaling is `sqrt(r)*a`.
+
+Zero entries of `A` impose no constraint and are skipped. A nonzero entry over
+a zero product gives `Inf`, and a matrix with no nonzero entries gives zero.
+The ratio is unchanged when `A`, `a`, and `b` are rescaled together, as under a
+change of units.
+
+`a` and `b` must be nonnegative, and their indices must match those of `A`, as
+for [`iscover`](@ref).
+
+See also: [`iscover`](@ref), [`cover_objective`](@ref).
+
+# Examples
+
+```jldoctest
+julia> A = [1.0 2.0; 3.0 4.0];
+
+julia> max_coverage_ratio([1.0, 1.0], [1.0, 2.0], A)   # A[2,1] = 3 against a[2]*b[1] = 1
+3.0
+
+julia> max_coverage_ratio([2.0, 2.0], A)
+1.0
+```
+"""
+function max_coverage_ratio(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
+    eachindex(a) == axes(A, 1) ||
+        throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
+    eachindex(b) == axes(A, 2) ||
+        throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
+    _require_nonneg(a, "a"; fname=:max_coverage_ratio)
+    _require_nonneg(b, "b"; fname=:max_coverage_ratio)
+    T = promote_type(objective_type(A), objective_type(a), objective_type(b))
+    worst = Ref(zero(T))
+    foreach_support(A) do i, j, v
+        ab = a[i] * b[j]
+        r = iszero(ab) ? T(Inf) : T(v / ab)
+        worst[] = max(worst[], r)
+    end
+    return worst[]
+end
+
+function max_coverage_ratio(a::AbstractVector, A::AbstractMatrix)
+    axes(A, 1) == axes(A, 2) ||
+        throw(DimensionMismatch("max_coverage_ratio(a, A) requires a square matrix, got axes $(string(axes(A)))"))
+    return max_coverage_ratio(a, a, A)
+end
+
 _iscovered(p, v, rtol, atol) = iszero(atol) ? p >= v * (1 - rtol) : p >= v * (1 - rtol) - atol
 
-function _require_nonneg(x::AbstractVector, name::String)
+function _require_nonneg(x::AbstractVector, name::String; fname::Symbol=:iscover)
     for i in eachindex(x)
         # Ask the value for zero because dimensional abstract element types may
         # not define `zero(eltype(x))`. This also rejects NaN.
         x[i] >= zero(x[i]) ||
-            throw(ArgumentError("iscover requires nonnegative scales, got $name[$(string(i))] = $(string(x[i]))"))
+            throw(ArgumentError("$fname requires nonnegative scales, got $name[$(string(i))] = $(string(x[i]))"))
     end
     return nothing
 end
