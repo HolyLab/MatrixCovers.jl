@@ -1,6 +1,6 @@
 # MatrixCovers
 
-<!--- [![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://HolyLab.github.io/MatrixCovers.jl/stable/) --->
+[![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://HolyLab.github.io/MatrixCovers.jl/stable/)
 [![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://HolyLab.github.io/MatrixCovers.jl/dev/)
 [![Build Status](https://github.com/HolyLab/MatrixCovers.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/HolyLab/MatrixCovers.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![Coverage](https://codecov.io/gh/HolyLab/MatrixCovers.jl/graph/badge.svg?token=trG4HXo9N4)](https://codecov.io/gh/HolyLab/MatrixCovers.jl)
@@ -21,6 +21,12 @@ penalize violations (`soft_symcover`, `soft_cover`), and objective-minimal hard
 covers (`symcover_min`, `cover_min`). The default penalties, squared-log for
 hard covers and the power-mean penalty `PowerMean{2}` for soft covers, use
 built-in solvers; other penalties use JuMP with HiGHS or Ipopt.
+
+## Installation
+
+```julia
+julia> using Pkg; Pkg.add("MatrixCovers")
+```
 
 ## Example
 
@@ -69,5 +75,5 @@ julia> cover_objective(AbsLog{2}(), aq, bq, M) <= cover_objective(AbsLog{2}(), a
 true
 ```
 
-See the [documentation](https://HolyLab.github.io/MatrixCovers.jl/dev/) for the
+See the [documentation](https://HolyLab.github.io/MatrixCovers.jl/stable/) for the
 algorithm guide and API reference.

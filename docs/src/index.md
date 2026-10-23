@@ -17,6 +17,12 @@ covers; a *minimal cover* is the one that minimizes a chosen penalty on the gap
 between `C` and `|A|`. A *soft cover* penalizes violations of the inequality
 instead of enforcing it.
 
+## Installation
+
+```julia
+julia> using Pkg; Pkg.add("MatrixCovers")
+```
+
 ## Why covers?
 
 Covers provide the "natural scales" of a matrix. Many quantities computed from
