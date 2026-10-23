@@ -78,6 +78,9 @@ change of units.
 `a` and `b` must be nonnegative, and their indices must match those of `A`, as
 for [`iscover`](@ref).
 
+!!! compat "MatrixCovers 1.1"
+    This function requires MatrixCovers 1.1 or later.
+
 See also: [`iscover`](@ref), [`cover_objective`](@ref).
 
 # Examples
@@ -136,6 +139,9 @@ The products need not be covers, but each must be positive and finite on every
 nonzero entry of `A`, and `A` must have at least one nonzero entry. The scales
 must be nonnegative, and their indices must match those of `A`, as for
 [`iscover`](@ref).
+
+!!! compat "MatrixCovers 1.1"
+    This function requires MatrixCovers 1.1 or later.
 
 See also: [`max_coverage_ratio`](@ref), [`iscover`](@ref).
 
