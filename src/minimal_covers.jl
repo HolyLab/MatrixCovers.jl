@@ -2163,64 +2163,30 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
         Grid{T}(C)
     else
         G = _row_support(A, T)
-        edges = Tuple{Int,Int}[]
-        cvals = T[]
         if tt
-            σ, α0, _, logπ = _max_product_transversal(G, axc, fname)
-            if transversal isa AbstractVector
-                σ = _check_transversal(transversal, G, axc, logπ, fname)
-            end
-            # Tightness on the transversal fixes `β[σ[i]] = ctrans[σ[i]] - α[i]`,
-            # so entry `(i, j)` off the transversal has residual
-            # `α[i] - α[k] - (log|A[i,j]| - ctrans[j])` with `k = τ[j]`.
-            τ = invperm(σ)
-            ctrans = zeros(T, n)
-            for (ip, i) in enumerate(axr)
-                for s in _slots(G, i)
-                    G.idx[s] - first(axc) + 1 == σ[ip] && (ctrans[σ[ip]] = log(G.val[s]))
-                end
-            end
-            for (ip, i) in enumerate(axr)
-                for s in _slots(G, i)
-                    jp = G.idx[s] - first(axc) + 1
-                    jp == σ[ip] && continue
-                    push!(edges, (ip, τ[jp]))
-                    push!(cvals, log(G.val[s]) - ctrans[jp])
-                end
-            end
-            dsupp = EdgeList{T}(edges, cvals, -oneunit(T))
-            # Solve for one scale per component of rows forced to move together.
-            comp, offs, nc = _tight_components(edges, cvals, α0)
-            y0 = zeros(T, nc)
-            for p in 1:m
-                y0[comp[p]] = α0[p] - offs[p]
-            end
-            x0 = y0
+            ts = _transversal_system(G, axc, T, fname, transversal)
+            (; σ, τ, ctrans, dsupp, comp, offs, nc) = ts
+            x0 = ts.y0
             if use_woodbury
                 # Entry `(i, j)` constrains components `comp[i]` and `comp[τ[j]]`.
                 Cd = fill(T(-Inf), m, n)
-                ke = 0   # index into `edges`, which follows the same traversal
+                ke = 0   # index into `dsupp.edges`, which follows the same traversal
                 for (ip, i) in enumerate(axr)
                     for s in _slots(G, i)
                         jp = G.idx[s] - first(axc) + 1
                         jp == σ[ip] && continue
                         ke += 1
                         comp[ip] == comp[τ[jp]] && continue
-                        Cd[ip, jp] = cvals[ke] - offs[ip] + offs[τ[jp]]
+                        Cd[ip, jp] = dsupp.cvals[ke] - offs[ip] + offs[τ[jp]]
                     end
                 end
                 DiffGrid{T}(Cd, comp, comp[τ])
             else
-                cedges = Tuple{Int,Int}[]
-                ccvals = T[]
-                for (e, (p, q)) in enumerate(edges)
-                    comp[p] == comp[q] && continue
-                    push!(cedges, (comp[p], comp[q]))
-                    push!(ccvals, cvals[e] - offs[p] + offs[q])
-                end
-                EdgeList{T}(cedges, ccvals, -oneunit(T))
+                _contract_system(dsupp, comp, offs)
             end
         else
+            edges = Tuple{Int,Int}[]
+            cvals = T[]
             for (ip, i) in enumerate(axr)
                 for s in _slots(G, i)
                     push!(edges, (ip, m + G.idx[s] - first(axc) + 1))
@@ -2313,6 +2279,20 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     if tt
         x = _transversal_scales(x[comp] .+ offs, dsupp, σ, ctrans, boost)
     end
+    a, b = _finish_cover(A, x, nzrow, nzcol, T, fname, boost)
+    return a, b, stats
+end
+
+# Cover factors of `A` from the stacked log scales `x = (α; β)` (row positions,
+# then column positions), with the balance convention applied independently to
+# each support component, and, with `boost`, certified to cover `A`. `nzrow`
+# and `nzcol` count the support entries of each row and column position.
+function _finish_cover(A::AbstractMatrix, x::Vector{T}, nzrow::Vector{Int}, nzcol::Vector{Int},
+                       ::Type{T}, fname::Symbol, boost::Bool) where {T}
+    axr, axc = axes(A, 1), axes(A, 2)
+    m, n = length(axr), length(axc)
+    hasrow = nzrow .> 0
+    hascol = nzcol .> 0
     # Apply the balance convention independently to each support component.
     rowcomp, colcomp, ncomp, _, _ = _support_components(A)
     Lα = zeros(T, ncomp)
@@ -2347,7 +2327,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
         b[j] = hascol[jp] ? exp(lβ[jp]) : zero(T)
     end
     boost && _certify_cover!(a, b, A, fname)
-    return a, b, stats
+    return a, b
 end
 
 # Stacked log scales `(α; β)` from the row scales `α` of the difference system

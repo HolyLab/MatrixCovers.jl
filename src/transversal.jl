@@ -301,6 +301,74 @@ end
 @noinline _throw_singular(fname) =
     throw(ArgumentError("$fname requires a structurally nonsingular matrix, but no transversal of nonzero entries exists"))
 
+# The transversal-tight difference system of the square support grouped by row
+# in `G`, whose partners are the column indices `axc`. A cover tight on a
+# maximum-product transversal `σ` has `β[σ[i]] = ctrans[σ[i]] - α[i]`, so entry
+# `(i, j)` off the transversal, with `k = τ[j]`, has residual
+# `α[i] - α[k] - (log|A[i,j]| - ctrans[j])`, which must be nonnegative.
+#
+# `transversal` is `true` to use the transversal found by
+# `_max_product_transversal`, or a vector naming the column position matched to
+# each row position, which must also be a maximum-product transversal. Returns a
+# named tuple in positions:
+#
+# - `σ`, `τ = invperm(σ)`: the transversal and its inverse;
+# - `ctrans`: the log magnitude of the transversal entry of each column;
+# - `dsupp`: the residuals as an `EdgeList` with `qsign = -1`, one entry per
+#   support entry off the transversal, in the order of `G`;
+# - `comp`, `offs`, `nc`: the components of `_tight_components`, so that
+#   `α[p] = y[comp[p]] + offs[p]` for component scales `y`;
+# - `y0`: the component scales of the transversal duals, which are feasible and
+#   tight on `σ`.
+function _transversal_system(G::GroupedSupport, axc::AbstractUnitRange, ::Type{T}, fname::Symbol,
+                             transversal::Union{Bool,AbstractVector{<:Integer}}) where {T}
+    axr = G.ax
+    m = length(axr)
+    n = length(axc)
+    σ, α0, _, logπ = _max_product_transversal(G, axc, fname)
+    if transversal isa AbstractVector
+        σ = _check_transversal(transversal, G, axc, logπ, fname)
+    end
+    τ = invperm(σ)
+    ctrans = zeros(T, n)
+    for (ip, i) in enumerate(axr)
+        for s in _slots(G, i)
+            G.idx[s] - first(axc) + 1 == σ[ip] && (ctrans[σ[ip]] = log(G.val[s]))
+        end
+    end
+    edges = Tuple{Int,Int}[]
+    cvals = T[]
+    for (ip, i) in enumerate(axr)
+        for s in _slots(G, i)
+            jp = G.idx[s] - first(axc) + 1
+            jp == σ[ip] && continue
+            push!(edges, (ip, τ[jp]))
+            push!(cvals, log(G.val[s]) - ctrans[jp])
+        end
+    end
+    dsupp = EdgeList{T}(edges, cvals, -oneunit(T))
+    comp, offs, nc = _tight_components(edges, cvals, α0)
+    y0 = zeros(T, nc)
+    for p in 1:m
+        y0[comp[p]] = α0[p] - offs[p]
+    end
+    return (; σ, τ, ctrans, dsupp, comp, offs, nc, y0)
+end
+
+# The difference system `dsupp` on the component scales `y`, where row `p` has
+# scale `y[comp[p]] + offs[p]`. Entries within one component have fixed
+# residuals and are dropped.
+function _contract_system(dsupp::EdgeList{T}, comp::Vector{Int}, offs::Vector{T}) where {T}
+    cedges = Tuple{Int,Int}[]
+    ccvals = T[]
+    for (e, (p, q)) in enumerate(dsupp.edges)
+        comp[p] == comp[q] && continue
+        push!(cedges, (comp[p], comp[q]))
+        push!(ccvals, dsupp.cvals[e] - offs[p] + offs[q])
+    end
+    return EdgeList{T}(cedges, ccvals, -oneunit(T))
+end
+
 # Rows joined by entries that lie on some maximum-product transversal.
 #
 # In the difference system on the row log scales `α`, entry `e = (p, q)` has
