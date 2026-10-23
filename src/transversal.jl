@@ -406,49 +406,8 @@ function _tight_components(edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, α0:
         outedge[cursor[p]] = e
         cursor[p] += 1
     end
-    # Iterative Tarjan.
-    comp = zeros(Int, m)
-    index = zeros(Int, m)
-    low = zeros(Int, m)
-    onstack = falses(m)
-    stack = Int[]
-    callstack = Tuple{Int,Int}[]   # (row, next slot in its adjacency list)
-    counter = 0
-    nc = 0
-    for r in 1:m
-        index[r] == 0 || continue
-        push!(callstack, (r, outptr[r]))
-        counter += 1
-        index[r] = low[r] = counter
-        push!(stack, r); onstack[r] = true
-        while !isempty(callstack)
-            p, s = callstack[end]
-            if s < outptr[p+1]
-                callstack[end] = (p, s + 1)
-                q = edges[outedge[s]][2]
-                if index[q] == 0
-                    counter += 1
-                    index[q] = low[q] = counter
-                    push!(stack, q); onstack[q] = true
-                    push!(callstack, (q, outptr[q]))
-                elseif onstack[q]
-                    low[p] = min(low[p], index[q])
-                end
-            else
-                pop!(callstack)
-                if low[p] == index[p]
-                    nc += 1
-                    while true
-                        q = pop!(stack)
-                        onstack[q] = false
-                        comp[q] = nc
-                        q == p && break
-                    end
-                end
-                isempty(callstack) || (low[callstack[end][1]] = min(low[callstack[end][1]], low[p]))
-            end
-        end
-    end
+    heads = [edges[e][2] for e in outedge]
+    comp, nc = _strong_components(outptr, heads)
     # Offsets from a breadth-first spanning tree of each component, crossing
     # tight entries within the component in either direction.
     inptr = zeros(Int, m + 1)
@@ -492,6 +451,58 @@ function _tight_components(edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, α0:
         end
     end
     return comp, o, nc
+end
+
+# Strongly connected components of the digraph on `1:nv`, `nv = length(ptr) - 1`,
+# with arcs `v → heads[s]` for `s in ptr[v]:ptr[v+1]-1` (iterative Tarjan).
+# Returns `(comp, nc)`: vertex `v` belongs to component `comp[v]` in `1:nc`. The
+# components are numbered in reverse topological order: every arc between
+# components goes from a higher label to a lower one.
+function _strong_components(ptr::Vector{Int}, heads::Vector{Int})
+    m = length(ptr) - 1
+    comp = zeros(Int, m)
+    index = zeros(Int, m)
+    low = zeros(Int, m)
+    onstack = falses(m)
+    stack = Int[]
+    callstack = Tuple{Int,Int}[]   # (vertex, next slot in its adjacency list)
+    counter = 0
+    nc = 0
+    for r in 1:m
+        index[r] == 0 || continue
+        push!(callstack, (r, ptr[r]))
+        counter += 1
+        index[r] = low[r] = counter
+        push!(stack, r); onstack[r] = true
+        while !isempty(callstack)
+            p, s = callstack[end]
+            if s < ptr[p+1]
+                callstack[end] = (p, s + 1)
+                q = heads[s]
+                if index[q] == 0
+                    counter += 1
+                    index[q] = low[q] = counter
+                    push!(stack, q); onstack[q] = true
+                    push!(callstack, (q, ptr[q]))
+                elseif onstack[q]
+                    low[p] = min(low[p], index[q])
+                end
+            else
+                pop!(callstack)
+                if low[p] == index[p]
+                    nc += 1
+                    while true
+                        q = pop!(stack)
+                        onstack[q] = false
+                        comp[q] = nc
+                        q == p && break
+                    end
+                end
+                isempty(callstack) || (low[callstack[end][1]] = min(low[callstack[end][1]], low[p]))
+            end
+        end
+    end
+    return comp, nc
 end
 
 # Roundoff allowance, in units of `eps`, for a zero residual at the transversal duals.
