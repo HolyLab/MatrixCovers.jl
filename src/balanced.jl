@@ -23,7 +23,7 @@ const BALANCED_NRIDGE = 4
 const BALANCED_RIDGE_GROWTH = 1e4
 
 """
-    a, b, stats = cover_transversal(ϕ::PowerMean{p}, A; target=1e-2, tol=1e-9, maxiter, fillbudget, flopbudget)
+    a, b, stats = cover_transversal(ϕ::PowerMean{p}, A; target=1e-2, maxbalance=false, tol=1e-9, maxiter, fillbudget, flopbudget)
 
 Return the hard cover of the square matrix `A` that is tight on its
 maximum-product transversals and pushes the coverage ratios
@@ -53,6 +53,26 @@ mean of the ratios of the entries crossing such a cut equals `target` whenever
 none of them has ratio one. Large `p` approaches the cover that minimizes the
 largest ratio within each block.
 
+With `maxbalance=true`, the criterion within each fully indecomposable block of
+`A` is the `p → ∞` limit of the objective (Hook, Pestana, Tisseur & Hogg, SIAM
+J. Matrix Anal. Appl. 40:320–346, 2019, Theorem 3.2): the scales are
+*max-balanced* within each block. Let `σ` be a maximum-product transversal,
+and let an entry `A[i,j]` off it lead from row `i` to the row `k` with
+`σ[k] == j`. For every partition of the rows of a block into two nonempty sets
+`I` and `K`, the largest ratio of an entry leading from `I` to `K` equals the
+largest ratio of an entry leading from `K` to `I`. This determines the products
+`a[i]*b[j]` within each block uniquely. When `σ` is the only maximum-product
+transversal, the largest ratio within a block equals the block's `θ`, the
+largest geometric-mean ratio of a cycle of entries off `σ`, which is the least
+largest ratio that any cover tight on `σ` can have there. `ϕ` and `target` fix
+the scales between blocks: they minimize the objective above summed over the
+entries joining different blocks, with each block's scales moving together. At
+the minimizer, for every set of blocks that the entries joining it to the other
+blocks all lead out of, the `p`-power mean of the ratios of those entries
+equals `target` whenever none of them has ratio one.
+The result is a hard cover tight on the maximum-product transversals, and its
+products are unique on the support and scale-covariant.
+
 `stats` is a [`BalancedCoverStats`](@ref MatrixCovers.BalancedCoverStats). The
 solver warns when [`MatrixCovers.converged(stats)`](@ref MatrixCovers.converged)
 is `false`; the result is then still a hard cover tight on the maximum-product
@@ -72,6 +92,13 @@ another entry reaches zero slack, and a backtracking line search ensures
 descent. Where the groups are stationary, a maximum-flow problem on each group's
 active entries either proves the KKT conditions or yields a set of rows whose
 scales can decrease, releasing the active entries that enter it.
+
+With `maxbalance=true`, each block is max-balanced by Algorithm 3.10 of Hook et
+al.: max-plus policy iteration finds a cycle of largest geometric-mean ratio in
+the block, a diagonal similarity brings every ratio of the block down to that
+mean, and the cycle's rows, whose relative scales are then fixed, are merged
+into one; this repeats until one row remains. The active-set Newton method then
+runs with one scale per block.
 
 `tol` (default `1e-9`) is the stopping tolerance: the groups are stationary when
 the derivative of the objective with respect to each group's scale is at most
@@ -95,10 +122,11 @@ afterwards.
 See also: [`cover_transversal!`](@ref), [`PowerMean`](@ref).
 """
 function cover_transversal(ϕ::PowerMean{p}, A::AbstractMatrix; target::Real=1e-2,
+                           maxbalance::Bool=false,
                            tol::Real=BALANCED_TOL, maxiter::Union{Integer,Nothing}=nothing,
                            fillbudget::Real=LSQR_FILL_BUDGET,
                            flopbudget::Real=LSQR_FLOP_BUDGET) where {p}
-    a, b, nt = _cover_transversal_balanced(A, p, target; tol, maxiter, fillbudget, flopbudget)
+    a, b, nt = _cover_transversal_balanced(A, p, target; maxbalance, tol, maxiter, fillbudget, flopbudget)
     return a, b, BalancedCoverStats{_auglag_stats_type(A)}(nt)
 end
 
@@ -126,7 +154,8 @@ cover_transversal!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::Abstrac
 # Worker for `cover_transversal(::PowerMean{p}, A; target)`, returning `(a, b, nt)`
 # with the statistics as a named tuple. `transversal` is as for
 # `_transversal_system`.
-function _cover_transversal_balanced(A::AbstractMatrix, p::Real, target::Real; tol::Real=BALANCED_TOL,
+function _cover_transversal_balanced(A::AbstractMatrix, p::Real, target::Real; maxbalance::Bool=false,
+                                     tol::Real=BALANCED_TOL,
                                      maxiter::Union{Integer,Nothing}=nothing,
                                      fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
                                      transversal::Union{Bool,AbstractVector{<:Integer}}=true,
@@ -140,7 +169,7 @@ function _cover_transversal_balanced(A::AbstractMatrix, p::Real, target::Real; t
     # The tolerances require at least Float64 resolution.
     if eps(T) > eps(Float64)
         a64, b64, nt = _cover_transversal_balanced(convert(AbstractMatrix{promote_type(eltype(A), Float64)}, A),
-                                                   p, target; tol, maxiter, fillbudget, flopbudget,
+                                                   p, target; maxbalance, tol, maxiter, fillbudget, flopbudget,
                                                    transversal, fname)
         # Narrowing rounds to nearest and so can round a product below its entry.
         a, b = T.(a64), T.(b64)
@@ -162,7 +191,23 @@ function _cover_transversal_balanced(A::AbstractMatrix, p::Real, target::Real; t
     ts = _transversal_system(G, axc, T, fname, transversal)
     sys = _contract_system(ts.dsupp, ts.comp, ts.offs)
     maxit = maxiter === nothing ? 100 + 10 * ts.nc : Int(maxiter)
-    y, nt = _balanced_newton!(copy(ts.y0), sys, pT, tp; tol=T(tol), maxiter=maxit, fillbudget, flopbudget)
+    # The strongly connected components of the entries off the transversal are
+    # the fully indecomposable blocks of `A`.
+    ptr, arcs = _out_arcs(ts.nc, first.(sys.edges), _ -> true)
+    scc, nblocks = _strong_components(ptr, [sys.edges[e][2] for e in arcs])
+    if maxbalance
+        # Each block's scales are fixed relative to one another by
+        # max-balancing; the blocks' common scales minimize the objective over
+        # the entries between blocks.
+        yb = _maxbalance_components(sys, ts.y0, scc, nblocks)
+        bsys = _contract_system(sys, scc, yb)
+        Y, nt = _balanced_newton!(_feasible_component_scales(bsys, nblocks), bsys, pT, tp;
+                                  tol=T(tol), maxiter=maxit, fillbudget, flopbudget)
+        y = Y[scc] .+ yb
+    else
+        y, nt = _balanced_newton!(copy(ts.y0), sys, pT, tp; tol=T(tol), maxiter=maxit, fillbudget, flopbudget)
+    end
+    nt = (; nt..., maxbalanced=maxbalance, nblocks)
     _warn_balanced_unconverged(fname, nt, maxit)
     # The uniform shift of `_transversal_scales` absorbs roundoff violations.
     x = _transversal_scales(y[ts.comp] .+ ts.offs, ts.dsupp, ts.σ, ts.ctrans, true)

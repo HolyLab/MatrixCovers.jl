@@ -31,6 +31,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
     include("minimal_covers.jl")    # the *_min family (native solvers)
     include("transversal.jl")       # cover_transversal and the maximum-product transversal
     include("balanced.jl")          # cover_transversal with a PowerMean penalty and a target
+    include("maxbalance.jl")        # cover_transversal(PowerMean; maxbalance=true): max-balanced blocks
     include("active_set.jl")        # exact solution of stalled AbsLog{2} minimal covers
     include("storage_types.jl")     # sparse/structured/wrapped storage vs dense reference
     include("element_types.jl")     # Float32/BigFloat: eltype-scaled internal tolerances

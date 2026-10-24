@@ -38,6 +38,7 @@ include("minimal_covers.jl")
 include("active_set.jl")       # exact solution of the AbsLog{2} problem from a near-optimal point
 include("transversal.jl")      # transversal-tight minimal covers
 include("balanced.jl")         # transversal-tight covers pushed toward a target ratio
+include("maxbalance.jl")       # max-balancing within the fully indecomposable blocks
 include("transversal_heuristic.jl") # the transversal-tight start of `cover`
 include("powermean_newton.jl") # Newton refinement of the PowerMean soft covers
 include("sparse_support.jl")  # sparse traversal and the sparse solver defaults

@@ -276,6 +276,11 @@ group's multiplier test succeeds.
 - `nreleases::Int`: multiplier tests that released active entries.
 - `nactive::Int`: entries at zero slack at the solution, not counting those
   that lie on some maximum-product transversal.
+- `maxbalanced::Bool`: the scales within each fully indecomposable block are
+  max-balanced (`maxbalance=true`); the Newton steps, active-set changes, and
+  `nactive` then concern only the entries joining different blocks.
+- `nblocks::Int`: the fully indecomposable blocks of `A` (the diagonal blocks of
+  its finest block-triangular form).
 - The remaining fields describe the linear algebra; their names and meanings
   may change between releases: `nfactor` (factorizations) and `linsolve` (the
   solver of the last Newton system: `:dense`, `:cholesky`, `:cg`, or `:none`
@@ -292,6 +297,8 @@ struct BalancedCoverStats{T} <: AbstractCoverStats
     nactivations::Int
     nreleases::Int
     nactive::Int
+    maxbalanced::Bool
+    nblocks::Int
     linsolve::Symbol
 end
 
@@ -303,7 +310,7 @@ tolerance(s::BalancedCoverStats) = s.tol
 # Conversion from the statistics tuple of `_balanced_newton!`.
 BalancedCoverStats{T}(nt::NamedTuple) where {T} =
     BalancedCoverStats{T}(nt.converged, nt.stalled, nt.tol, nt.gradnorm, nt.step, nt.nnewton, nt.nfactor,
-                          nt.nactivations, nt.nreleases, nt.nactive, nt.linsolve)
+                          nt.nactivations, nt.nreleases, nt.nactive, nt.maxbalanced, nt.nblocks, nt.linsolve)
 
 """
     ExternalSolverStats <: AbstractCoverStats
