@@ -58,7 +58,7 @@ To override a solver's default penalty, pass a penalty as its first argument.
 | [`cover`](@ref) | no | hard (`r ≤ 1`) | heuristic | — |
 | [`symcover_min`](@ref) | yes | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
 | [`cover_min`](@ref) | no | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
-| [`cover_transversal`](@ref) | no | hard, tight on a maximum-product transversal | `AbsLog{2}` | — |
+| [`cover_transversal`](@ref) | no | hard, tight on a maximum-product transversal | `AbsLog{2}` (or `PowerMean{p}` with a target ratio, optionally max-balanced within blocks) | — |
 | [`soft_symcover`](@ref) | yes | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog`, `AbsLinear`) | native for `PowerMean`, `AbsLog{2}`; else JuMP |
 | [`soft_cover`](@ref) | no | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog`, `AbsLinear`) | native for `PowerMean`, `AbsLog{2}`; else JuMP |
 
@@ -66,7 +66,14 @@ For hard covers, [`symcover`](@ref) and [`cover`](@ref) are fast heuristics;
 their `_min` counterparts minimize the selected objective.
 [`cover_transversal`](@ref) minimizes the `AbsLog{2}` objective among the hard
 covers that are tight on a maximum-product transversal (see
-[Transversals and conditioning](@ref)). A soft cover has no constraint to
+[Transversals and conditioning](@ref)); with a `PowerMean{p}` penalty and a
+`target` ratio `t`, it instead pushes the ratios of the entries off the
+transversal toward `t`, minimizing `∑ t^p φ(r/t)` over them with `φ` the
+`PowerMean{p}` penalty. Adding `maxbalance=true` replaces that objective within
+each fully indecomposable block by its `p → ∞` limit, max-balancing: across
+every partition of a block's rows, the largest ratio in one direction equals
+the largest in the other, which also minimizes the block's largest ratio. The
+`PowerMean{p}` objective then fixes only the scales between blocks. A soft cover has no constraint to
 satisfy, so there is no separate heuristic: [`soft_symcover`](@ref) and
 [`soft_cover`](@ref) always minimize the objective.
 
@@ -78,6 +85,11 @@ The method used to minimize the objective depends on the penalty:
   converge slowly.
 - `AbsLog{2}` (native) is a single linear least-squares solve for soft covers;
   for hard covers, see [Objective-minimal covers](@ref).
+- `PowerMean{p}` with a target ratio, for [`cover_transversal`](@ref) (native),
+  uses an active-set Newton method that keeps every iterate a hard cover
+  tight on the transversal. With `maxbalance=true`, max-plus policy iteration
+  max-balances each block first, and the Newton method acts on one scale per
+  block.
 - `AbsLog{1}` is a linear program solved with JuMP and HiGHS.
 - `AbsLinear` is not convex; several starts are each refined to a local minimum
   with JuMP and Ipopt, and the best is returned.

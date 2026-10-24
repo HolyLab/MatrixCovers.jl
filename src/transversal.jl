@@ -53,6 +53,10 @@ grid, `:woodbury` when its requirements hold, and `:dense` otherwise. Sparse
 matrices default to `:lsqr`. As for [`cover_min`](@ref), an active-set method
 finishes a solve whose multiplier iteration stops early.
 
+`cover_transversal(AbsLog{2}(), A)` is the same. With a [`PowerMean`](@ref)
+penalty, [`cover_transversal(ϕ, A; target)`](@ref cover_transversal) instead
+pushes the coverage ratios of the entries off the transversal toward `target`.
+
 See also: [`cover_transversal!`](@ref), [`cover_min`](@ref).
 """
 function cover_transversal(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
@@ -73,8 +77,7 @@ and `b` and returns them with the solver's statistics. The initial contents of
 `eachindex(b)` must match `axes(A, 2)`.
 """
 function cover_transversal!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
-    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
-    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
+    _check_cover_axes(a, b, A)
     anew, bnew, stats = cover_transversal(A; kwargs...)
     a .= anew
     b .= bnew
@@ -301,6 +304,74 @@ end
 @noinline _throw_singular(fname) =
     throw(ArgumentError("$fname requires a structurally nonsingular matrix, but no transversal of nonzero entries exists"))
 
+# The transversal-tight difference system of the square support grouped by row
+# in `G`, whose partners are the column indices `axc`. A cover tight on a
+# maximum-product transversal `σ` has `β[σ[i]] = ctrans[σ[i]] - α[i]`, so entry
+# `(i, j)` off the transversal, with `k = τ[j]`, has residual
+# `α[i] - α[k] - (log|A[i,j]| - ctrans[j])`, which must be nonnegative.
+#
+# `transversal` is `true` to use the transversal found by
+# `_max_product_transversal`, or a vector naming the column position matched to
+# each row position, which must also be a maximum-product transversal. Returns a
+# named tuple in positions:
+#
+# - `σ`, `τ = invperm(σ)`: the transversal and its inverse;
+# - `ctrans`: the log magnitude of the transversal entry of each column;
+# - `dsupp`: the residuals as an `EdgeList` with `qsign = -1`, one entry per
+#   support entry off the transversal, in the order of `G`;
+# - `comp`, `offs`, `nc`: the components of `_tight_components`, so that
+#   `α[p] = y[comp[p]] + offs[p]` for component scales `y`;
+# - `y0`: the component scales of the transversal duals, which are feasible and
+#   tight on `σ`.
+function _transversal_system(G::GroupedSupport, axc::AbstractUnitRange, ::Type{T}, fname::Symbol,
+                             transversal::Union{Bool,AbstractVector{<:Integer}}) where {T}
+    axr = G.ax
+    m = length(axr)
+    n = length(axc)
+    σ, α0, _, logπ = _max_product_transversal(G, axc, fname)
+    if transversal isa AbstractVector
+        σ = _check_transversal(transversal, G, axc, logπ, fname)
+    end
+    τ = invperm(σ)
+    ctrans = zeros(T, n)
+    for (ip, i) in enumerate(axr)
+        for s in _slots(G, i)
+            G.idx[s] - first(axc) + 1 == σ[ip] && (ctrans[σ[ip]] = log(G.val[s]))
+        end
+    end
+    edges = Tuple{Int,Int}[]
+    cvals = T[]
+    for (ip, i) in enumerate(axr)
+        for s in _slots(G, i)
+            jp = G.idx[s] - first(axc) + 1
+            jp == σ[ip] && continue
+            push!(edges, (ip, τ[jp]))
+            push!(cvals, log(G.val[s]) - ctrans[jp])
+        end
+    end
+    dsupp = EdgeList{T}(edges, cvals, -oneunit(T))
+    comp, offs, nc = _tight_components(edges, cvals, α0)
+    y0 = zeros(T, nc)
+    for p in 1:m
+        y0[comp[p]] = α0[p] - offs[p]
+    end
+    return (; σ, τ, ctrans, dsupp, comp, offs, nc, y0)
+end
+
+# The difference system `dsupp` on the component scales `y`, where row `p` has
+# scale `y[comp[p]] + offs[p]`. Entries within one component have fixed
+# residuals and are dropped.
+function _contract_system(dsupp::EdgeList{T}, comp::Vector{Int}, offs::Vector{T}) where {T}
+    cedges = Tuple{Int,Int}[]
+    ccvals = T[]
+    for (e, (p, q)) in enumerate(dsupp.edges)
+        comp[p] == comp[q] && continue
+        push!(cedges, (comp[p], comp[q]))
+        push!(ccvals, dsupp.cvals[e] - offs[p] + offs[q])
+    end
+    return EdgeList{T}(cedges, ccvals, -oneunit(T))
+end
+
 # Rows joined by entries that lie on some maximum-product transversal.
 #
 # In the difference system on the row log scales `α`, entry `e = (p, q)` has
@@ -335,49 +406,8 @@ function _tight_components(edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, α0:
         outedge[cursor[p]] = e
         cursor[p] += 1
     end
-    # Iterative Tarjan.
-    comp = zeros(Int, m)
-    index = zeros(Int, m)
-    low = zeros(Int, m)
-    onstack = falses(m)
-    stack = Int[]
-    callstack = Tuple{Int,Int}[]   # (row, next slot in its adjacency list)
-    counter = 0
-    nc = 0
-    for r in 1:m
-        index[r] == 0 || continue
-        push!(callstack, (r, outptr[r]))
-        counter += 1
-        index[r] = low[r] = counter
-        push!(stack, r); onstack[r] = true
-        while !isempty(callstack)
-            p, s = callstack[end]
-            if s < outptr[p+1]
-                callstack[end] = (p, s + 1)
-                q = edges[outedge[s]][2]
-                if index[q] == 0
-                    counter += 1
-                    index[q] = low[q] = counter
-                    push!(stack, q); onstack[q] = true
-                    push!(callstack, (q, outptr[q]))
-                elseif onstack[q]
-                    low[p] = min(low[p], index[q])
-                end
-            else
-                pop!(callstack)
-                if low[p] == index[p]
-                    nc += 1
-                    while true
-                        q = pop!(stack)
-                        onstack[q] = false
-                        comp[q] = nc
-                        q == p && break
-                    end
-                end
-                isempty(callstack) || (low[callstack[end][1]] = min(low[callstack[end][1]], low[p]))
-            end
-        end
-    end
+    heads = [edges[e][2] for e in outedge]
+    comp, nc = _strong_components(outptr, heads)
     # Offsets from a breadth-first spanning tree of each component, crossing
     # tight entries within the component in either direction.
     inptr = zeros(Int, m + 1)
@@ -421,6 +451,58 @@ function _tight_components(edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, α0:
         end
     end
     return comp, o, nc
+end
+
+# Strongly connected components of the digraph on `1:nv`, `nv = length(ptr) - 1`,
+# with arcs `v → heads[s]` for `s in ptr[v]:ptr[v+1]-1` (iterative Tarjan).
+# Returns `(comp, nc)`: vertex `v` belongs to component `comp[v]` in `1:nc`. The
+# components are numbered in reverse topological order: every arc between
+# components goes from a higher label to a lower one.
+function _strong_components(ptr::Vector{Int}, heads::Vector{Int})
+    m = length(ptr) - 1
+    comp = zeros(Int, m)
+    index = zeros(Int, m)
+    low = zeros(Int, m)
+    onstack = falses(m)
+    stack = Int[]
+    callstack = Tuple{Int,Int}[]   # (vertex, next slot in its adjacency list)
+    counter = 0
+    nc = 0
+    for r in 1:m
+        index[r] == 0 || continue
+        push!(callstack, (r, ptr[r]))
+        counter += 1
+        index[r] = low[r] = counter
+        push!(stack, r); onstack[r] = true
+        while !isempty(callstack)
+            p, s = callstack[end]
+            if s < ptr[p+1]
+                callstack[end] = (p, s + 1)
+                q = heads[s]
+                if index[q] == 0
+                    counter += 1
+                    index[q] = low[q] = counter
+                    push!(stack, q); onstack[q] = true
+                    push!(callstack, (q, ptr[q]))
+                elseif onstack[q]
+                    low[p] = min(low[p], index[q])
+                end
+            else
+                pop!(callstack)
+                if low[p] == index[p]
+                    nc += 1
+                    while true
+                        q = pop!(stack)
+                        onstack[q] = false
+                        comp[q] = nc
+                        q == p && break
+                    end
+                end
+                isempty(callstack) || (low[callstack[end][1]] = min(low[callstack[end][1]], low[p]))
+            end
+        end
+    end
+    return comp, nc
 end
 
 # Roundoff allowance, in units of `eps`, for a zero residual at the transversal duals.
