@@ -93,12 +93,17 @@ descent. Where the groups are stationary, a maximum-flow problem on each group's
 active entries either proves the KKT conditions or yields a set of rows whose
 scales can decrease, releasing the active entries that enter it.
 
-With `maxbalance=true`, each block is max-balanced by Algorithm 3.10 of Hook et
-al.: max-plus policy iteration finds a cycle of largest geometric-mean ratio in
-the block, a diagonal similarity brings every ratio of the block down to that
-mean, and the cycle's rows, whose relative scales are then fixed, are merged
-into one; this repeats until one row remains. The active-set Newton method then
-runs with one scale per block.
+With `maxbalance=true`, each block is max-balanced as in Algorithm 3.10 of Hook
+et al.: a cycle of largest geometric-mean ratio in the block is found, a
+diagonal similarity brings every ratio of the block down to that mean, and the
+cycle's rows, whose relative scales are then fixed, are merged into one; this
+repeats until one row remains. The cycles are found by the parametric
+shortest-path algorithm of Young, Tarjan & Orlin (Networks 21:205–221, 1991).
+For a block with `n` rows and `m` entries, its cost is at most
+`O(nm + n² log n)`. The cost is roughly linear in `m` when the block's
+shortest-path tree stays shallow, as it does for most sparse matrices, and
+about `O(nm)` for a banded block, whose tree is a path. The active-set Newton
+method then runs with one scale per block.
 
 `tol` (default `1e-9`) is the stopping tolerance: the groups are stationary when
 the derivative of the objective with respect to each group's scale is at most
