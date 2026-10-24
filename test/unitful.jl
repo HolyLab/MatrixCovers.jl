@@ -106,6 +106,8 @@
         @test all(unit.(v) == fill(u"m^-1", 3) for v in scales(cover_min!(AbsLog{2}(), a, b, S)))
         @test all(unit.(v) == fill(u"m^-1", 3) for v in scales(cover_transversal(S)))
         @test all(unit.(v) == fill(u"m^-1", 3) for v in scales(cover_transversal!(a, b, S)))
+        @test all(unit.(v) == fill(u"m^-1", 3) for v in scales(cover_transversal(PowerMean{2}(), S)))
+        @test all(unit.(v) == fill(u"m^-1", 3) for v in scales(cover_transversal!(PowerMean{2}(), a, b, S)))
     end
 
     @testset "balance convention holds in the caller's units" begin
@@ -183,6 +185,7 @@
         for ϕ in (PowerMean{1}(), PowerMean{2}())
             @test unit.(scales(soft_symcover(ϕ, A))) == UA
             @test all(unit.(v) == UA for v in scales(soft_cover(ϕ, A)))
+            @test all(unit.(v) == UA for v in scales(cover_transversal(ϕ, A)))
         end
     end
 

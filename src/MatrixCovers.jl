@@ -18,7 +18,7 @@ export cover_transversal, cover_transversal!
 
 # `public` is parsed as a keyword only from Julia 1.11; this package supports 1.10.
 @static if VERSION >= v"1.11"
-    eval(Meta.parse("public AbstractCoverPenalty, foreach_support, foreach_support_sym, scalar_type, SupportComponents, support_components, ncomponents, rowcomponent, colcomponent, SolverFailure, AbstractCoverStats, AugmentedLagrangianStats, ActiveSetStats, LeastSquaresStats, PowerMeanStats, ExternalSolverStats, MultistartStats, converged, iterations, residual, tolerance"))
+    eval(Meta.parse("public AbstractCoverPenalty, foreach_support, foreach_support_sym, scalar_type, SupportComponents, support_components, ncomponents, rowcomponent, colcomponent, SolverFailure, AbstractCoverStats, AugmentedLagrangianStats, ActiveSetStats, LeastSquaresStats, PowerMeanStats, BalancedCoverStats, ExternalSolverStats, MultistartStats, converged, iterations, residual, tolerance"))
 end
 
 include("penalties.jl")
@@ -37,6 +37,7 @@ include("tree_cholesky.jl")    # fill-free factorization of forest-patterned mat
 include("minimal_covers.jl")
 include("active_set.jl")       # exact solution of the AbsLog{2} problem from a near-optimal point
 include("transversal.jl")      # transversal-tight minimal covers
+include("balanced.jl")         # transversal-tight covers pushed toward a target ratio
 include("transversal_heuristic.jl") # the transversal-tight start of `cover`
 include("powermean_newton.jl") # Newton refinement of the PowerMean soft covers
 include("sparse_support.jl")  # sparse traversal and the sparse solver defaults

@@ -323,7 +323,9 @@ for P in PENALTIES
     end
 end
 
-# `PowerMean` is soft-only and parametric in its exponent.
+# `PowerMean` is parametric in its exponent.
+MC.cover_transversal(ϕ::PowerMean, A::QMatrix; kwargs...) = asym(MC.cover_transversal, A, ϕ; kwargs...)
+MC.cover_transversal!(ϕ::PowerMean, a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover_transversal!, a, b, A, ϕ; kwargs...)
 MC.soft_symcover(ϕ::PowerMean, A::QMatrix; kwargs...) = sym(MC.soft_symcover, A, ϕ; kwargs...)
 MC.soft_symcover!(ϕ::PowerMean, a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_symcover!, a, A, ϕ; kwargs...)
 MC.soft_cover(ϕ::PowerMean, A::QMatrix; kwargs...) = asym(MC.soft_cover, A, ϕ; kwargs...)

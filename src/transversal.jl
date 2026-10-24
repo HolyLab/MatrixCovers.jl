@@ -53,6 +53,10 @@ grid, `:woodbury` when its requirements hold, and `:dense` otherwise. Sparse
 matrices default to `:lsqr`. As for [`cover_min`](@ref), an active-set method
 finishes a solve whose multiplier iteration stops early.
 
+`cover_transversal(AbsLog{2}(), A)` is the same. With a [`PowerMean`](@ref)
+penalty, [`cover_transversal(ϕ, A; target)`](@ref cover_transversal) instead
+pushes the coverage ratios of the entries off the transversal toward `target`.
+
 See also: [`cover_transversal!`](@ref), [`cover_min`](@ref).
 """
 function cover_transversal(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
@@ -73,8 +77,7 @@ and `b` and returns them with the solver's statistics. The initial contents of
 `eachindex(b)` must match `axes(A, 2)`.
 """
 function cover_transversal!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
-    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
-    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
+    _check_cover_axes(a, b, A)
     anew, bnew, stats = cover_transversal(A; kwargs...)
     a .= anew
     b .= bnew

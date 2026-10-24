@@ -153,6 +153,58 @@ function MatrixCovers.symcover_min!(::AbsLinear{1}, a::AbstractVector, A)
 end
 
 # ============================================================
+# Transversal-tight reference: cover_transversal_jump(::PowerMean{p}, A; target)
+# Row and column log scales with every entry of a maximum-product transversal
+# tight; the objective sums `f(d) = (exp(-p d) - 1)/p + target^p d` over the
+# log slacks `d = α[i] + β[j] - log|A[i,j]| >= 0` of the other entries. Returns
+# `((a, b), logπ)` with `logπ` the maximum log product of a transversal.
+# ============================================================
+
+function MatrixCovers.cover_transversal_jump(::PowerMean{p}, A; target::Real=1e-2) where {p}
+    axr, axc = axes(A, 1), axes(A, 2)
+    length(axr) == length(axc) || throw(ArgumentError("cover_transversal_jump requires a square matrix"))
+    T = float(real(eltype(A)))
+    m = n = length(axr)
+    σ, α0, β0, logπ = MatrixCovers._max_product_transversal(MatrixCovers._row_support(A, T), axc,
+                                                            :cover_transversal_jump)
+    ei, ej, elog = _edge_list(A, T)
+    nza = _degrees(ei, m)
+    nzb = _degrees(ej, n)
+    tp = T(target)^p
+    model = _ipopt_model()
+    JuMP.set_attribute(model, "tol", 1e-11)
+    @variable(model, α[i=1:m], start = α0[i])
+    @variable(model, β[j=1:n], start = β0[j])
+    off = Int[]
+    for e in eachindex(ei, ej, elog)
+        if ej[e] == σ[ei[e]]
+            @constraint(model, α[ei[e]] + β[ej[e]] == elog[e])
+        else
+            @constraint(model, α[ei[e]] + β[ej[e]] >= elog[e])
+            push!(off, e)
+        end
+    end
+    if !isempty(off)
+        @objective(model, Min,
+            sum((exp(-p * (α[ei[e]] + β[ej[e]] - elog[e])) - 1) / p + tp * (α[ei[e]] + β[ej[e]] - elog[e])
+                for e in off))
+    end
+    _pin_gauge!(model, α, β, A, nza, nzb)
+    JuMP.optimize!(model)
+    check_solved(model, "cover_transversal_jump")
+    a = similar(Array{T}, axr)
+    b = similar(Array{T}, axc)
+    for (i, k) in enumerate(axr)
+        a[k] = exp(JuMP.value(α[i]))
+    end
+    for (j, k) in enumerate(axc)
+        b[k] = exp(JuMP.value(β[j]))
+    end
+    MatrixCovers._balance_cover!(a, b, A)
+    return MatrixCovers.inflate_feasible!(a, b, A), logπ
+end
+
+# ============================================================
 # Hard cover: cover_min!(::AbsLinear{p}, a, b, A)
 # Asymmetric hard-cover model in row and column log scales. The model pins the
 # gauge of every support component; post-processing restores feasibility.

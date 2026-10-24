@@ -26,7 +26,8 @@ and selection among several starts:
 
 In general, plain forms choose their own starts, and `!` forms refine the
 supplied start. The exceptions are [`symcover!`](@ref), [`cover!`](@ref), and
-[`cover_transversal!`](@ref), which write their result in place.
+[`cover_transversal!`](@ref) (with or without a penalty), which write their
+result in place.
 
 The three calls below (the default multistart solver, the solver restricted to
 the `:geomean` start, and an explicit initialization followed by refinement)

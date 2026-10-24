@@ -30,6 +30,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
     include("tree_cholesky.jl")     # the fill-free forest factorization behind the LSQR preconditioner
     include("minimal_covers.jl")    # the *_min family (native solvers)
     include("transversal.jl")       # cover_transversal and the maximum-product transversal
+    include("balanced.jl")          # cover_transversal with a PowerMean penalty and a target
     include("active_set.jl")        # exact solution of stalled AbsLog{2} minimal covers
     include("storage_types.jl")     # sparse/structured/wrapped storage vs dense reference
     include("element_types.jl")     # Float32/BigFloat: eltype-scaled internal tolerances
@@ -49,7 +50,8 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
                      :require_abs_symmetric,
                      :_edge_list, :_sym_edge_list, :_degrees, :_support_components,
                      :_balance_cover!, :inflate_feasible!,
-                     :_balance_bipartite_sym!, :_sym_support)
+                     :_balance_bipartite_sym!, :_sym_support,
+                     :_max_product_transversal, :_row_support)
         # External non-public names with no usable public equivalent.
         foreign = (:FreeUnits, :Unit, :Units, :Optimizer, :Experimental, :register_error_hint,
                    :RefValue, :getcolptr, :LibSuiteSparse, :TRUE,

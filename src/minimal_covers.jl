@@ -2385,7 +2385,8 @@ function symcover_min_jump end
 # JuMP reference used to test the native asymmetric solver.
 function cover_min_jump end
 
-# JuMP reference used to test `cover_transversal`; also returns `log π*`.
+# JuMP references used to test `cover_transversal`, with HiGHS for `AbsLog{2}` and
+# Ipopt for `PowerMean`; each also returns `log π*`.
 function cover_transversal_jump end
 
 """

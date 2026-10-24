@@ -242,6 +242,70 @@ PowerMeanStats{T}(nt::NamedTuple) where {T} =
                       nt.npasses, nt.nfactor, nt.linsolve)
 
 """
+    BalancedCoverStats{T} <: AbstractCoverStats
+
+Statistics of the transversal-tight covers with a `PowerMean` penalty and a
+target ratio ([`cover_transversal(::PowerMean, A)`](@ref cover_transversal) and
+its mutating form).
+
+The solver is an active-set Newton method on groups of rows joined by entries
+at zero slack. The *relative reduced gradient* of a group is the derivative of
+the objective with respect to its common log scale, divided by the sum of the
+magnitudes of the terms of that derivative; `gradnorm` is its largest value
+over the groups. The groups are stationary when `gradnorm <= tol`, or when
+roundoff keeps the Newton step from reducing the objective: the step changes no
+log slack `-log(r)` by more than `tol`, or the directional derivative of the
+objective along it is nonnegative but within the roundoff of the groups'
+derivatives. This happens when roundoff limits `gradnorm`, so `converged` can
+hold with `gradnorm > tol`. The solve stops at a stationary point where every
+group's multiplier test succeeds.
+`converged`, `residual`, and `tolerance` return `converged`, `gradnorm`, and
+`tol`; `iterations` returns `nnewton`.
+
+# Fields
+
+- `converged::Bool`: the stopping criterion holds.
+- `stalled::Bool`: the line search could not reduce the objective (and so
+  `converged` is `false`); otherwise an unconverged solve reached `maxiter`.
+- `tol::T`, `gradnorm::T`: as above.
+- `step::T`: the largest change of a log slack in the last Newton step (`NaN`
+  if none was computed).
+- `nnewton::Int`: Newton steps.
+- `nactivations::Int`: entries that reached zero slack and joined the active
+  set.
+- `nreleases::Int`: multiplier tests that released active entries.
+- `nactive::Int`: entries at zero slack at the solution, not counting those
+  that lie on some maximum-product transversal.
+- The remaining fields describe the linear algebra; their names and meanings
+  may change between releases: `nfactor` (factorizations) and `linsolve` (the
+  solver of the last Newton system: `:dense`, `:cholesky`, `:cg`, or `:none`
+  when no system was solved).
+"""
+struct BalancedCoverStats{T} <: AbstractCoverStats
+    converged::Bool
+    stalled::Bool
+    tol::T
+    gradnorm::T
+    step::T
+    nnewton::Int
+    nfactor::Int
+    nactivations::Int
+    nreleases::Int
+    nactive::Int
+    linsolve::Symbol
+end
+
+converged(s::BalancedCoverStats) = s.converged
+iterations(s::BalancedCoverStats) = s.nnewton
+residual(s::BalancedCoverStats) = s.gradnorm
+tolerance(s::BalancedCoverStats) = s.tol
+
+# Conversion from the statistics tuple of `_balanced_newton!`.
+BalancedCoverStats{T}(nt::NamedTuple) where {T} =
+    BalancedCoverStats{T}(nt.converged, nt.stalled, nt.tol, nt.gradnorm, nt.step, nt.nnewton, nt.nfactor,
+                          nt.nactivations, nt.nreleases, nt.nactive, nt.linsolve)
+
+"""
     ExternalSolverStats <: AbstractCoverStats
 
 Statistics of the covers computed by an external optimizer through JuMP: HiGHS

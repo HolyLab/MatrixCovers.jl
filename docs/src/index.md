@@ -276,7 +276,10 @@ minimize a chosen penalty, at greater cost (see
 for conditioning: on the matrix of
 [Conditioning and the error in `A \ y`](@ref), [`cover_min`](@ref) leaves
 `cond(Ahat)` near `3e8`, because it is not tight on the transversal.
-[`cover_transversal`](@ref) minimizes the penalty among the covers that are.
+[`cover_transversal`](@ref) minimizes the penalty among the covers that are;
+`cover_transversal(PowerMean{2}(), A; target)` instead pushes the ratios of the
+entries off the transversal toward `target`, which separates the blocks of a
+partly decomposable `A`.
 
 For applications that standardize data rather than precondition a solver,
 consider [`soft_cover`](@ref) and [`soft_symcover`](@ref). A soft cover need not
