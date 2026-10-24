@@ -3,7 +3,7 @@
 # `minimax_ratio`, `offtransversal_ratios`, and `check_balanced_cover` from
 # balanced.jl.
 
-using MatrixCovers: _cover_transversal_balanced, _transversal_system, _howard!, _out_arcs, TIGHT_ULPS
+using MatrixCovers: _cover_transversal_balanced, _transversal_system, _maxbalance
 
 # Whether the square `A`, whose diagonal is nonzero, is fully indecomposable:
 # whether every row reaches every other through the nonzero entries.
@@ -53,18 +53,50 @@ function random_indecomposable(rng, n)
     end
 end
 
-@testset "policy iteration with nearly equal cycle means" begin
-    # Row 1 leads to self-loops whose means differ by less than the resolution
-    # `tol` pairwise but not overall, with the bias favoring the lowest; each
-    # loop returns to row 1 only through a loop of nearly equal mean.
-    src = [1, 1, 1, 2, 3, 4, 2, 3, 4]
-    dst = [2, 3, 4, 2, 3, 4, 1, 1, 3]
-    tol = TIGHT_ULPS * eps() * 5
-    w = [-2.0, -1.5, -1.2, -1 + 1.2tol, -1 + 0.6tol, -1.0, -5.0, -5.0, -5.0]
-    ptr, adj = _out_arcs(4, src, _ -> true)
-    λ, s, cyc = _howard!(zeros(Int, 4), 4, ptr, adj, dst, w, tol)
-    @test λ == w[4] && cyc == [2]
-    @test all(e -> w[e] - s[src[e]] + s[dst[e]] <= λ + 4tol, eachindex(w))
+# Whether the shift `x` max-balances the strongly connected digraph with arcs
+# `src[e] → dst[e]` of weight `w[e]`: for every partition of its vertices into
+# two nonempty sets, the largest shifted weight leaving one set equals the
+# largest entering it.
+function maxbalanced(nv, src, dst, w, x; tol=1e-10)
+    wx = [w[e] - x[src[e]] + x[dst[e]] for e in eachindex(w)]
+    for mask in 1:(2^nv-2)
+        inset(v) = isodd(mask >> (v - 1))
+        out = maximum((wx[e] for e in eachindex(w) if inset(src[e]) && !inset(dst[e])); init=-Inf)
+        inn = maximum((wx[e] for e in eachindex(w) if !inset(src[e]) && inset(dst[e])); init=-Inf)
+        abs(out - inn) <= tol || return false
+    end
+    return true
+end
+
+@testset "_maxbalance" begin
+    # Random strongly connected digraphs with parallel arcs, self loops, and
+    # (on even trials) many tied weights.
+    rng = StableRNG(3)
+    for trial in 1:200
+        nv = rand(rng, 2:9)
+        perm = randperm(rng, nv)
+        extra = rand(rng, 0:3nv)
+        src = vcat(perm, rand(rng, 1:nv, extra))
+        dst = vcat(perm[mod1.(2:nv+1, nv)], rand(rng, 1:nv, extra))
+        w = isodd(trial) ? randn(rng, length(src)) : Float64.(rand(rng, -2:2, length(src)))
+        x = _maxbalance(nv, src, dst, w)
+        @test x[1] == 0
+        @test maxbalanced(nv, src, dst, w, x)
+    end
+    # A banded digraph, whose shortest-path tree is deep and moves as a whole at
+    # every contraction. It has too many vertices to check every partition, so
+    # only the cuts around single vertices are checked.
+    nv = 300
+    src = vcat(1:nv-1, 2:nv, 1:nv-2)
+    dst = vcat(2:nv, 1:nv-1, 3:nv)
+    w = randn(rng, length(src))
+    x = _maxbalance(nv, src, dst, w)
+    wx = [w[e] - x[src[e]] + x[dst[e]] for e in eachindex(w)]
+    for v in 1:nv
+        out = maximum(wx[e] for e in eachindex(w) if src[e] == v)
+        inn = maximum(wx[e] for e in eachindex(w) if dst[e] == v)
+        @test out ≈ inn atol = 1e-9
+    end
 end
 
 @testset "cover_transversal(::PowerMean; maxbalance=true)" begin

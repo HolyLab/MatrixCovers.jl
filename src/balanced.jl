@@ -15,6 +15,11 @@ const BALANCED_NOISE = 64
 # Newton systems on at most this many unknowns, or at least an eighth full, are
 # factored densely.
 const BALANCED_DENSE_MAX = 128
+# Relative residual of a conjugate-gradient solve for a Newton direction. Every
+# iterate of conjugate gradients from zero is a descent direction, and the
+# reduced gradient is recomputed at each step, so the direction need not be
+# accurate.
+const BALANCED_CG_RTOL = 1e-4
 # Ridge retries for a Newton matrix that roundoff makes indefinite; each retry
 # scales the ridge by `BALANCED_RIDGE_GROWTH`. The ridge is relative to each
 # diagonal entry, so that it does not swamp the curvature of a group whose
@@ -93,12 +98,17 @@ descent. Where the groups are stationary, a maximum-flow problem on each group's
 active entries either proves the KKT conditions or yields a set of rows whose
 scales can decrease, releasing the active entries that enter it.
 
-With `maxbalance=true`, each block is max-balanced by Algorithm 3.10 of Hook et
-al.: max-plus policy iteration finds a cycle of largest geometric-mean ratio in
-the block, a diagonal similarity brings every ratio of the block down to that
-mean, and the cycle's rows, whose relative scales are then fixed, are merged
-into one; this repeats until one row remains. The active-set Newton method then
-runs with one scale per block.
+With `maxbalance=true`, each block is max-balanced as in Algorithm 3.10 of Hook
+et al.: a cycle of largest geometric-mean ratio in the block is found, a
+diagonal similarity brings every ratio of the block down to that mean, and the
+cycle's rows, whose relative scales are then fixed, are merged into one; this
+repeats until one row remains. The cycles are found by the parametric
+shortest-path algorithm of Young, Tarjan & Orlin (Networks 21:205–221, 1991).
+For a block with `n` rows and `m` entries, its cost is at most
+`O(nm + n² log n)`. The cost is roughly linear in `m` when the block's
+shortest-path tree stays shallow, as it does for most sparse matrices, and
+about `O(nm)` for a banded block, whose tree is a path. The active-set Newton
+method then runs with one scale per block.
 
 `tol` (default `1e-9`) is the stopping tolerance: the groups are stationary when
 the derivative of the objective with respect to each group's scale is at most
@@ -110,7 +120,8 @@ nonnegative but within the roundoff of the groups' derivatives. `maxiter`
 the active set.
 `fillbudget` and `flopbudget` are as for [`cover_min`](@ref): a Newton system
 whose sparse Cholesky factor would exceed them is solved by conjugate
-gradients. The Newton systems have condition numbers of order `target^(-p)`
+gradients to a loose tolerance, since a descent direction need not be
+accurate. The Newton systems have condition numbers of order `target^(-p)`
 times that of the graph, and of order `r^(-p)` where cycles of entries hold
 ratios `r` far below `target`, so a very small `target^p` or a large `p`
 degrades the linear solves and the convergence.
@@ -663,7 +674,7 @@ function _balanced_direction!(δv, cache, d, gid, uidx, nu, gG, P, Q, p::T, tp::
             L = sparse([I; 1:nu], [J; 1:nu], [V; dg .+ ridge .* max.(dg, dfloor)], nu, nu)
             F = _balanced_factor!(cache, L, fillbudget, flopbudget)
             if F !== nothing
-                _laplacian_solve!(x, F, rhs)
+                _laplacian_solve!(x, F, rhs; rtol=BALANCED_CG_RTOL, refine=false)
                 kind = F isa SparseCholesky ? :cholesky : :cg
                 break
             end
@@ -682,17 +693,27 @@ end
 # made indefinite.
 _balanced_ridge(ridge::T) where {T} = iszero(ridge) ? eps(T) : ridge * T(BALANCED_RIDGE_GROWTH)
 
-# Factor the pinned Laplacian `L` (upper triangle), reusing the symbolic analysis
-# in `cache` when the pattern is unchanged. Returns `nothing` when `L` is not
-# numerically positive definite.
+# Factor the pinned Laplacian `L` (upper triangle), or return a
+# conjugate-gradient solver for it when its factor would exceed the budgets.
+# Returns `nothing` when `L` is not numerically positive definite. `cache` holds
+# one of:
+# - the analyzed factorization and its pattern, reused when the pattern of `L`
+#   is unchanged;
+# - the order and number of nonzeros of the last pattern whose factor exceeded
+#   the budgets. A pattern more than half that size in both is presumed to
+#   exceed them too and gets conjugate gradients without a symbolic analysis,
+#   which would cost more than the solve.
 function _balanced_factor!(cache, L::SparseMatrixCSC{Float64,Int}, fillbudget, flopbudget)
     c = cache[]
     try
-        if c !== nothing && c[2] == SparseArrays.getcolptr(L) && c[3] == rowvals(L)
-            return factorize!(c[1], L)
+        if c isa Tuple{SparseCholesky,Vector{Int},Vector{Int}}
+            c[2] == SparseArrays.getcolptr(L) && c[3] == rowvals(L) && return factorize!(c[1], L)
+        elseif c isa Tuple{Int,Int}
+            2 * size(L, 1) > c[1] && 2 * nnz(L) > c[2] && return _laplacian_cg(L)
         end
         F = _laplacian_factor(L; fillbudget, flopbudget)
-        cache[] = F isa SparseCholesky ? (F, copy(SparseArrays.getcolptr(L)), copy(rowvals(L))) : nothing
+        cache[] = F isa SparseCholesky ? (F, copy(SparseArrays.getcolptr(L)), copy(rowvals(L))) :
+                  (size(L, 1), nnz(L))
         return F
     catch err
         err isa LinearAlgebra.PosDefException || rethrow()

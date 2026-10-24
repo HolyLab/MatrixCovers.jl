@@ -386,23 +386,50 @@ end
 function _laplacian_factor(L::SparseMatrixCSC{T,Int}; fillbudget::Real=LSQR_FILL_BUDGET,
                            flopbudget::Real=LSQR_FLOP_BUDGET, cgmaxiter::Int=10 * size(L, 1) + 100) where {T}
     size(L, 1) == 0 && return _laplacian_factor(Matrix(L))
+    return _laplacian_cg(L; cgmaxiter)
+end
+# Conjugate-gradient solver for `L`, built without a symbolic analysis, for a
+# pattern presumed to exceed the budgets. The fallback factorization is analyzed
+# only if CG fails (see `_cg_fallback`).
+function _laplacian_cg(L::SparseMatrixCSC{T,Int}; cgmaxiter::Int=10 * size(L, 1) + 100) where {T}
     S = L + triu(L, 1)'
     return _LaplacianCG{T}(L, S, Vector(diag(S)), nothing, Ref{Any}(nothing), cgmaxiter, Ref(zero(T)))
 end
+# The factorization that replaces conjugate gradients once they fail. In
+# `Float64` it reuses the symbolic analysis in `C.F` when there is one.
+function _cg_fallback(C::_LaplacianCG{Float64})
+    F = C.F
+    if F === nothing
+        F = SparseCholesky()
+        analyze!(F, C.L)
+    end
+    return factorize!(F, C.L)
+end
+_cg_fallback(C::_LaplacianCG) = _laplacian_factor(Matrix(C.L))
 _laplacian_factor(L::Matrix) = LinearAlgebra.cholesky!(Symmetric(L, :U))
 
-_laplacian_solve!(x::Vector{Float64}, F::SparseCholesky, b::Vector{Float64}) =
+# Solves `L x = b`. The keywords apply only to a `_LaplacianCG`: `rtol` is the
+# relative residual at which conjugate gradients stop, and `refine` enables the
+# iterative refinement that follows, which reduces the forward error to the
+# resolution of the arithmetic. `_solve_error` then estimates the remaining
+# error; it is `NaN` when refinement is skipped.
+_laplacian_solve!(x::Vector{Float64}, F::SparseCholesky, b::Vector{Float64}; rtol=nothing, refine=true) =
     isempty(b) ? x : solve!(x, F, CHOLMOD_A, b)
-_laplacian_solve!(x, F::Cholesky, b) = ldiv!(x, F, b)
+_laplacian_solve!(x, F::Cholesky, b; rtol=nothing, refine=true) = ldiv!(x, F, b)
 
-function _laplacian_solve!(x::Vector{T}, C::_LaplacianCG{T}, b::Vector{T}) where {T}
+function _laplacian_solve!(x::Vector{T}, C::_LaplacianCG{T}, b::Vector{T}; rtol::Real=sqrt(eps(T)),
+                           refine::Bool=true) where {T}
     if C.fallback[] === nothing
         n = length(b)
         fill!(x, zero(T))
         rdd, r, z, d, Ad, e = ntuple(_ -> zeros(T, n), 6)
         Smul! = (y, v) -> mul!(y, C.S, v)
-        η = sqrt(eps(T))
+        η = T(rtol)
         _, ok = _pcg!(Smul!, x, C.dg, b, r, z, d, Ad, C.maxiter, η * norm(b))
+        if ok && !refine
+            C.err[] = T(NaN)
+            return x
+        end
         # Iterative refinement with the residual in compensated arithmetic.
         # CG leaves a forward error of its normwise backward error times the
         # condition number, and the multipliers, routed sums of the solution
@@ -426,7 +453,7 @@ function _laplacian_solve!(x::Vector{T}, C::_LaplacianCG{T}, b::Vector{T}) where
             δ <= δprev / 100 || break
             δprev = δ
         end
-        C.fallback[] = C.F === nothing ? _laplacian_factor(Matrix(C.L)) : factorize!(C.F, C.L)
+        C.fallback[] = _cg_fallback(C)
     end
     C.err[] = zero(T)
     return _laplacian_solve!(x, C.fallback[], b)
