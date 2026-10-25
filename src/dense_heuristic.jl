@@ -36,21 +36,22 @@ function _tri_logabs!(Lp::Vector{T}, A::AbstractMatrix) where {T}
     return Lp
 end
 
-# Row sums of the diagonally normalized log magnitudes `Lp[i,j] - ρ[i] - ρ[j]`
-# and the row support counts; see `_sym_unconstrained!`.
-function _tri_normsums!(s::Vector{T}, cnt::Vector{Int}, Lp::Vector{T}, ρ::Vector{T}, n::Int) where {T}
+# Row sums of the diagonally normalized log magnitudes
+# `Lp[i,j] - logref[i] - logref[j]` and the row support counts; see
+# `_sym_unconstrained!`.
+function _tri_normsums!(s::Vector{T}, cnt::Vector{Int}, Lp::Vector{T}, logref::Vector{T}, n::Int) where {T}
     fill!(s, zero(T))
     fill!(cnt, 0)
     ninf = T(-Inf)
     for jp in 1:n
         o = _trioff(jp)
-        rj = ρ[jp]
+        rj = logref[jp]
         sj = zero(T)
         cj = 0
         for ip in 1:jp-1
             l = Lp[o+ip]
             if l != ninf
-                l -= ρ[ip] + rj
+                l -= logref[ip] + rj
                 s[ip] += l
                 cnt[ip] += 1
                 sj += l
@@ -125,13 +126,13 @@ function _symcover_dense!(a::AbstractVector, A::AbstractMatrix, ::Type{T}, maxit
     cnt = Vector{Int}(undef, n)
     _tri_logabs!(Lp, A)
     # Covariant reference from the diagonal; see `_sym_reference!`.
-    ρ = Vector{T}(undef, n)
+    logref = Vector{T}(undef, n)
     for jp in 1:n
         l = Lp[_trioff(jp)+jp]
-        ρ[jp] = ifelse(l == T(-Inf), T(NaN), l / 2)
+        logref[jp] = ifelse(l == T(-Inf), T(NaN), l / 2)
     end
-    _tri_normsums!(α, cnt, Lp, ρ, n)     # `α` carries the row log sums here
-    nmissing = count(ip -> cnt[ip] > 0 && isnan(ρ[ip]), 1:n)
+    _tri_normsums!(α, cnt, Lp, logref, n)     # `α` carries the row log sums here
+    nmissing = count(ip -> cnt[ip] > 0 && isnan(logref[ip]), 1:n)
     if nmissing > 0
         # Rare path: some supported row has a zero diagonal entry.
         function foreach_entries(f)
@@ -143,14 +144,14 @@ function _symcover_dense!(a::AbstractVector, A::AbstractMatrix, ::Type{T}, maxit
                 end
             end
         end
-        _sym_reference!(ρ, foreach_entries, nmissing)
-        _tri_normsums!(α, cnt, Lp, ρ, n)
+        _sym_reference!(logref, foreach_entries, nmissing)
+        _tri_normsums!(α, cnt, Lp, logref, n)
     end
     # Unsupported rows may keep NaN references; `_uncon_scale` never reads them.
     nztotal = sum(cnt)
     halfmu = iszero(nztotal) ? zero(T) : sum(α) / (2 * nztotal)
     for ip in 1:n
-        α[ip] = _uncon_scale(α[ip], cnt[ip], halfmu, ρ[ip])
+        α[ip] = _uncon_scale(α[ip], cnt[ip], halfmu, logref[ip])
         lα[ip] = log(α[ip])
     end
 

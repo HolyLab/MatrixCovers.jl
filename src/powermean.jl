@@ -286,10 +286,10 @@ function _powermean_target(S::GroupedSupport{T}, sl, y, p::T) where {T}
 end
 
 # The objective restricted to one group scale `x`, with its partners fixed, is
-# `n * ψ(x - F) + const`, where `F` is the group's target and
-# `ψ(z) = (exp(-p z) - 1 + p z) / p`. This gives the exact change of the objective
+# `n * ρ(x - F) + const`, where `F` is the group's target and
+# `ρ(z) = (exp(-p z) - 1 + p z) / p`. This gives the exact change of the objective
 # under a relaxed step.
-_powermean_ψ(p, z) = (expm1(-p * z) + p * z) / p
+_powermean_ρ(p, z) = (expm1(-p * z) + p * z) / p
 
 # Largest `|∑ R^p / n - 1|` over the groups of `S`, the scale-invariant imbalance
 # of the balance conditions `∑_j R[i,j]^p = n_i`.
@@ -322,10 +322,10 @@ function _powermean_halfsweep!(x, y, S::GroupedSupport{T}, p::T, ω::T) where {T
         imb = max(imb, abs(expm1(-p * δ)))
         xg = F
         if ω != 1
-            ψδ = _powermean_ψ(p, δ)
+            ρδ = _powermean_ρ(p, δ)
             w = ω
             for _ in 0:POWERMEAN_NBACKTRACK
-                if _powermean_ψ(p, (1 - w) * δ) <= (1 + (w - 1)^2) / 2 * ψδ
+                if _powermean_ρ(p, (1 - w) * δ) <= (1 + (w - 1)^2) / 2 * ρδ
                     xg = F + (1 - w) * δ
                     break
                 end
@@ -399,13 +399,13 @@ function _powermean_sinkhorn!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}
         if ω == 1
             nplain += 1
             if nplain >= POWERMEAN_NESTIMATE
-                ρ, ρprev = sqrt(r / r2), sqrt(r1 / r3)
-                if zero(T) < ρ < one(T) && zero(T) < ρprev < one(T) &&
-                        log(ρ) >= POWERMEAN_STEADY * log(ρprev)
-                    ωopt = min(ωmax, 2 / (1 + sqrt(1 - ρ)))
+                μ2, μ2prev = sqrt(r / r2), sqrt(r1 / r3)
+                if zero(T) < μ2 < one(T) && zero(T) < μ2prev < one(T) &&
+                        log(μ2) >= POWERMEAN_STEADY * log(μ2prev)
+                    ωopt = min(ωmax, 2 / (1 + sqrt(1 - μ2)))
                     ω = min(ωopt, T(POWERMEAN_OMEGA_START))
                     rprev, rwin, nwin, nstall = r, T(Inf), 0, 0
-                    _powermean_nsweeps(r, tol, _sor_rate(ρ, ωopt)) > budget && break
+                    _powermean_nsweeps(r, tol, _sor_rate(μ2, ωopt)) > budget && break
                 end
             end
             r3, r2, r1 = r2, r1, r

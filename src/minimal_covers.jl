@@ -445,7 +445,7 @@ function _lsqr(Amul!, Atmul!, b::AbstractVector{T}, x0::AbstractVector{T};
     tmpm = similar(u)
     tmpn = similar(v)
     ϕbar = β
-    ρbar = α
+    rdiagbar = α
     anorm2 = α^2          # Frobenius norm² of the lower bidiagonal ≈ ‖M‖²
     (iszero(β) || iszero(α)) && return x, 0   # x0 already optimal
     iters = 0
@@ -462,16 +462,16 @@ function _lsqr(Amul!, Atmul!, b::AbstractVector{T}, x0::AbstractVector{T};
         α > 0 && (v ./= α)
         anorm2 += β^2 + α^2
         # Orthogonal transformation applied to the bidiagonal system.
-        ρ = hypot(ρbar, β)
-        iszero(ρ) && break
-        c = ρbar / ρ
-        s = β / ρ
+        rdiag = hypot(rdiagbar, β)
+        iszero(rdiag) && break
+        c = rdiagbar / rdiag
+        s = β / rdiag
         θ = s * α
-        ρbar = -c * α
+        rdiagbar = -c * α
         ϕ = c * ϕbar
         ϕbar = s * ϕbar
-        @. x += (ϕ / ρ) * w
-        @. w = v - (θ / ρ) * w
+        @. x += (ϕ / rdiag) * w
+        @. w = v - (θ / rdiag) * w
         # Stop when the normal-equations residual is negligible relative to ‖M‖‖r‖,
         # or when the least-squares residual itself has vanished (consistent system).
         arnorm = ϕbar * α * abs(c)
@@ -532,13 +532,13 @@ SupportSystem{T}(N, supp::S, args...) where {T,S} = SupportSystem{T,S}(N, supp, 
 #
 # Per-entry augmented-Lagrangian term with multiplier λ ≥ 0 and penalty weight κ:
 #
-#     ψ(z) = z²               for z ≥ b,
-#     ψ(z) = κ(z − s)² + s·b  for z < b,
+#     ℓ(z) = z²               for z ≥ b,
+#     ℓ(z) = κ(z − s)² + s·b  for z < b,
 #
 # where `s = λ/(2κ)` and `b = λ/(2(κ-1))`. The omitted constant is independent
 # of `z`. Precomputed scales keep the branch test identical across sweeps.
 
-# Objective `f(x) = Σ_e mult_e·ψ_e(z_e)`.
+# Objective `f(x) = Σ_e mult_e·ℓ_e(z_e)`.
 function _fal(x, κ, λ, sscale, bscale, supp::EdgeList{T}, symmetric::Bool) where {T}
     edges, cvals, qs = supp.edges, supp.cvals, supp.qsign
     κT = T(κ)
@@ -1275,9 +1275,9 @@ function _precond_pattern(::Type{T}, supp::EdgeList, v0, N::Int, mult) where {T}
         Mv[p] += v0[p]^2
         dmax = max(dmax, Mv[p])
     end
-    ρ = _precond_ridge(dmax)
+    ridge = _precond_ridge(dmax)
     for p in 1:N
-        push!(I, p); push!(J, p); push!(V, Mv[p] + ρ)
+        push!(I, p); push!(J, p); push!(V, Mv[p] + ridge)
     end
     # `sparse` sums duplicates and keeps any that cancel as stored zeros, so the
     # pattern holds every pair of unknowns that some entry joins.
@@ -1683,9 +1683,9 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                         mdiag[p] += v0[p]^2
                         dmax = max(dmax, mdiag[p])
                     end
-                    ρ = _precond_ridge(dmax)
+                    ridge = _precond_ridge(dmax)
                     for p in 1:N
-                        nzv[dpos[p]] = mdiag[p] + ρ
+                        nzv[dpos[p]] = mdiag[p] + ridge
                     end
                     factorize!(MF, Msp)
                     nrefactor[] += 1
@@ -1743,9 +1743,9 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                         mdiag[p] += v0[p]^2
                         dmax = max(dmax, mdiag[p])
                     end
-                    ρ = _precond_ridge(dmax)
+                    ridge = _precond_ridge(dmax)
                     keep = max_weight_forest(N, hI, hJ, hW)
-                    HF[] = tree_cholesky(N, hI[keep], hJ[keep], hV[keep], mdiag .+ ρ)
+                    HF[] = tree_cholesky(N, hI[keep], hJ[keep], hV[keep], mdiag .+ ridge)
                     nrefactor[] += 1
                     prevκ[] = κl
                     copyto!(prevpat, vpat)
