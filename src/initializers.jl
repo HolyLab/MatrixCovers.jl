@@ -2,7 +2,7 @@
 
 # Default starts for nonconvex `AbsLinear` solvers.
 const SYMCOVER_MIN_STRATEGIES = (:hardcover, :geomean, :leaveout)
-const COVER_MIN_STRATEGIES = (:hardcover, :covariant)
+const COVER_MIN_STRATEGIES = (:hardcover, :unconstrained)
 
 # ============================================================
 # Public interface
@@ -78,8 +78,10 @@ Build an asymmetric starting point for [`cover_min`](@ref) or
 `strategy` names the point:
 
 - `:geomean` — geometric means of the nonzero entries in each row and column.
-- `:covariant` — the scale-covariant start of [`cover`](@ref), without
+- `:unconstrained` — the scale-covariant start of [`cover`](@ref) that
+  approximates the unconstrained least-squares fit, without
   conjugate-gradient refinement. It agrees with `:geomean` on complete support.
+  `:covariant` is a deprecated alias.
 - `:hardcover` — the result of [`cover`](@ref), which is already a cover, so
   `feasible` is ignored. Additional keywords (`maxiter`, `cgiter`, `start`) are
   passed to `cover`; the other strategies accept none.
@@ -110,18 +112,22 @@ function initialize_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatr
                            strategy::Symbol=:hardcover, feasible::Symbol=:inflate, kwargs...)
     axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
     axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
+    if strategy === :covariant
+        Base.depwarn("`strategy=:covariant` is deprecated; use `strategy=:unconstrained`", :initialize_cover)
+        strategy = :unconstrained
+    end
     if strategy === :hardcover
         cover!(a, b, A; kwargs...)
     elseif strategy === :geomean
         _reject_kwargs(strategy, kwargs)
         unconstrained_min!(AbsLog{2}(), a, b, A)
-    elseif strategy === :covariant
+    elseif strategy === :unconstrained
         _reject_kwargs(strategy, kwargs)
         covariant_start!(a, b, flat_support(A, float(promote_type(eltype(a), eltype(b)))); fname=:initialize_cover)
     elseif strategy === :leaveout || strategy === :diagfeasible
-        throw(ArgumentError("strategy=:$strategy has no asymmetric formulation; expected one of :hardcover, :geomean, :covariant"))
+        throw(ArgumentError("strategy=:$strategy has no asymmetric formulation; expected one of :hardcover, :geomean, :unconstrained"))
     else
-        throw(ArgumentError("unknown strategy :$strategy; expected one of :hardcover, :geomean, :covariant"))
+        throw(ArgumentError("unknown strategy :$strategy; expected one of :hardcover, :geomean, :unconstrained"))
     end
     _make_feasible!(feasible, a, b, A)
     # Restore the package's balance convention after a selective boost.

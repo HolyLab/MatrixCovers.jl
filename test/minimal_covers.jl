@@ -1063,7 +1063,7 @@ end
     @test_throws "cover: the scale factors computed for `A` are $msg" cover(Matrix(B))
     @test_throws "soft_cover: the scale factors computed for `A` are $msg" soft_cover(B)
     @test_throws "soft_cover: the scale factors computed for `A` are $msg" soft_cover(AbsLog{2}(), B)
-    @test_throws "initialize_cover: the scale factors computed for `A` are $msg" initialize_cover(B; strategy=:covariant)
+    @test_throws "initialize_cover: the scale factors computed for `A` are $msg" initialize_cover(B; strategy=:unconstrained)
     # The geometric-mean start does not propagate scales along the band.
     @test iscover(cover(B; start=:geomean)..., B)
     # BigFloat's exponent range holds the minimal cover.

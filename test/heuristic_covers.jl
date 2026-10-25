@@ -330,9 +330,9 @@ end
     dr, dc = exp.(4 .* randn(rng, n)), exp.(4 .* randn(rng, n))
     # Covariance holds at every refinement count.
     for k in (0, 1, 4, 4n)
-        @test covdev(A -> cover(A; cgiter=k, start=:covariant), A, dr, dc) < 1e-9
-        @test covaries(A -> cover(A; cgiter=k, start=:covariant), A, dr, dc; rtol=1e-9)
-        a, b = cover(A; cgiter=k, start=:covariant)
+        @test covdev(A -> cover(A; cgiter=k, start=:unconstrained), A, dr, dc) < 1e-9
+        @test covaries(A -> cover(A; cgiter=k, start=:unconstrained), A, dr, dc; rtol=1e-9)
+        a, b = cover(A; cgiter=k, start=:unconstrained)
         @test iscover(a, b, A; rtol=8eps())
     end
     @test_throws ArgumentError cover(A; cgiter=-1)
@@ -352,7 +352,7 @@ end
     # Powers of two rescale the input exactly in binary floating point.
     d2r, d2c = exp2.(rand(rng, -10:10, n)), exp2.(rand(rng, -10:10, n))
     for k in (0, 1, 4, 4n)
-        @test covdev(A -> cover(A; cgiter=k, start=:covariant), A, d2r, d2c) < 1e-12
+        @test covdev(A -> cover(A; cgiter=k, start=:unconstrained), A, d2r, d2c) < 1e-12
     end
 
     # The dense-grid and flattened-support paths start and refine identically.
@@ -365,16 +365,16 @@ end
         B[i, i] = exp(2 * randn(rng))
     end
     for k in (0, 4, 40)
-        ad, bd = cover(B; cgiter=k, start=:covariant)
-        as, bs = cover(sparse(B); cgiter=k, start=:covariant)
+        ad, bd = cover(B; cgiter=k, start=:unconstrained)
+        as, bs = cover(sparse(B); cgiter=k, start=:unconstrained)
         @test ad .* bd' ≈ as .* bs' rtol = 1e-12
     end
     # A grid with scattered zeros exercises the same fallback on both paths.
     C = exp.(2 .* randn(rng, m, m)) .* (rand(rng, m, m) .< 0.9)
     C[7, :] .= 0.0                        # an unsupported row
     for k in (0, 4)
-        ad, bd = cover(C; cgiter=k, start=:covariant)
-        as, bs = cover(sparse(C); cgiter=k, start=:covariant)
+        ad, bd = cover(C; cgiter=k, start=:unconstrained)
+        as, bs = cover(sparse(C); cgiter=k, start=:unconstrained)
         @test ad .* bd' ≈ as .* bs' rtol = 1e-12
     end
 
@@ -383,9 +383,9 @@ end
     Fbig = exp.(2 .* randn(rng, m, m))
     P = Matrix(Bidiagonal(exp.(randn(rng, n)), exp.(randn(rng, n - 1)), :U))
     for A0 in (F, sparse(F), Fbig, P, sparse(P))
-        a0, b0 = cover(A0; cgiter=0, start=:covariant)
+        a0, b0 = cover(A0; cgiter=0, start=:unconstrained)
         for k in (4, 50)
-            a, b = cover(A0; cgiter=k, start=:covariant)
+            a, b = cover(A0; cgiter=k, start=:unconstrained)
             @test all(isfinite, a) && all(isfinite, b)
             @test a .* b' ≈ a0 .* b0' rtol = 1e-12
         end
@@ -471,7 +471,7 @@ end
 
     # The default is the covariant start for rectangular matrices and the
     # transversal start for square ones.
-    @test (A = exp.(randn(rng, 9, 7)); cover(A) == cover(A; start=:covariant))
+    @test (A = exp.(randn(rng, 9, 7)); cover(A) == cover(A; start=:unconstrained))
     for A in (trid, sparse(trid))
         @test cover(A) == cover(A; start=:transversal)
     end
@@ -489,7 +489,7 @@ end
     m = 2 * MatrixCovers.DENSE_GRID_MIN
     for A in (exp.(2 .* randn(rng, 6, 9)), exp.(2 .* randn(rng, m, m)),
               sparse(exp.(2 .* randn(rng, m, m))))
-        ac, bc = cover(A; start=:covariant)
+        ac, bc = cover(A; start=:unconstrained)
         ag, bg = cover(A; start=:geomean)
         @test ac .* bc' ≈ ag .* bg' rtol = 1e-12
     end
@@ -497,7 +497,7 @@ end
     # On an irregular support the geometric mean is not scale-covariant without
     # refinement, while the covariant start is.
     dr, dc = exp2.(rand(rng, -10:10, n)), exp2.(rand(rng, -10:10, n))
-    @test covdev(A -> cover(A; cgiter=0, start=:covariant), trid, dr, dc) < 1e-12
+    @test covdev(A -> cover(A; cgiter=0, start=:unconstrained), trid, dr, dc) < 1e-12
     @test covdev(A -> cover(A; cgiter=0, start=:geomean), trid, dr, dc) > 0.1
 
     # The dense-grid and flattened-support paths agree on a grid with zeros.
@@ -537,8 +537,18 @@ end
     @test initialize_cover(B; strategy=:hardcover, feasible=:none, start=:geomean) == (ab, bb)
 
     # Any other start is rejected before work begins.
-    @test_throws "unknown start :nope; expected one of :auto, :transversal, :covariant, :geomean" cover(B; start=:nope)
-    @test_throws "unknown start :nope; expected one of :auto, :transversal, :covariant, :geomean" cover!(abuf, bbuf, B; start=:nope)
+    @test_throws "unknown start :nope; expected one of :auto, :transversal, :unconstrained, :geomean" cover(B; start=:nope)
+    @test_throws "unknown start :nope; expected one of :auto, :transversal, :unconstrained, :geomean" cover!(abuf, bbuf, B; start=:nope)
+end
+
+@testset "deprecated :covariant start" begin
+    A = exp.(randn(StableRNG(7), 6, 4))
+    a0, b0 = cover(A; start=:unconstrained)
+    @test_deprecated "`start=:covariant` is deprecated; use `start=:unconstrained`" cover(A; start=:covariant)
+    @test (@test_deprecated cover(A; start=:covariant)) == (a0, b0)
+    ai, bi = initialize_cover(A; strategy=:unconstrained, feasible=:boost)
+    @test_deprecated "`strategy=:covariant` is deprecated; use `strategy=:unconstrained`" initialize_cover(A; strategy=:covariant, feasible=:boost)
+    @test (@test_deprecated initialize_cover(A; strategy=:covariant, feasible=:boost)) == (ai, bi)
 end
 
 @testset "cover: transversal start" begin
@@ -569,7 +579,7 @@ end
     a, b = cover(A)
     @test a .* b' ≈ ones(3, 3) rtol = 1e-12
     @test isbalanced(a, b, A)
-    a, b = cover(A; start=:covariant)
+    a, b = cover(A; start=:unconstrained)
     @test gap(a, b, A) > 1
 
     rng = StableRNG(11)
@@ -620,15 +630,15 @@ end
     av, bv = cover(Bv)
     @test av .* bv' ≈ a .* b' rtol = 1e-12
 
-    # Rectangular and structurally singular matrices fall back to `:covariant`
+    # Rectangular and structurally singular matrices fall back to `:unconstrained`
     # by default and are rejected when `:transversal` is requested.
     R = [1 2 3; 6 5 4]
-    @test cover(R) == cover(R; start=:covariant)
+    @test cover(R) == cover(R; start=:unconstrained)
     @test_throws "start=:transversal requires a square matrix" cover(R; start=:transversal)
     S = [1.0 2 0; 3 4 0; 5 6 0]
-    @test cover(S) == cover(S; start=:covariant)
+    @test cover(S) == cover(S; start=:unconstrained)
     S2 = [1.0 2 3; 0 0 4; 0 0 5]
-    @test cover(S2) == cover(S2; start=:covariant)
+    @test cover(S2) == cover(S2; start=:unconstrained)
     for X in (S, S2)
         @test_throws "requires a structurally nonsingular matrix" cover(X; start=:transversal)
     end

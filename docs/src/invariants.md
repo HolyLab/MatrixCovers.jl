@@ -42,7 +42,7 @@ For symmetric support components without a nonzero diagonal entry, use
 [`cover`](@ref) is covariant on any support: positive diagonal rescaling of
 `A` rescales the cover products identically wherever `A` is nonzero. This holds
 for both the default transversal start (square, structurally nonsingular `A`)
-and the `:covariant` start, and for any number of conjugate-gradient refinement
+and the `:unconstrained` start, and for any number of conjugate-gradient refinement
 iterations (`cgiter`):
 
 ```jldoctest covariance

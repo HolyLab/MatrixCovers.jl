@@ -113,13 +113,14 @@ entry is covered, and then applies `maxiter` improvement passes.
   transversal of the square matrix `A` (see the extended help), a heuristic
   counterpart of [`cover_transversal`](@ref). `A` must be square and structurally
   nonsingular. Defaults: `cgiter=20`, `maxiter=5`.
-- `:covariant` ensures the result is scale-covariant (typically at the cost of
-  permutation-equivariance). Defaults: `cgiter=16`, `maxiter=3`.
+- `:unconstrained` approximates the unconstrained least-squares fit of the log
+  scales and is scale-covariant (typically at the cost of
+  permutation-equivariance). `:covariant` is a deprecated alias. Defaults: `cgiter=16`, `maxiter=3`.
 - `:geomean` makes the result permutation-equivariant up to floating-point
   round-off (typically at the cost of scale-covariance). Defaults as for
-  `:covariant`.
+  `:unconstrained`.
 - `:auto` (the default) uses `:transversal` when `A` is square and
-  structurally nonsingular, and `:covariant` otherwise.
+  structurally nonsingular, and `:unconstrained` otherwise.
 
 The factors use the per-component balance convention described by
 [`cover_min`](@ref). `ϕ` is accepted for API compatibility but is ignored.
@@ -147,7 +148,7 @@ the largest product `∏ᵢ |A[i,σ(i)]|` over permutations `σ`. Equality holds
 exactly when the cover is tight on every entry of every transversal attaining
 `π*`, and these covers maximize `|det(A ./ (a .* b'))|`. A cover that leaves
 such a transversal loose can make the scaled matrix far more ill-conditioned
-than necessary. The `:transversal` start prevents this; the `:covariant` start
+than necessary. The `:transversal` start prevents this; the `:unconstrained` start
 does not.
 
 The `:transversal` start first finds a maximum-product transversal by shortest
@@ -159,17 +160,17 @@ iterations on the least-squares fit, a feasibility boost, and `maxiter`
 projected Gauss–Seidel sweeps that keep every entry covered. The transversal
 search typically dominates the cost.
 
-With `start=:covariant`, initialization and refinement approximate the
+With `start=:unconstrained`, initialization and refinement approximate the
 least-squares fit of `log(a[i]) + log(b[j])` to `log(abs(A[i, j]))` over
 nonzero entries; coverage is then restored by boosting and `maxiter`
 tightening passes. The initialization alone gives the exact least-squares fit
 when each connected component of the support is a tree or is complete
 bipartite, so complete support needs no refinement. Each refinement iteration
-makes one pass over the support. The `:covariant` and `:geomean` starts
+makes one pass over the support. The `:unconstrained` and `:geomean` starts
 coincide on complete support, where the geometric mean already solves the
 least-squares problem.
 
-With `start=:transversal` or `:covariant` the cover products are
+With `start=:transversal` or `:unconstrained` the cover products are
 scale-covariant on the support: for positive diagonal `D1`, `D2`, covering
 `D1 * A * D2` multiplies each supported product by `D1[i, i] * D2[j, j]`. This
 holds in exact arithmetic for every `cgiter` and `maxiter`. In floating point,
@@ -223,7 +224,7 @@ end
 function _cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
                  maxiter::Union{Int,Nothing}=nothing, cgiter::Union{Int,Nothing}=nothing,
                  start::Symbol=:auto, fname::Symbol=:cover)
-    _check_cover_start(start)
+    start = _normalize_cover_start(start)
     T = float(promote_type(eltype(a), eltype(b)))
     if start === :auto || start === :transversal
         if length(axes(A, 1)) == length(axes(A, 2))
@@ -237,18 +238,18 @@ function _cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
         elseif start === :transversal
             throw(ArgumentError("$fname with start=:transversal requires a square matrix, got size $(size(A))"))
         end
-        start = :covariant
+        start = :unconstrained
     end
     cgiter = something(cgiter, 16)
     maxiter = something(maxiter, 3)
     cgiter >= 0 || throw(ArgumentError("cgiter must be nonnegative, got $cgiter"))
     # The geometric-mean start propagates scales only locally.
-    hint = fname === :cover && start === :covariant ? "; `start=:geomean` may also avoid it" : ""
+    hint = fname === :cover && start === :unconstrained ? "; `start=:geomean` may also avoid it" : ""
     if _use_dense_grid(A, T)
         _cover_dense!(a, b, A, T, maxiter, cgiter, start, fname, hint)
     else
         sup = flat_support(A, T)
-        if start === :covariant
+        if start === :unconstrained
             covariant_start!(a, b, sup; fname, hint)
         else
             unconstrained_min!(AbsLog{2}(), a, b, sup)
@@ -279,11 +280,18 @@ end
 # ============================================================
 
 # The starting points `cover!` accepts.
-const COVER_STARTS = (:auto, :transversal, :covariant, :geomean)
+const COVER_STARTS = (:auto, :transversal, :unconstrained, :geomean)
 
-_check_cover_start(start::Symbol) =
-    start in COVER_STARTS ? nothing :
-        throw(ArgumentError("unknown start :$start; expected one of :auto, :transversal, :covariant, :geomean"))
+# Validate `start` and map the deprecated `:covariant` to `:unconstrained`.
+function _normalize_cover_start(start::Symbol)
+    if start === :covariant
+        Base.depwarn("`start=:covariant` is deprecated; use `start=:unconstrained`", :cover)
+        return :unconstrained
+    end
+    start in COVER_STARTS ||
+        throw(ArgumentError("unknown start :$start; expected one of :auto, :transversal, :unconstrained, :geomean"))
+    return start
+end
 
 # Matrix support flattened in traversal order as row, column, and `log|A_ij|`
 # arrays.

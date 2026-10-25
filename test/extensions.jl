@@ -255,7 +255,7 @@ end
     # No start on the menu beats the driver.
     for ϕ in (AbsLinear{1}(), AbsLinear{2}())
         a, b, _ = soft_cover(ϕ, A)
-        for strategy in (:hardcover, :covariant)
+        for strategy in (:hardcover, :unconstrained)
             sa, sb, _ = soft_cover!(ϕ, initialize_cover(A; strategy, feasible=:none)..., A)
             @test cover_objective(ϕ, a, b, A) <= cover_objective(ϕ, sa, sb, A) * (1 + 1e-6) + 1e-8
         end
@@ -344,7 +344,7 @@ end
 
         ab, bb, _ = cover_min(ϕ, Aasym)
         @test iscover(ab, bb, Aasym; rtol=1e-6)
-        for strategy in (:hardcover, :covariant)
+        for strategy in (:hardcover, :unconstrained)
             sa, sb, _ = cover_min!(ϕ, initialize_cover(Aasym; strategy)..., Aasym)
             @test cover_objective(ϕ, ab, bb, Aasym) <=
                   cover_objective(ϕ, sa, sb, Aasym) * (1 + 1e-6) + 1e-8
@@ -617,7 +617,7 @@ end
     _, ms = symcover_min(ϕ, [4.0 0.0; 0.0 9.0])
     @test ms.labels == [:hardcover, :geomean]
     a, b, ms = @inferred cover_min(AbsLinear{1}(), Aasym)
-    @test ms.labels == [:hardcover, :covariant]
+    @test ms.labels == [:hardcover, :unconstrained]
     @test ms.objectives[ms.selected] == cover_objective(AbsLinear{1}(), a, b, Aasym)
 
     # Random multistart: failed random starts are recorded and left out.

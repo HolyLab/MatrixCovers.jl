@@ -121,7 +121,7 @@ Supported ϕ values, `stats`, and the failure behavior are as for
 - `AbsLog{1}()`: requires JuMP and HiGHS.
 - `AbsLinear{1}()` and `AbsLinear{2}()`: require JuMP and Ipopt and return the
   best local minimum found from `strategies`, a collection of
-  [`initialize_cover`](@ref) strategy names (default `(:hardcover, :covariant)`).
+  [`initialize_cover`](@ref) strategy names (default `(:hardcover, :unconstrained)`).
 
 The `AbsLog` objectives are convex in the logarithms of the scales, so their
 local minima are global. When the `AbsLog{1}` minimum is not unique, the method
@@ -2178,7 +2178,7 @@ function _cover_min_abslog2(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::In
     use_grid = use_woodbury && !tt
     # Start the LSQR iteration from the heuristic cover.
     if start === nothing && use_lsqr && maxouter > 0 && !tt
-        start = _cover!(similar(Array{T}, axr), similar(Array{T}, axc), A; start=:covariant, fname=:cover_min)
+        start = _cover!(similar(Array{T}, axr), similar(Array{T}, axc), A; start=:unconstrained, fname=:cover_min)
     end
     x0 = nothing
     # Woodbury uses a grid and the transversal-tight Woodbury solve a difference

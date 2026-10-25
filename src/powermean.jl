@@ -81,7 +81,7 @@ end
 # minimizer then has `a[i]*b[j] == a[j]*b[i]` on the support, and the balance
 # convention selects `b == a`. The test is exact, since a nearly symmetric matrix
 # has a genuinely asymmetric minimizer.
-# The `:covariant` start makes a truncated iteration scale-covariant as well.
+# The `:unconstrained` start makes a truncated iteration scale-covariant as well.
 function _soft_cover_powermean(ϕ::PowerMean, A::AbstractMatrix, fname::Symbol; kwargs...)
     if _abs_symmetric_exact(A)
         a, stats = _soft_symcover_powermean(ϕ, A, fname; kwargs...)

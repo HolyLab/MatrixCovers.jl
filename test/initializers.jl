@@ -8,7 +8,7 @@
     colsupport(A) = [any(!iszero, view(A, :, j)) for j in axes(A, 2)]
 
     SYM_STRATEGIES = (:hardcover, :geomean, :leaveout, :diagfeasible)
-    ASYM_STRATEGIES = (:hardcover, :geomean, :covariant)
+    ASYM_STRATEGIES = (:hardcover, :geomean, :unconstrained)
 
     # Every strategy must be available on each of these: :leaveout needs a support entry it can
     # drop without emptying a row, so every supported row carries at least two.
@@ -67,7 +67,7 @@
 
         # Without CG, cover boosts the covariant start and then tightens it.
         for B in Aasyms
-            ag, bg = initialize_cover(B; strategy=:covariant, feasible=:boost)
+            ag, bg = initialize_cover(B; strategy=:unconstrained, feasible=:boost)
             a0, b0 = cover(B; maxiter=0, cgiter=0)
             @test ag * bg' ≈ a0 * b0'
             at, bt = MatrixCovers.tighten_cover!(copy(ag), copy(bg), B)
@@ -124,7 +124,7 @@
         @test iscover(a, P)
     end
 
-    @testset ":covariant is a scale-covariant start" begin
+    @testset ":unconstrained is a scale-covariant start" begin
         # Powers of two rescale the input exactly in binary floating point.
         crng = StableRNG(1234)
         n = 10
@@ -132,8 +132,8 @@
         Airr[4, :] .= 0.0                     # an unsupported row
         d1 = exp2.(rand(crng, -10:10, n))
         d2 = exp2.(rand(crng, -10:10, n))
-        a, b = initialize_cover(Airr; strategy=:covariant, feasible=:none)
-        aB, bB = initialize_cover(d1 .* Airr .* d2'; strategy=:covariant, feasible=:none)
+        a, b = initialize_cover(Airr; strategy=:unconstrained, feasible=:none)
+        aB, bB = initialize_cover(d1 .* Airr .* d2'; strategy=:unconstrained, feasible=:none)
         MatrixCovers.foreach_support(Airr) do i, j, v
             @test aB[i] * bB[j] ≈ d1[i] * a[i] * d2[j] * b[j] rtol = 1e-12
         end
@@ -141,7 +141,7 @@
         # Complete support agrees with :geomean to the accuracy of _fastlog.
         Afull = exp.(3 .* randn(crng, 6, 9))
         ag, bg = initialize_cover(Afull; strategy=:geomean, feasible=:none)
-        ac, bc = initialize_cover(Afull; strategy=:covariant, feasible=:none)
+        ac, bc = initialize_cover(Afull; strategy=:unconstrained, feasible=:none)
         @test ac .* bc' ≈ ag .* bg' rtol = 1e-9
     end
 
@@ -209,7 +209,7 @@
         # A strategy with no tunables of its own rejects keywords rather than dropping them.
         @test_throws "strategy=:geomean accepts no further keyword arguments" initialize_symcover(A; strategy=:geomean, maxiter=3)
         @test_throws "strategy=:geomean accepts no further keyword arguments" initialize_cover(B; strategy=:geomean, maxiter=3)
-        @test_throws "strategy=:covariant accepts no further keyword arguments" initialize_cover(B; strategy=:covariant, maxiter=3)
+        @test_throws "strategy=:unconstrained accepts no further keyword arguments" initialize_cover(B; strategy=:unconstrained, maxiter=3)
         # :leaveout needs an entry it can drop without emptying a row.
         @test_throws "requires a support entry that can be dropped" initialize_symcover([1.0 0.0; 0.0 1.0]; strategy=:leaveout)
         @test_throws "initialize_symcover requires a square matrix" initialize_symcover(B)
