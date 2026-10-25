@@ -1300,10 +1300,14 @@ const LSQR_FILL_BUDGET = 1 << 30
 # LSQR iterations of spanning-forest preconditioning.
 const LSQR_FLOP_BUDGET = 8.0e3
 
-# The Newton steps of the multiplier iteration need only inexact solves: each
-# stage runs LSQR with tolerance `LSQR_FORCING` times the KKT residual of the previous
-# update, capped at `LSQR_ATOL_MAX` and floored at the full-accuracy tolerance
-# `_lsqr_atol`.
+# The Newton steps of the multiplier iteration need only inexact solves while
+# the active pattern is still changing. A stage starts LSQR at tolerance
+# `LSQR_FORCING` times the KKT residual of the previous update, capped at
+# `LSQR_ATOL_MAX` and floored at the full-accuracy tolerance `_lsqr_atol`. Once
+# a full step leaves the pattern unchanged, the only remaining error is the
+# solve's, so the stage finishes at full accuracy; a fixed inexact tolerance
+# would instead dither at its noise floor. A stage is accepted as the solution
+# only if its last solve ran at full accuracy.
 const LSQR_ATOL_MAX = 1e-6
 const LSQR_FORCING = 1e-3
 
@@ -1852,6 +1856,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     nzeroing = 0     # direct zeroings of slack multipliers since `vbest` was set
     nzeroed = 0
     nslow = 0        # consecutive slow updates at the penalty cap
+    inexact() = use_lsqr && lsqratol[] > _lsqr_atol(T)
     for _ in 1:maxouter
         lsqratol[] = clamp(T(LSQR_FORCING) * vprev, _lsqr_atol(T), T(LSQR_ATOL_MAX))
         sscale = inv(2 * κcur)
@@ -1879,6 +1884,8 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
             x = xt
             drop = (fcur - fnew) / max(fcur, one(T))
             # For exact inner solves, an unchanged active set ends the descent.
+            # LSQR solves instead repeat until the objective stops decreasing,
+            # which refines the solution of the piece that holds.
             if !use_lsqr && stable
                 exit = :stable
                 break
@@ -1888,13 +1895,18 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                 break
             end
             fcur = fnew
+            stable && (lsqratol[] = _lsqr_atol(T))
         end
         push!(exits, exit)
         push!(drops, drop)
         push!(κtrace, κcur)
         v, κdrain = _update_multipliers!(λ, x, κcur, zdrain, supp, symmetric)
         push!(viols, v)
-        if v <= vtol
+        # Only a stage minimized at full accuracy can be the solution: the KKT
+        # residual measures constraint violation, not how well the stage
+        # objective was minimized. An inexact stage that meets the test is
+        # followed by a stage at the floor tolerance, which `v <= vtol` selects.
+        if v <= vtol && !inexact()
             converged = true
             break
         end
