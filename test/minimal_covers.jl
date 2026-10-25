@@ -756,7 +756,7 @@ end
     @test collect(ao) == a && collect(bo) == b
 end
 
-@testset "no-ϕ convenience methods for the *_min family" begin
+@testset "no-ρ convenience methods for the *_min family" begin
     # symcover_min(A) and cover_min(A) default to AbsLog{2}, matching
     # symcover(A)/cover(A). Solved natively, so no extension is needed.
     A = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
@@ -770,7 +770,7 @@ end
     Aasym = [4.0 1.0 0.0; 1.0 9.0 2.0]
 
     # AbsLog{2} has a unique minimizer, so refining any valid start reproduces the
-    # cold solve exactly, and the no-ϕ form selects the same penalty.
+    # cold solve exactly, and the no-ρ form selects the same penalty.
     a = initialize_symcover(A)
     @test first(symcover_min!(AbsLog{2}(), copy(a), A)) ≈ first(symcover_min(AbsLog{2}(), A))
     @test first(symcover_min!(copy(a), A)) == first(symcover_min!(AbsLog{2}(), copy(a), A))

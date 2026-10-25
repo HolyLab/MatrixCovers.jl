@@ -109,8 +109,8 @@
         @test eltype(b) === Float32
         @test iscover(a, b, A; rtol=1e-6)
 
-        for ϕ in (AbsLog{1}(), AbsLinear{1}(), AbsLinear{2}())
-            x, y, _ = soft_cover!(ϕ, copy(a0), copy(b0), A)
+        for ρ in (AbsLog{1}(), AbsLinear{1}(), AbsLinear{2}())
+            x, y, _ = soft_cover!(ρ, copy(a0), copy(b0), A)
             @test eltype(x) === Float64
             @test eltype(y) === Float32
             @test all(isfinite, x) && all(isfinite, y)

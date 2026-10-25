@@ -174,18 +174,18 @@
             a, b = f(A)
             @test unit.(a) == unit.(b) == UA
         end
-        for ϕ in PENALTIES
-            @test unit.(symcover(ϕ, A)) == UA
-            @test unit.(first(soft_symcover(ϕ, A))) == UA
-            @test unit.(first(symcover_min(ϕ, A))) == UA
-            @test all(unit.(v) == UA for v in cover(ϕ, A))
-            @test all(unit.(v) == UA for v in soft_cover(ϕ, A)[1:2])
-            @test all(unit.(v) == UA for v in cover_min(ϕ, A)[1:2])
+        for ρ in PENALTIES
+            @test unit.(symcover(ρ, A)) == UA
+            @test unit.(first(soft_symcover(ρ, A))) == UA
+            @test unit.(first(symcover_min(ρ, A))) == UA
+            @test all(unit.(v) == UA for v in cover(ρ, A))
+            @test all(unit.(v) == UA for v in soft_cover(ρ, A)[1:2])
+            @test all(unit.(v) == UA for v in cover_min(ρ, A)[1:2])
         end
-        for ϕ in (PowerMean{1}(), PowerMean{2}())
-            @test unit.(scales(soft_symcover(ϕ, A))) == UA
-            @test all(unit.(v) == UA for v in scales(soft_cover(ϕ, A)))
-            @test all(unit.(v) == UA for v in scales(cover_transversal(ϕ, A)))
+        for ρ in (PowerMean{1}(), PowerMean{2}())
+            @test unit.(scales(soft_symcover(ρ, A))) == UA
+            @test all(unit.(v) == UA for v in scales(soft_cover(ρ, A)))
+            @test all(unit.(v) == UA for v in scales(cover_transversal(ρ, A)))
         end
     end
 
@@ -200,7 +200,7 @@
         @test cover!(a, b, A) == (a, b)
         @test unit.(a) == unit.(b) == UA
 
-        # The heuristics ignore `ϕ`, so the forms that take one agree with those
+        # The heuristics ignore `ρ`, so the forms that take one agree with those
         # that do not.
         a = Vector{Quantity{Float64}}(undef, 3)
         @test symcover!(AbsLog{2}(), a, A) === a
@@ -230,7 +230,7 @@
         @test scales(cover_min!(AbsLog{2}(), a, b, A)) == (a, b)
         @test unit.(a) == unit.(b) == UA
 
-        # The no-ϕ forms of the `*_min` family default their penalty, and carry
+        # The no-ρ forms of the `*_min` family default their penalty, and carry
         # the units the same way.
         a = initialize_symcover(A)
         @test first(symcover_min!(a, A)) === a
@@ -333,31 +333,31 @@
         # `unit(A[i,j]) == unit(a[i])*unit(b[j])` makes every ratio the objective
         # forms dimensionless, so the score is a plain number and is identical to
         # the score of the unit-stripped problem.
-        ϕs = (AbsLog{1}(), AbsLog{2}(), AbsLinear{1}(), AbsLinear{2}())
+        ρs = (AbsLog{1}(), AbsLog{2}(), AbsLinear{1}(), AbsLinear{2}())
 
         a = symcover(A)
-        for ϕ in ϕs
-            s = cover_objective(ϕ, a, A)
+        for ρ in ρs
+            s = cover_objective(ρ, a, A)
             @test s isa Float64
-            @test s == cover_objective(ϕ, ustrip.(a), ustrip.(A))
+            @test s == cover_objective(ρ, ustrip.(a), ustrip.(A))
         end
 
         # Heterogeneous units across coordinates, not just a single uniform unit.
         H = Quantity[4.0u"m^-2"        1.0u"m^-1*mm^-1";
                      1.0u"m^-1*mm^-1" 4.0u"mm^-2"]
         h = symcover(H)
-        for ϕ in ϕs
-            @test cover_objective(ϕ, h, H) == cover_objective(ϕ, ustrip.(h), ustrip.(H))
+        for ρ in ρs
+            @test cover_objective(ρ, h, H) == cover_objective(ρ, ustrip.(h), ustrip.(H))
         end
 
         # The asymmetric form, whose row and column scales carry different units.
         ru, cu = (u"m", u"s"), (u"kg", u"K", u"m/s")
         B = [1.0 / (r * c) for r in ru, c in cu] .* [1e3 1e-2 5.0; 2.0 1e4 1e-1]
         ab, bb = cover(B)
-        for ϕ in ϕs
-            s = cover_objective(ϕ, ab, bb, B)
+        for ρ in ρs
+            s = cover_objective(ρ, ab, bb, B)
             @test s isa Float64
-            @test s == cover_objective(ϕ, ustrip.(ab), ustrip.(bb), ustrip.(B))
+            @test s == cover_objective(ρ, ustrip.(ab), ustrip.(bb), ustrip.(B))
         end
 
         # Scale invariance: renaming the units cannot change a dimensionless score.
@@ -365,8 +365,8 @@
         # absolute tolerance is meaningful here.
         U2 = (u"mm", u"km/hr", u"kN")
         A2 = [uconvert(unit(1 / (u * v)), A[i, j]) for (i, u) in enumerate(U2), (j, v) in enumerate(U2)]
-        for ϕ in ϕs
-            @test cover_objective(ϕ, symcover(A2), A2) ≈ cover_objective(ϕ, a, A) atol = 1e-12
+        for ρ in ρs
+            @test cover_objective(ρ, symcover(A2), A2) ≈ cover_objective(ρ, a, A) atol = 1e-12
         end
     end
 

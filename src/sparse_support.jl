@@ -150,25 +150,25 @@ end
 # Otherwise they are the generic methods, which check the other keywords.
 const _SparseSym = Union{SparseMatrixCSC,Symmetric{<:Any,<:SparseMatrixCSC},Hermitian{<:Any,<:SparseMatrixCSC}}
 
-symcover_min(ϕ::AbsLog{2}, S::_SparseSym; linsolve::Symbol=:lsqr, kwargs...) =
-    invoke(symcover_min, Tuple{AbsLog{2},AbstractMatrix}, ϕ, S; linsolve, kwargs...)
+symcover_min(ρ::AbsLog{2}, S::_SparseSym; linsolve::Symbol=:lsqr, kwargs...) =
+    invoke(symcover_min, Tuple{AbsLog{2},AbstractMatrix}, ρ, S; linsolve, kwargs...)
 
-cover_min(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...) =
-    invoke(cover_min, Tuple{AbsLog{2},AbstractMatrix}, ϕ, A; linsolve, kwargs...)
+cover_min(ρ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...) =
+    invoke(cover_min, Tuple{AbsLog{2},AbstractMatrix}, ρ, A; linsolve, kwargs...)
 
 cover_transversal(A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...) =
     invoke(cover_transversal, Tuple{AbstractMatrix}, A; linsolve, kwargs...)
 
-symcover_min!(ϕ::AbsLog{2}, a::AbstractVector, S::_SparseSym; linsolve::Symbol=:lsqr, kwargs...) =
-    invoke(symcover_min!, Tuple{AbsLog{2},AbstractVector,AbstractMatrix}, ϕ, a, S; linsolve, kwargs...)
+symcover_min!(ρ::AbsLog{2}, a::AbstractVector, S::_SparseSym; linsolve::Symbol=:lsqr, kwargs...) =
+    invoke(symcover_min!, Tuple{AbsLog{2},AbstractVector,AbstractMatrix}, ρ, a, S; linsolve, kwargs...)
 
-cover_min!(ϕ::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::SparseMatrixCSC;
+cover_min!(ρ::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::SparseMatrixCSC;
            linsolve::Symbol=:lsqr, kwargs...) =
-    invoke(cover_min!, Tuple{AbsLog{2},AbstractVector,AbstractVector,AbstractMatrix}, ϕ, a, b, A;
+    invoke(cover_min!, Tuple{AbsLog{2},AbstractVector,AbstractVector,AbstractMatrix}, ρ, a, b, A;
            linsolve, kwargs...)
 
-soft_symcover(ϕ::AbsLog{2}, S::_SparseSym; linsolve::Symbol=:lsqr, kwargs...) =
-    invoke(soft_symcover, Tuple{AbsLog{2},AbstractMatrix}, ϕ, S; linsolve, kwargs...)
+soft_symcover(ρ::AbsLog{2}, S::_SparseSym; linsolve::Symbol=:lsqr, kwargs...) =
+    invoke(soft_symcover, Tuple{AbsLog{2},AbstractMatrix}, ρ, S; linsolve, kwargs...)
 
-soft_cover(ϕ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...) =
-    invoke(soft_cover, Tuple{AbsLog{2},AbstractMatrix}, ϕ, A; linsolve, kwargs...)
+soft_cover(ρ::AbsLog{2}, A::SparseMatrixCSC; linsolve::Symbol=:lsqr, kwargs...) =
+    invoke(soft_cover, Tuple{AbsLog{2},AbstractMatrix}, ρ, A; linsolve, kwargs...)

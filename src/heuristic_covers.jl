@@ -6,12 +6,12 @@
 # ============================================================
 
 """
-    a = symcover(ϕ, A; maxiter=3)
+    a = symcover(ρ, A; maxiter=3)
     a = symcover(A; maxiter=3)
 
 Return a vector `a` whose outer product `a*a'` is a hard cover of the square,
 symmetric matrix `A`: `a[i] * a[j] >= abs(A[i, j])` for all `i`, `j`. This is a
-fast heuristic; for the cover that minimizes a penalty `ϕ`, use
+fast heuristic; for the cover that minimizes a penalty `ρ`, use
 [`symcover_min`](@ref).
 
 The heuristic starts from the per-row geometric means of the diagonally
@@ -19,7 +19,7 @@ normalized entries `abs(A[i, j]) / sqrt(abs(A[i, i] * A[j, j]))`, rescaled by
 `sqrt(abs(A[i, i]))`. It then raises the scales until every entry is covered
 and applies `maxiter` tightening iterations.
 
-`ϕ` is accepted for API compatibility but is ignored.
+`ρ` is accepted for API compatibility but is ignored.
 
 See also: [`symcover!`](@ref), [`symcover_min`](@ref), [`soft_symcover`](@ref), [`cover`](@ref).
 
@@ -51,7 +51,7 @@ logarithms of the entries.
 The result is also permutation-equivariant up to floating-point round-off:
 covering `A[p, p]` for a permutation `p` gives `a[p]`.
 """
-symcover(ϕ::AbstractCoverPenalty, A::AbstractMatrix; kwargs...) = symcover(A; kwargs...)
+symcover(ρ::AbstractCoverPenalty, A::AbstractMatrix; kwargs...) = symcover(A; kwargs...)
 
 function symcover(A::AbstractMatrix; kwargs...)
     axes(A, 2) == axes(A, 1) || throw(ArgumentError("symcover requires a square matrix"))
@@ -61,17 +61,17 @@ function symcover(A::AbstractMatrix; kwargs...)
 end
 
 """
-    a = symcover!(ϕ, a, A; maxiter=3)
+    a = symcover!(ρ, a, A; maxiter=3)
     a = symcover!(a, A; maxiter=3)
 
 Mutating counterpart of [`symcover`](@ref): writes the symmetric hard cover
 into `a` and returns it, rather than allocating a new vector. `eachindex(a)`
-must match `axes(A, 1)` (and `A` must be square). `ϕ` has the same meaning as in
+must match `axes(A, 1)` (and `A` must be square). `ρ` has the same meaning as in
 [`symcover`](@ref), and is likewise ignored by the current heuristic covers.
 
 See also: [`symcover`](@ref).
 """
-symcover!(ϕ::AbstractCoverPenalty, a::AbstractVector, A::AbstractMatrix; kwargs...) = symcover!(a, A; kwargs...)
+symcover!(ρ::AbstractCoverPenalty, a::AbstractVector, A::AbstractMatrix; kwargs...) = symcover!(a, A; kwargs...)
 
 function symcover!(a::AbstractVector, A::AbstractMatrix; kwargs...)
     ax = axes(A, 1)
@@ -96,12 +96,12 @@ function _symcover!(a::AbstractVector, A::AbstractMatrix; maxiter::Int=3)
 end
 
 """
-    a, b = cover(ϕ, A; maxiter, cgiter, start=:auto)
+    a, b = cover(ρ, A; maxiter, cgiter, start=:auto)
     a, b = cover(A; maxiter, cgiter, start=:auto)
 
 Given a matrix `A`, return vectors `a` and `b` such that `a[i] * b[j] >=
 abs(A[i, j])` for all `i`, `j`. This is a fast heuristic; for the cover that
-minimizes a penalty `ϕ`, use [`cover_min`](@ref).
+minimizes a penalty `ρ`, use [`cover_min`](@ref).
 
 The heuristic refines a starting point with up to `cgiter` conjugate-gradient
 iterations (`cgiter=0` disables refinement), raises the scales until every
@@ -123,7 +123,7 @@ entry is covered, and then applies `maxiter` improvement passes.
   structurally nonsingular, and `:unconstrained` otherwise.
 
 The factors use the per-component balance convention described by
-[`cover_min`](@ref). `ϕ` is accepted for API compatibility but is ignored.
+[`cover_min`](@ref). `ρ` is accepted for API compatibility but is ignored.
 
 See also: [`cover!`](@ref), [`cover_transversal`](@ref), [`cover_min`](@ref), [`symcover`](@ref).
 
@@ -181,7 +181,7 @@ which stop earlier once the residual is at roundoff.
 With `start=:geomean` the cover is permutation-equivariant up to floating-point
 round-off: covering `A[p, q]` for permutations `p`, `q` gives `a[p]` and `b[q]`.
 """
-cover(ϕ::AbstractCoverPenalty, A::AbstractMatrix; kwargs...) = cover(A; kwargs...)
+cover(ρ::AbstractCoverPenalty, A::AbstractMatrix; kwargs...) = cover(A; kwargs...)
 
 function cover(A::AbstractMatrix; kwargs...)
     T = float(real(eltype(A)))
@@ -201,18 +201,18 @@ function cover(A::Transpose; kwargs...)
 end
 
 """
-    a, b = cover!(ϕ, a, b, A; maxiter, cgiter, start=:auto)
+    a, b = cover!(ρ, a, b, A; maxiter, cgiter, start=:auto)
     a, b = cover!(a, b, A; maxiter, cgiter, start=:auto)
 
 Mutating counterpart of [`cover`](@ref): writes the hard cover into `a` and
 `b` and returns them, rather than allocating new vectors. `eachindex(a)` must
-match `axes(A, 1)` and `eachindex(b)` must match `axes(A, 2)`. `ϕ` has the same
+match `axes(A, 1)` and `eachindex(b)` must match `axes(A, 2)`. `ρ` has the same
 meaning as in [`cover`](@ref), and is likewise ignored by the current heuristic
 covers.
 
 See also: [`cover`](@ref).
 """
-cover!(ϕ::AbstractCoverPenalty, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
+cover!(ρ::AbstractCoverPenalty, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
     cover!(a, b, A; kwargs...)
 
 function cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
@@ -530,7 +530,7 @@ end
 
 function unconstrained_min!(::AbsLog{2}, a::AbstractVector{T}, A::AbstractMatrix) where T
     ax = eachindex(a)
-    axes(A) == (ax, ax) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(string(axes(A))), axes(a)=$(string(axes(a)))"))
+    axes(A) == (ax, ax) || throw(DimensionMismatch("`unconstrained_min!(ρ, a, A)` requires a square matrix with matching axes to `a` (got axes(A)=$(string(axes(A))), axes(a)=$(string(axes(a)))"))
     foreach_entries(f) = foreach_support_sym((i, j, v) -> f(i, j, log(T(v))), A)
     return _sym_unconstrained!(a, foreach_entries)
 end
@@ -549,8 +549,8 @@ end
 
 function unconstrained_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
     T = float(promote_type(eltype(a), eltype(b)))
-    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, b, A)` requires row indices of `A` to match `a`, got axes(A, 1)=$(string(axes(A, 1))), axes(a)=$(string(axes(a)))"))
-    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("`unconstrained_min!(ϕ, a, b, A)` requires column indices of `A` to match `b`, got axes(A, 2)=$(string(axes(A, 2))), axes(b)=$(string(axes(b)))"))
+    axes(A, 1) == eachindex(a) || throw(DimensionMismatch("`unconstrained_min!(ρ, a, b, A)` requires row indices of `A` to match `a`, got axes(A, 1)=$(string(axes(A, 1))), axes(a)=$(string(axes(a)))"))
+    axes(A, 2) == eachindex(b) || throw(DimensionMismatch("`unconstrained_min!(ρ, a, b, A)` requires column indices of `A` to match `b`, got axes(A, 2)=$(string(axes(A, 2))), axes(b)=$(string(axes(b)))"))
     loga = fill!(similar(a, T), zero(T))
     logb = fill!(similar(b, T), zero(T))
     nza  = zeros(Int, axes(A, 1))

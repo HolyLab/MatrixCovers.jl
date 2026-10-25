@@ -49,28 +49,28 @@ _powermean_type(Ts::Type...) = float(promote_type(Ts..., Float64))
 # Public methods
 # ============================================================
 
-function soft_cover(ϕ::PowerMean, A::AbstractMatrix; tol::Union{Real,Nothing}=nothing,
+function soft_cover(ρ::PowerMean, A::AbstractMatrix; tol::Union{Real,Nothing}=nothing,
                     maxiter::Integer=POWERMEAN_MAXITER, newton::Bool=true,
                     maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto)
-    return _soft_cover_powermean(ϕ, A, :soft_cover; tol, maxiter, newton, maxnewton, linsolve)
+    return _soft_cover_powermean(ρ, A, :soft_cover; tol, maxiter, newton, maxnewton, linsolve)
 end
 
-function soft_cover!(ϕ::PowerMean, a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
+function soft_cover!(ρ::PowerMean, a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
                      tol::Union{Real,Nothing}=nothing, maxiter::Integer=POWERMEAN_MAXITER,
                      newton::Bool=true, maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto)
-    return _soft_cover_powermean!(ϕ, a, b, A, :soft_cover!; tol, maxiter, newton, maxnewton, linsolve)
+    return _soft_cover_powermean!(ρ, a, b, A, :soft_cover!; tol, maxiter, newton, maxnewton, linsolve)
 end
 
-function soft_symcover(ϕ::PowerMean, A::AbstractMatrix; tol::Union{Real,Nothing}=nothing,
+function soft_symcover(ρ::PowerMean, A::AbstractMatrix; tol::Union{Real,Nothing}=nothing,
                        maxiter::Integer=POWERMEAN_MAXITER, newton::Bool=true,
                        maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto)
-    return _soft_symcover_powermean(ϕ, A, :soft_symcover; tol, maxiter, newton, maxnewton, linsolve)
+    return _soft_symcover_powermean(ρ, A, :soft_symcover; tol, maxiter, newton, maxnewton, linsolve)
 end
 
-function soft_symcover!(ϕ::PowerMean, a::AbstractVector, A::AbstractMatrix;
+function soft_symcover!(ρ::PowerMean, a::AbstractVector, A::AbstractMatrix;
                         tol::Union{Real,Nothing}=nothing, maxiter::Integer=POWERMEAN_MAXITER,
                         newton::Bool=true, maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto)
-    return _soft_symcover_powermean!(ϕ, a, A, :soft_symcover!; tol, maxiter, newton, maxnewton, linsolve)
+    return _soft_symcover_powermean!(ρ, a, A, :soft_symcover!; tol, maxiter, newton, maxnewton, linsolve)
 end
 
 # ============================================================
@@ -82,9 +82,9 @@ end
 # convention selects `b == a`. The test is exact, since a nearly symmetric matrix
 # has a genuinely asymmetric minimizer.
 # The `:unconstrained` start makes a truncated iteration scale-covariant as well.
-function _soft_cover_powermean(ϕ::PowerMean, A::AbstractMatrix, fname::Symbol; kwargs...)
+function _soft_cover_powermean(ρ::PowerMean, A::AbstractMatrix, fname::Symbol; kwargs...)
     if _abs_symmetric_exact(A)
-        a, stats = _soft_symcover_powermean(ϕ, A, fname; kwargs...)
+        a, stats = _soft_symcover_powermean(ρ, A, fname; kwargs...)
         return a, copy(a), stats
     end
     T = float(real(eltype(A)))
@@ -92,7 +92,7 @@ function _soft_cover_powermean(ϕ::PowerMean, A::AbstractMatrix, fname::Symbol; 
     b = similar(Array{T}, axes(A, 2))
     covariant_start!(a, b, flat_support(A, T); fname)
     _balance_cover!(a, b, A)
-    return _soft_cover_powermean!(ϕ, a, b, A, fname; kwargs...)
+    return _soft_cover_powermean!(ρ, a, b, A, fname; kwargs...)
 end
 
 function _soft_cover_powermean!(::PowerMean{p}, a::AbstractVector, b::AbstractVector,
@@ -117,13 +117,13 @@ function _soft_cover_powermean!(::PowerMean{p}, a::AbstractVector, b::AbstractVe
     return a, b, PowerMeanStats{T}(stats)
 end
 
-function _soft_symcover_powermean(ϕ::PowerMean, A::AbstractMatrix, fname::Symbol; kwargs...)
+function _soft_symcover_powermean(ρ::PowerMean, A::AbstractMatrix, fname::Symbol; kwargs...)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("$fname requires a square matrix"))
     # Symmetry is checked by `_soft_symcover_powermean!`; the start is only read there.
     a = similar(Array{float(real(eltype(A)))}, ax)
     _initialize_symcover!(a, A, :geomean, :none)
-    return _soft_symcover_powermean!(ϕ, a, A, fname; kwargs...)
+    return _soft_symcover_powermean!(ρ, a, A, fname; kwargs...)
 end
 
 function _soft_symcover_powermean!(::PowerMean{p}, a::AbstractVector, A::AbstractMatrix, fname::Symbol;

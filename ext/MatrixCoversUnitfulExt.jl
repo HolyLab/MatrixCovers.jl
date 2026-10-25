@@ -197,47 +197,47 @@ symsplit(x::AbstractVector) = (x, ())
 symsplit(r::Tuple) = (first(r), Base.tail(r))
 asymsplit(r::Tuple) = (r[1], r[2], Base.tail(Base.tail(r)))
 
-function sym(f, A::QMatrix, ϕ...; kwargs...)
-    a, rest = symsplit(f(ϕ..., strip_matrix(A); kwargs...))
+function sym(f, A::QMatrix, ρ...; kwargs...)
+    a, rest = symsplit(f(ρ..., strip_matrix(A); kwargs...))
     return isempty(rest) ? reattach(a, factor_units_sym(A)) : (reattach(a, factor_units_sym(A)), rest...)
 end
 
-function asym(f, A::QMatrix, ϕ...; kwargs...)
+function asym(f, A::QMatrix, ρ...; kwargs...)
     ua, ub = factor_units(A)
-    a, b, rest = asymsplit(f(ϕ..., strip_matrix(A); kwargs...))
+    a, b, rest = asymsplit(f(ρ..., strip_matrix(A); kwargs...))
     return (reattach(a, ua), reattach(b, ub), rest...)
 end
 
 # Allocating scratch from `A` permits uninitialized destination vectors.
-function sym!(f, a::QVector, A::QMatrix, ϕ...; kwargs...)
+function sym!(f, a::QVector, A::QMatrix, ρ...; kwargs...)
     ua = factor_units_sym(A)
     An = strip_matrix(A)
-    x, rest = symsplit(f(ϕ..., similar(a, float(real(eltype(An)))), An; kwargs...))
+    x, rest = symsplit(f(ρ..., similar(a, float(real(eltype(An)))), An; kwargs...))
     a .= reattach(x, ua)
     return isempty(rest) ? a : (a, rest...)
 end
 
-function asym!(f, a::QVector, b::QVector, A::QMatrix, ϕ...; kwargs...)
+function asym!(f, a::QVector, b::QVector, A::QMatrix, ρ...; kwargs...)
     ua, ub = factor_units(A)
     An = strip_matrix(A)
     T = float(real(eltype(An)))
-    x, y, rest = asymsplit(f(ϕ..., similar(a, T), similar(b, T), An; kwargs...))
+    x, y, rest = asymsplit(f(ρ..., similar(a, T), similar(b, T), An; kwargs...))
     a .= reattach(x, ua)
     b .= reattach(y, ub)
     return (a, b, rest...)
 end
 
 # `a` is a start, and is read.
-function symstart!(f, a::QVector, A::QMatrix, ϕ...; kwargs...)
+function symstart!(f, a::QVector, A::QMatrix, ρ...; kwargs...)
     ua = factor_units_sym(A)
-    x, rest = symsplit(f(ϕ..., strip_start(a, ua), strip_matrix(A); kwargs...))
+    x, rest = symsplit(f(ρ..., strip_start(a, ua), strip_matrix(A); kwargs...))
     a .= reattach(x, ua)
     return isempty(rest) ? a : (a, rest...)
 end
 
-function asymstart!(f, a::QVector, b::QVector, A::QMatrix, ϕ...; kwargs...)
+function asymstart!(f, a::QVector, b::QVector, A::QMatrix, ρ...; kwargs...)
     ua, ub = factor_units(A)
-    x, y, rest = asymsplit(f(ϕ..., strip_start(a, ua), strip_start(b, ub), strip_matrix(A); kwargs...))
+    x, y, rest = asymsplit(f(ρ..., strip_start(a, ua), strip_start(b, ub), strip_matrix(A); kwargs...))
     a .= reattach(x, ua)
     b .= reattach(y, ub)
     return (a, b, rest...)
@@ -246,16 +246,16 @@ end
 # Mirror the core penalty dispatch while specializing on unitful matrices.
 const PENALTIES = (:(AbsLog{1}), :(AbsLog{2}), :(AbsLinear{1}), :(AbsLinear{2}))
 
-# Heuristic covers and initializers: `ϕ` is checked but not consulted.
+# Heuristic covers and initializers: `ρ` is checked but not consulted.
 MC.symcover(A::QMatrix; kwargs...) = sym(MC.symcover, A; kwargs...)
-MC.symcover(ϕ::MC.AbstractCoverPenalty, A::QMatrix; kwargs...) = sym(MC.symcover, A, ϕ; kwargs...)
+MC.symcover(ρ::MC.AbstractCoverPenalty, A::QMatrix; kwargs...) = sym(MC.symcover, A, ρ; kwargs...)
 MC.symcover!(a::QVector, A::QMatrix; kwargs...) = sym!(MC.symcover!, a, A; kwargs...)
-MC.symcover!(ϕ::MC.AbstractCoverPenalty, a::QVector, A::QMatrix; kwargs...) = sym!(MC.symcover!, a, A, ϕ; kwargs...)
+MC.symcover!(ρ::MC.AbstractCoverPenalty, a::QVector, A::QMatrix; kwargs...) = sym!(MC.symcover!, a, A, ρ; kwargs...)
 
 MC.cover(A::QMatrix; kwargs...) = asym(MC.cover, A; kwargs...)
-MC.cover(ϕ::MC.AbstractCoverPenalty, A::QMatrix; kwargs...) = asym(MC.cover, A, ϕ; kwargs...)
+MC.cover(ρ::MC.AbstractCoverPenalty, A::QMatrix; kwargs...) = asym(MC.cover, A, ρ; kwargs...)
 MC.cover!(a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover!, a, b, A; kwargs...)
-MC.cover!(ϕ::MC.AbstractCoverPenalty, a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover!, a, b, A, ϕ; kwargs...)
+MC.cover!(ρ::MC.AbstractCoverPenalty, a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover!, a, b, A, ρ; kwargs...)
 
 # Core `cover`/`cover!` methods dispatch on `Adjoint`/`Transpose` without an eltype
 # bound, so a wrapped `Quantity` matrix needs these to stay unambiguous.
@@ -289,46 +289,46 @@ const QSparseSym = Union{QSparse,
                          Symmetric{<:Quantity,<:SparseMatrixCSC},
                          Hermitian{<:Quantity,<:SparseMatrixCSC}}
 
-MC.symcover_min(ϕ::AbsLog{2}, A::QSparseSym; kwargs...) =
-    sym(MC.symcover_min, A, ϕ; kwargs...)
+MC.symcover_min(ρ::AbsLog{2}, A::QSparseSym; kwargs...) =
+    sym(MC.symcover_min, A, ρ; kwargs...)
 
-MC.cover_min(ϕ::AbsLog{2}, A::QSparse; kwargs...) =
-    asym(MC.cover_min, A, ϕ; kwargs...)
+MC.cover_min(ρ::AbsLog{2}, A::QSparse; kwargs...) =
+    asym(MC.cover_min, A, ρ; kwargs...)
 
 MC.cover_transversal(A::QSparse; kwargs...) = asym(MC.cover_transversal, A; kwargs...)
 
-MC.soft_symcover(ϕ::AbsLog{2}, A::QSparseSym; kwargs...) =
-    sym(MC.soft_symcover, A, ϕ; kwargs...)
+MC.soft_symcover(ρ::AbsLog{2}, A::QSparseSym; kwargs...) =
+    sym(MC.soft_symcover, A, ρ; kwargs...)
 
-MC.soft_cover(ϕ::AbsLog{2}, A::QSparse; kwargs...) =
-    asym(MC.soft_cover, A, ϕ; kwargs...)
+MC.soft_cover(ρ::AbsLog{2}, A::QSparse; kwargs...) =
+    asym(MC.soft_cover, A, ρ; kwargs...)
 
-MC.symcover_min!(ϕ::AbsLog{2}, a::QVector, A::QSparseSym; kwargs...) =
-    symstart!(MC.symcover_min!, a, A, ϕ; kwargs...)
+MC.symcover_min!(ρ::AbsLog{2}, a::QVector, A::QSparseSym; kwargs...) =
+    symstart!(MC.symcover_min!, a, A, ρ; kwargs...)
 
-MC.cover_min!(ϕ::AbsLog{2}, a::QVector, b::QVector, A::QSparse; kwargs...) =
-    asymstart!(MC.cover_min!, a, b, A, ϕ; kwargs...)
+MC.cover_min!(ρ::AbsLog{2}, a::QVector, b::QVector, A::QSparse; kwargs...) =
+    asymstart!(MC.cover_min!, a, b, A, ρ; kwargs...)
 
 for P in PENALTIES
     @eval begin
-        MC.soft_symcover(ϕ::$P, A::QMatrix; kwargs...) = sym(MC.soft_symcover, A, ϕ; kwargs...)
-        MC.soft_symcover!(ϕ::$P, a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_symcover!, a, A, ϕ; kwargs...)
-        MC.soft_cover(ϕ::$P, A::QMatrix; kwargs...) = asym(MC.soft_cover, A, ϕ; kwargs...)
-        MC.soft_cover!(ϕ::$P, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover!, a, b, A, ϕ; kwargs...)
+        MC.soft_symcover(ρ::$P, A::QMatrix; kwargs...) = sym(MC.soft_symcover, A, ρ; kwargs...)
+        MC.soft_symcover!(ρ::$P, a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_symcover!, a, A, ρ; kwargs...)
+        MC.soft_cover(ρ::$P, A::QMatrix; kwargs...) = asym(MC.soft_cover, A, ρ; kwargs...)
+        MC.soft_cover!(ρ::$P, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover!, a, b, A, ρ; kwargs...)
 
-        MC.symcover_min(ϕ::$P, A::QMatrix; kwargs...) = sym(MC.symcover_min, A, ϕ; kwargs...)
-        MC.symcover_min!(ϕ::$P, a::QVector, A::QMatrix; kwargs...) = symstart!(MC.symcover_min!, a, A, ϕ; kwargs...)
-        MC.cover_min(ϕ::$P, A::QMatrix; kwargs...) = asym(MC.cover_min, A, ϕ; kwargs...)
-        MC.cover_min!(ϕ::$P, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.cover_min!, a, b, A, ϕ; kwargs...)
+        MC.symcover_min(ρ::$P, A::QMatrix; kwargs...) = sym(MC.symcover_min, A, ρ; kwargs...)
+        MC.symcover_min!(ρ::$P, a::QVector, A::QMatrix; kwargs...) = symstart!(MC.symcover_min!, a, A, ρ; kwargs...)
+        MC.cover_min(ρ::$P, A::QMatrix; kwargs...) = asym(MC.cover_min, A, ρ; kwargs...)
+        MC.cover_min!(ρ::$P, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.cover_min!, a, b, A, ρ; kwargs...)
     end
 end
 
 # `PowerMean` is parametric in its exponent.
-MC.cover_transversal(ϕ::PowerMean, A::QMatrix; kwargs...) = asym(MC.cover_transversal, A, ϕ; kwargs...)
-MC.cover_transversal!(ϕ::PowerMean, a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover_transversal!, a, b, A, ϕ; kwargs...)
-MC.soft_symcover(ϕ::PowerMean, A::QMatrix; kwargs...) = sym(MC.soft_symcover, A, ϕ; kwargs...)
-MC.soft_symcover!(ϕ::PowerMean, a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_symcover!, a, A, ϕ; kwargs...)
-MC.soft_cover(ϕ::PowerMean, A::QMatrix; kwargs...) = asym(MC.soft_cover, A, ϕ; kwargs...)
-MC.soft_cover!(ϕ::PowerMean, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover!, a, b, A, ϕ; kwargs...)
+MC.cover_transversal(ρ::PowerMean, A::QMatrix; kwargs...) = asym(MC.cover_transversal, A, ρ; kwargs...)
+MC.cover_transversal!(ρ::PowerMean, a::QVector, b::QVector, A::QMatrix; kwargs...) = asym!(MC.cover_transversal!, a, b, A, ρ; kwargs...)
+MC.soft_symcover(ρ::PowerMean, A::QMatrix; kwargs...) = sym(MC.soft_symcover, A, ρ; kwargs...)
+MC.soft_symcover!(ρ::PowerMean, a::QVector, A::QMatrix; kwargs...) = symstart!(MC.soft_symcover!, a, A, ρ; kwargs...)
+MC.soft_cover(ρ::PowerMean, A::QMatrix; kwargs...) = asym(MC.soft_cover, A, ρ; kwargs...)
+MC.soft_cover!(ρ::PowerMean, a::QVector, b::QVector, A::QMatrix; kwargs...) = asymstart!(MC.soft_cover!, a, b, A, ρ; kwargs...)
 
 end  # module MatrixCoversUnitfulExt

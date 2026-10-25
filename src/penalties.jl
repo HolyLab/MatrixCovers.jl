@@ -1,5 +1,5 @@
 # ============================================================
-# φ types
+# ρ types
 # ============================================================
 
 """
@@ -37,10 +37,10 @@ abstract type AbstractCoverPenalty<:Function end
 
 Penalty type for
 
-    φ(r) = |log(r)|^p  if r > 0
+    ρ(r) = |log(r)|^p  if r > 0
            0           if r = 0
 
-Defining `φ(0) = 0` makes zero entries of `A`, for which `log(r) = -∞`,
+Defining `ρ(0) = 0` makes zero entries of `A`, for which `log(r) = -∞`,
 contribute nothing to the objective. The objective is convex in the logarithms
 of the scales; `AbsLog{1}` may have multiple minima.
 
@@ -51,8 +51,8 @@ struct AbsLog{p} <: AbstractCoverPenalty end
 """
     AbsLinear{p}
 
-Penalty type for `φ(r) = |1 - r|^p`. Unlike [`AbsLog`](@ref), this penalty is
-continuous at `r = 0`, so each zero entry of `A` contributes `φ(0) = 1` to the
+Penalty type for `ρ(r) = |1 - r|^p`. Unlike [`AbsLog`](@ref), this penalty is
+continuous at `r = 0`, so each zero entry of `A` contributes `ρ(0) = 1` to the
 objective.
 
 The resulting optimization problems are not convex and may have multiple local
@@ -65,10 +65,10 @@ struct AbsLinear{p} <: AbstractCoverPenalty end
 
 Penalty type for
 
-    φ(r) = (r^p - 1 - p*log(r)) / p  if r > 0
+    ρ(r) = (r^p - 1 - p*log(r)) / p  if r > 0
            0                         if r = 0
 
-with `p > 0`. As for [`AbsLog`](@ref), defining `φ(0) = 0` makes zero entries
+with `p > 0`. As for [`AbsLog`](@ref), defining `ρ(0) = 0` makes zero entries
 of `A` contribute nothing.
 
 `PowerMean{2}` is the default penalty for soft covers. For entries modeled as
@@ -128,28 +128,28 @@ function objective_type(x)
 end
 
 """
-    cover_objective(ϕ, a, b, A)
-    cover_objective(ϕ, a, A)
+    cover_objective(ρ, a, b, A)
+    cover_objective(ρ, a, A)
 
-Compute `∑ ϕ(|A[i,j]|/(a[i]*b[j]))`. The shorter form uses the symmetric cover
+Compute `∑ ρ(|A[i,j]|/(a[i]*b[j]))`. The shorter form uses the symmetric cover
 `a*a'`.
 
 Both forms sum over every entry of `A`, so in the symmetric form each
 off-diagonal pair contributes twice and each diagonal entry once.
 
-Zero entries of `A` are handled according to `ϕ`:
-- `AbsLog{p}`, `PowerMean{p}`: zero entries contribute 0 (φ(0) = 0 by convention).
-- `AbsLinear{p}`: zero entries contribute 1 (φ(0) = |1-0|^p = 1).
+Zero entries of `A` are handled according to `ρ`:
+- `AbsLog{p}`, `PowerMean{p}`: zero entries contribute 0 (ρ(0) = 0 by convention).
+- `AbsLinear{p}`: zero entries contribute 1 (ρ(0) = |1-0|^p = 1).
 
 `eachindex(a)` must match `axes(A, 1)` and `eachindex(b)` must match `axes(A, 2)`.
 
 The nonzero entries of `A` are enumerated by [`foreach_support`](@ref).
 
 See also:
-- Penalty types (options for `ϕ`): [`AbsLog`](@ref), [`AbsLinear`](@ref), [`PowerMean`](@ref).
+- Penalty types (options for `ρ`): [`AbsLog`](@ref), [`AbsLinear`](@ref), [`PowerMean`](@ref).
 - Solvers that minimize it: [`symcover_min`](@ref), [`cover_min`](@ref), [`soft_symcover`](@ref), [`soft_cover`](@ref).
 """
-function cover_objective(ϕ, a, b, A)
+function cover_objective(ρ, a, b, A)
     eachindex(a) == axes(A, 1) ||
         throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
     eachindex(b) == axes(A, 2) ||
@@ -162,7 +162,7 @@ function cover_objective(ϕ, a, b, A)
         # A nonzero entry over a zero scale is uncovered; `typemax` is the ratio's
         # stand-in for the infinite excess.
         r = iszero(ab) ? typemax(T) : T(v / ab)
-        s[] += T(ϕ(r))
+        s[] += T(ρ(r))
         nsupport[] += 1
     end
     # Every entry outside the support has `r = 0` whatever its scales, including a
@@ -171,10 +171,10 @@ function cover_objective(ϕ, a, b, A)
     # `PowerMean`, but a nonzero constant for `AbsLinear`, which is continuous at `r = 0`.
     # The guard prevents `0 * Inf` for penalties that are infinite at zero.
     nzero = length(a) * length(b) - nsupport[]
-    return iszero(nzero) ? s[] : s[] + nzero * T(ϕ(zero(T)))
+    return iszero(nzero) ? s[] : s[] + nzero * T(ρ(zero(T)))
 end
-cover_objective(ϕ, a, A) = cover_objective(ϕ, a, a, A)
+cover_objective(ρ, a, A) = cover_objective(ρ, a, a, A)
 
 # Adjoint/Transpose dispatch: covering A' or transpose(A) swaps the row/column scales.
-cover_objective(ϕ, a, b, A::Adjoint)   = cover_objective(ϕ, b, a, parent(A))
-cover_objective(ϕ, a, b, A::Transpose) = cover_objective(ϕ, b, a, parent(A))
+cover_objective(ρ, a, b, A::Adjoint)   = cover_objective(ρ, b, a, parent(A))
+cover_objective(ρ, a, b, A::Transpose) = cover_objective(ρ, b, a, parent(A))

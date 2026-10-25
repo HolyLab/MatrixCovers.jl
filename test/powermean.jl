@@ -55,7 +55,7 @@ end
         # `R.^p` spanning tens of decades, where the first-order iteration crawls;
         # dense support is exercised at larger `p` below.
         for p in (1, 2)
-            ϕ = PowerMean{p}()
+            ρ = PowerMean{p}()
             dense = pm_testmatrix(rng, 30, 30; σ=2.0, z=0.0)
             rect = pm_testmatrix(rng, 40, 17; σ=4.0, zrows=(3, 11), zcols=(5,))
             wide = pm_testmatrix(rng, 12, 45; σ=6.0, z=0.5, zrows=(1,), zcols=(2, 44))
@@ -63,23 +63,23 @@ end
             sp.nzval .= exp.(3 .* randn(rng, nnz(sp)))
             sp[7, :] .= 0; sp[:, 9] .= 0; dropzeros!(sp)
             for A in (dense, rect, wide, sp)
-                a, b = @test_logs scales(soft_cover(ϕ, A))
+                a, b = @test_logs scales(soft_cover(ρ, A))
                 @test pm_imbalance(p, a, b, A) < 1e-11
                 @test isbalanced(a, b, A)
                 @test all(iszero(a[i]) == all(iszero, A[i, :]) for i in axes(A, 1))
                 @test all(iszero(b[j]) == all(iszero, A[:, j]) for j in axes(A, 2))
             end
-            @test scales(soft_cover(ϕ, sp))[1] isa Vector{Float64}
+            @test scales(soft_cover(ρ, sp))[1] isa Vector{Float64}
 
             S = pm_testmatrix(rng, 35, 35; σ=3.0, zrows=(4,), zcols=(4,))
             S = S + S'
             Ssp = sparse(S)
             for M in (S, Ssp, Symmetric(Ssp))
-                a = scales(soft_symcover(ϕ, M))
+                a = scales(soft_symcover(ρ, M))
                 @test pm_imbalance(p, a, a, M) < 1e-11
                 @test a[4] == 0
                 # The unique minimizer is symmetric, so the asymmetric solver agrees.
-                x, y = scales(soft_cover(ϕ, M))
+                x, y = scales(soft_cover(ρ, M))
                 supp = findall(!iszero, S)
                 @test (x .* y')[supp] ≈ (a .* a')[supp] rtol=1e-10
             end

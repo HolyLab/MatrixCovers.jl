@@ -24,33 +24,33 @@ end
         end
     end
 
-    # Non-square rejected (default dispatch and all ϕ)
+    # Non-square rejected (default dispatch and all ρ)
     @test_throws "requires a square matrix" soft_symcover([1.0 2.0; 3.0 4.0; 5.0 6.0])
-    for ϕ in SOFT_PENALTIES
-        @test_throws "requires a square matrix" soft_symcover(ϕ, [1.0 2.0; 3.0 4.0; 5.0 6.0])
+    for ρ in SOFT_PENALTIES
+        @test_throws "requires a square matrix" soft_symcover(ρ, [1.0 2.0; 3.0 4.0; 5.0 6.0])
     end
 
     # Rank-1 is exact: A = [4 2; 2 1] = [2;1]*[2 1], so exact cover has all ratios = 1
     A = [4.0 2.0; 2.0 1.0]
-    for ϕ in SOFT_PENALTIES
-        a, _ = soft_symcover(ϕ, A)
-        @test cover_objective(ϕ, a, A) ≈ 0.0 atol=1e-8
+    for ρ in SOFT_PENALTIES
+        a, _ = soft_symcover(ρ, A)
+        @test cover_objective(ρ, a, A) ≈ 0.0 atol=1e-8
     end
 
-    # Diagonal-scaling covariance: soft_symcover(ϕ, ·) co-varies with a diagonal rescaling of A.
+    # Diagonal-scaling covariance: soft_symcover(ρ, ·) co-varies with a diagonal rescaling of A.
     A = [2.0 1.0; 1.0 3.0]
     d = [2.0, 0.5]
-    for ϕ in SOFT_PENALTIES
-        @test covaries(a -> first(soft_symcover(ϕ, a)), A, d; rtol=1e-5)
+    for ρ in SOFT_PENALTIES
+        @test covaries(a -> first(soft_symcover(ρ, a)), A, d; rtol=1e-5)
     end
 
     # Lower objective than naive uniform scaling perturbations
     A = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
-    for ϕ in SOFT_PENALTIES
-        a, _ = soft_symcover(ϕ, A)
-        E = cover_objective(ϕ, a, A)
+    for ρ in SOFT_PENALTIES
+        a, _ = soft_symcover(ρ, A)
+        E = cover_objective(ρ, a, A)
         for scale in [0.5, 0.9, 1.1, 2.0]
-            @test E <= cover_objective(ϕ, scale .* a, A) + 1e-8
+            @test E <= cover_objective(ρ, scale .* a, A) + 1e-8
         end
     end
 
@@ -58,18 +58,18 @@ end
     γ = 0.5
     A_zero  = [γ 1.0; 1.0 0.0]
     A_small = [γ 1.0; 1.0 1e-10]
-    for ϕ in (AbsLinear{1}(), AbsLinear{2}())
-        a_zero, _  = soft_symcover(ϕ, A_zero)
-        a_small, _ = soft_symcover(ϕ, A_small)
+    for ρ in (AbsLinear{1}(), AbsLinear{2}())
+        a_zero, _  = soft_symcover(ρ, A_zero)
+        a_small, _ = soft_symcover(ρ, A_small)
         @test a_small ≈ a_zero atol=1e-5
     end
 
     # The leave-one-out basin selection is covariant away from its documented tie.
-    for ϕ in (AbsLinear{1}(), AbsLinear{2}())
+    for ρ in (AbsLinear{1}(), AbsLinear{2}())
         for (B, d) in ((A_small, [50.0, 0.02]),
                        ([3.0 7.6e-10; 7.6e-10 80.0], [35.0, 3400.0]))
-            a0, _ = soft_symcover(ϕ, B)
-            as, _ = soft_symcover(ϕ, B .* d .* d')
+            a0, _ = soft_symcover(ρ, B)
+            as, _ = soft_symcover(ρ, B .* d .* d')
             @test as .* as' ≈ (d .* d') .* (a0 .* a0') rtol=1e-6
         end
     end
@@ -489,13 +489,13 @@ end
     Asym = [4.0 1.0 0.5; 1.0 3.0 1.0; 0.5 1.0 2.5]
     Agen = [1.0 2.0 0.5; 0.25 3.0 1.0]
 
-    @testset "refining the multistart's own start reproduces it: $ϕ" for ϕ in SOFT_PENALTIES
+    @testset "refining the multistart's own start reproduces it: $ρ" for ρ in SOFT_PENALTIES
         a = initialize_symcover(Asym; strategy=:geomean, feasible=:none)
-        soft_symcover!(ϕ, a, Asym)
-        @test cover_objective(ϕ, a, Asym) ≈ cover_objective(ϕ, first(soft_symcover(ϕ, Asym)), Asym) rtol=1e-6
+        soft_symcover!(ρ, a, Asym)
+        @test cover_objective(ρ, a, Asym) ≈ cover_objective(ρ, first(soft_symcover(ρ, Asym)), Asym) rtol=1e-6
     end
 
-    @testset "no-ϕ form defaults to PowerMean{2}" begin
+    @testset "no-ρ form defaults to PowerMean{2}" begin
         a1, a2 = initialize_symcover(Asym; strategy=:geomean, feasible=:none), initialize_symcover(Asym; strategy=:geomean, feasible=:none)
         @test first(soft_symcover!(a1, Asym)) == first(soft_symcover!(PowerMean{2}(), a2, Asym))
         b1, c1 = initialize_cover(Agen; strategy=:geomean, feasible=:none)
@@ -508,7 +508,7 @@ end
         Abasins = [0.021778451276962405 1.5690256886348526
                    1.5690256886348526  0.20473123461805692]
         starts() = (initialize_symcover(Abasins; strategy=:geomean, feasible=:none), ones(2))
-        o(ϕ, a) = cover_objective(ϕ, a, Abasins)
+        o(ρ, a) = cover_objective(ρ, a, Abasins)
 
         s1, s2 = starts()
         @test o(AbsLog{2}(), first(soft_symcover!(AbsLog{2}(), s1, Abasins))) ≈
@@ -520,13 +520,13 @@ end
     end
 
     # Unlike symcover_min!, a soft refiner imposes no coverage constraint on its start.
-    @testset "start need not cover A: $ϕ" for ϕ in SOFT_PENALTIES
+    @testset "start need not cover A: $ρ" for ρ in SOFT_PENALTIES
         a = fill(0.01, 3)
         @test !iscover(a, Asym)
-        @test first(soft_symcover!(ϕ, a, Asym)) === a
+        @test first(soft_symcover!(ρ, a, Asym)) === a
         b, c = fill(0.01, 2), fill(0.01, 3)
         @test !iscover(b, c, Agen)
-        @test soft_cover!(ϕ, b, c, Agen)[1:2] === (b, c)
+        @test soft_cover!(ρ, b, c, Agen)[1:2] === (b, c)
     end
 
     @testset "invalid starts throw, naming the function called" begin
@@ -542,27 +542,27 @@ end
 
     # Scales on unsupported rows are inert and come back zero, matching every other
     # cover in the package.
-    @testset "unsupported rows are zeroed: $ϕ" for ϕ in SOFT_PENALTIES
+    @testset "unsupported rows are zeroed: $ρ" for ρ in SOFT_PENALTIES
         Az = [1.0 0.0 2.0; 0.0 0.0 0.0; 2.0 0.0 3.0]
         a = initialize_symcover(Az; strategy=:geomean, feasible=:none)
-        @test first(soft_symcover!(ϕ, a, Az))[2] == 0
+        @test first(soft_symcover!(ρ, a, Az))[2] == 0
     end
 
-    @testset "asymmetric refiners pin the balance convention: $ϕ" for ϕ in SOFT_PENALTIES
+    @testset "asymmetric refiners pin the balance convention: $ρ" for ρ in SOFT_PENALTIES
         a, b = initialize_cover(Agen; strategy=:geomean, feasible=:none)
         a .*= 7           # move the gauge; the objective cannot see it
         b ./= 7
-        soft_cover!(ϕ, a, b, Agen)
+        soft_cover!(ρ, a, b, Agen)
         @test isbalanced(a, b, Agen)
     end
 
-    @testset "offset axes propagate: $ϕ" for ϕ in SOFT_PENALTIES
+    @testset "offset axes propagate: $ρ" for ρ in SOFT_PENALTIES
         Ao = OffsetArray(Asym, -1:1, -1:1)
         ao = initialize_symcover(Ao; strategy=:geomean, feasible=:none)
-        soft_symcover!(ϕ, ao, Ao)
+        soft_symcover!(ρ, ao, Ao)
         @test axes(ao, 1) == axes(Ao, 1)
         aref = initialize_symcover(Asym; strategy=:geomean, feasible=:none)
-        soft_symcover!(ϕ, aref, Asym)
+        soft_symcover!(ρ, aref, Asym)
         @test collect(ao) ≈ aref rtol=1e-6
     end
 end
@@ -611,17 +611,17 @@ MatrixCovers.require_abs_symmetric(::HookOnlyMatrix, fname) = nothing
     end
 
     @test first(soft_symcover(PowerMean{2}(), M)) ≈ first(soft_symcover(PowerMean{2}(), dense)) rtol=1e-12
-    for ϕ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{1}(), AbsLog{2}())
-        @test symcover(ϕ, M) ≈ symcover(ϕ, dense) rtol=1e-10
-        @test first(soft_symcover(ϕ, M)) ≈ first(soft_symcover(ϕ, dense)) rtol=1e-6
-        @test iscover(symcover(ϕ, M), dense; rtol=8eps())
-        @test cover_objective(ϕ, symcover(ϕ, M), M) ≈
-              cover_objective(ϕ, symcover(ϕ, dense), dense) rtol=1e-10
+    for ρ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{1}(), AbsLog{2}())
+        @test symcover(ρ, M) ≈ symcover(ρ, dense) rtol=1e-10
+        @test first(soft_symcover(ρ, M)) ≈ first(soft_symcover(ρ, dense)) rtol=1e-6
+        @test iscover(symcover(ρ, M), dense; rtol=8eps())
+        @test cover_objective(ρ, symcover(ρ, M), M) ≈
+              cover_objective(ρ, symcover(ρ, dense), dense) rtol=1e-10
     end
 
-    for ϕ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{1}(), AbsLog{2}())
-        ah, bh = cover(ϕ, M)
-        ad, bd = cover(ϕ, dense)
+    for ρ in (AbsLinear{1}(), AbsLinear{2}(), AbsLog{1}(), AbsLog{2}())
+        ah, bh = cover(ρ, M)
+        ad, bd = cover(ρ, dense)
         @test ah ≈ ad rtol=1e-10
         @test bh ≈ bd rtol=1e-10
         @test iscover(ah, bh, dense; rtol=8eps())

@@ -350,7 +350,7 @@ end
 # ============================================================
 # Soft cover: soft_cover!(::AbsLinear{p}, a, b, A)
 # Asymmetric soft-cover model. Post-processing balances component gauges; zero
-# entries contribute the constant `ϕ(0) = 1`.
+# entries contribute the constant `ρ(0) = 1`.
 # ============================================================
 
 function MatrixCovers.soft_cover!(::AbsLinear{2}, a::AbstractVector, b::AbstractVector, A)

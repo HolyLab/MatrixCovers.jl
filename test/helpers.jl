@@ -1,6 +1,6 @@
 # Shared helpers for the themed test files.
 
-# The four penalty instances, for loops over properties that must hold for every ϕ.
+# The four penalty instances, for loops over properties that must hold for every ρ.
 const PENALTIES = (AbsLog{1}(), AbsLog{2}(), AbsLinear{1}(), AbsLinear{2}())
 
 # Penalties with native soft-cover solvers, for properties of the soft-cover family.
@@ -91,24 +91,24 @@ function covaries(coverfn, A, dr::AbstractVector, dc::AbstractVector; kwargs...)
 end
 
 """
-    covaries_objective(ϕ, coverfn, A, d; kwargs...)
-    covaries_objective(ϕ, coverfn, A, dr, dc; kwargs...)
+    covaries_objective(ρ, coverfn, A, d; kwargs...)
+    covaries_objective(ρ, coverfn, A, dr, dc; kwargs...)
 
 Scale invariance of the attained objective: the cover found in a rescaled frame
-must score the same as the cover found in the original frame, since `ϕ` sees only
+must score the same as the cover found in the original frame, since `ρ` sees only
 the ratios `|A[i,j]| / (a[i]*b[j])`, which every diagonal rescaling leaves fixed.
 
 This is the sharp statement of covariance for an iterate driven to convergence.
 """
-function covaries_objective(ϕ, coverfn, A, d::AbstractVector; kwargs...)
-    E = cover_objective(ϕ, coverfn(A), A)
+function covaries_objective(ρ, coverfn, A, d::AbstractVector; kwargs...)
+    E = cover_objective(ρ, coverfn(A), A)
     AD = d .* A .* transpose(d)
-    return isapprox(cover_objective(ϕ, coverfn(AD), AD), E; kwargs...)
+    return isapprox(cover_objective(ρ, coverfn(AD), AD), E; kwargs...)
 end
-function covaries_objective(ϕ, coverfn, A, dr::AbstractVector, dc::AbstractVector; kwargs...)
+function covaries_objective(ρ, coverfn, A, dr::AbstractVector, dc::AbstractVector; kwargs...)
     a, b = coverfn(A)
-    E = cover_objective(ϕ, a, b, A)
+    E = cover_objective(ρ, a, b, A)
     AD = dr .* A .* transpose(dc)
     aD, bD = coverfn(AD)
-    return isapprox(cover_objective(ϕ, aD, bD, AD), E; kwargs...)
+    return isapprox(cover_objective(ρ, aD, bD, AD), E; kwargs...)
 end
