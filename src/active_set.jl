@@ -739,7 +739,9 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
         end
         e < 0 && break
         if e == 0
-            certified = all(k -> λ[k] >= -dtol_eff, W)
+            # `dtol_eff` is reassigned in this loop; capturing it would box it.
+            dt = dtol_eff
+            certified = all(k -> λ[k] >= -dt, W)
             break
         end
         # Single-constraint step; bulk steps resume only when it leaves more

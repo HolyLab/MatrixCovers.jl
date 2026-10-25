@@ -255,8 +255,8 @@ end
 # shifted by `(t, -t)` before they are exponentiated, so the test is whether
 # some shift fits both into range; otherwise the values must fit as given.
 # `hint` is appended to the error message.
-function _check_representable(lα::AbstractVector, hasα, lβ, hasβ, ::Type{T}, fname::Symbol;
-                              gauge::Bool, hint::String="") where {T}
+function _check_representable(lα::AbstractVector, hasα::F, lβ, hasβ::G, ::Type{T}, fname::Symbol;
+                              gauge::Bool, hint::String="") where {F,G,T}
     lo, hi = log(floatmin(T)), log(floatmax(T))
     loα, hiα = _supported_extrema(lα, hasα)
     loβ, hiβ = lβ === nothing ? (loα, hiα) : _supported_extrema(lβ, hasβ)
