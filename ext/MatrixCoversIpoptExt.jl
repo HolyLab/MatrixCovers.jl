@@ -300,13 +300,12 @@ function MatrixCovers.soft_symcover!(::AbsLinear{2}, a::AbstractVector, A)
     fi, fj, flog = _sym_edge_list(A, T)
     supported = _degrees(fi, n) .> 0
     ti, tj, tlog, tw = _triangle(fi, fj, flog)
-    n_zeros = n^2 - length(fi)   # a zero entry contributes (1-0)^2 = 1 regardless of α
 
     model = _ipopt_model(; unscaled=true)
     start0 = [supported[k] ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
     @variable(model, α[k=1:n], start = start0[k])
     @objective(model, Min,
-        sum(tw[k] * (1 - exp(tlog[k] - α[ti[k]] - α[tj[k]]))^2 for k in eachindex(ti)) + n_zeros)
+        sum(tw[k] * (1 - exp(tlog[k] - α[ti[k]] - α[tj[k]]))^2 for k in eachindex(ti)))
     JuMP.optimize!(model)
     stats = solved_stats(model, "soft_symcover!")
     lα = JuMP.value.(α)
@@ -326,7 +325,6 @@ function MatrixCovers.soft_symcover!(::AbsLinear{1}, a::AbstractVector, A)
     fi, fj, flog = _sym_edge_list(A, T)
     supported = _degrees(fi, n) .> 0
     ti, tj, tlog, tw = _triangle(fi, fj, flog)
-    n_zeros = n^2 - length(fi)   # a zero entry contributes |1 - 0| = 1 regardless of α
 
     model = _ipopt_model()
     start0 = [supported[k] ? log(T(a[pr[k]])) : zero(T) for k in 1:n]
@@ -336,7 +334,7 @@ function MatrixCovers.soft_symcover!(::AbsLinear{1}, a::AbstractVector, A)
         @constraint(model,  1 - exp(tlog[k] - α[ti[k]] - α[tj[k]]) <= t[k])
         @constraint(model, -1 + exp(tlog[k] - α[ti[k]] - α[tj[k]]) <= t[k])
     end
-    @objective(model, Min, sum(tw[k] * t[k] for k in eachindex(ti)) + n_zeros)
+    @objective(model, Min, sum(tw[k] * t[k] for k in eachindex(ti)))
     JuMP.optimize!(model)
     stats = solved_stats(model, "soft_symcover!")
     lα = JuMP.value.(α)
@@ -349,8 +347,7 @@ end
 
 # ============================================================
 # Soft cover: soft_cover!(::AbsLinear{p}, a, b, A)
-# Asymmetric soft-cover model. Post-processing balances component gauges; zero
-# entries contribute the constant `ρ(0) = 1`.
+# Asymmetric soft-cover model. Post-processing balances component gauges.
 # ============================================================
 
 function MatrixCovers.soft_cover!(::AbsLinear{2}, a::AbstractVector, b::AbstractVector, A)
@@ -362,7 +359,6 @@ function MatrixCovers.soft_cover!(::AbsLinear{2}, a::AbstractVector, b::Abstract
     ei, ej, elog = _edge_list(A, T)
     nza = _degrees(ei, m)
     nzb = _degrees(ej, n)
-    n_zeros = m * n - length(ei)
 
     model = _ipopt_model(; unscaled=true)
     α0 = [nza[i] > 0 ? log(T(a[pr[i]])) : zero(T) for i in 1:m]
@@ -370,7 +366,7 @@ function MatrixCovers.soft_cover!(::AbsLinear{2}, a::AbstractVector, b::Abstract
     @variable(model, α[i=1:m], start = α0[i])
     @variable(model, β[j=1:n], start = β0[j])
     @objective(model, Min,
-        sum((1 - exp(elog[e] - α[ei[e]] - β[ej[e]]))^2 for e in eachindex(ei)) + n_zeros)
+        sum((1 - exp(elog[e] - α[ei[e]] - β[ej[e]]))^2 for e in eachindex(ei)))
     _pin_gauge!(model, α, β, A, nza, nzb)
     JuMP.optimize!(model)
     stats = solved_stats(model, "soft_cover!")
@@ -395,7 +391,6 @@ function MatrixCovers.soft_cover!(::AbsLinear{1}, a::AbstractVector, b::Abstract
     ei, ej, elog = _edge_list(A, T)
     nza = _degrees(ei, m)
     nzb = _degrees(ej, n)
-    n_zeros = m * n - length(ei)
 
     model = _ipopt_model()
     α0 = [nza[i] > 0 ? log(T(a[pr[i]])) : zero(T) for i in 1:m]
@@ -407,7 +402,7 @@ function MatrixCovers.soft_cover!(::AbsLinear{1}, a::AbstractVector, b::Abstract
         @constraint(model,  1 - exp(elog[e] - α[ei[e]] - β[ej[e]]) <= t[e])
         @constraint(model, -1 + exp(elog[e] - α[ei[e]] - β[ej[e]]) <= t[e])
     end
-    @objective(model, Min, sum(t) + n_zeros)
+    @objective(model, Min, sum(t))
     _pin_gauge!(model, α, β, A, nza, nzb)
     JuMP.optimize!(model)
     stats = solved_stats(model, "soft_cover!")

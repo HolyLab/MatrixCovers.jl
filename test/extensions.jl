@@ -95,12 +95,14 @@ end
     a1, _ = soft_symcover(AbsLinear{1}(), A_rank1)
     @test cover_objective(AbsLinear{1}(), a1, A_rank1) < 1e-8
 
-    # Matrix with zeros: zero entries contribute 1 each regardless of cover
-    A = [0.0 1.0; 1.0 0.0]  # only off-diagonal nonzero; min possible = 0 (off-diag) + 2 (diag zeros)
-    a2, _ = soft_symcover(AbsLinear{2}(), A)
-    @test cover_objective(AbsLinear{2}(), a2, A) ≈ 2.0 atol=1e-8
+    # Matrix with zeros: zero entries are excluded, so the off-diagonal pair can be
+    # fit exactly
+    A = [0.0 1.0; 1.0 0.0]
+    a2, s2 = soft_symcover(AbsLinear{2}(), A)
+    @test cover_objective(AbsLinear{2}(), a2, A) ≈ 0.0 atol=1e-8
+    @test only(s2.stats[s2.selected].objective) ≈ 0.0 atol=1e-8
     a1, _ = soft_symcover(AbsLinear{1}(), A)
-    @test cover_objective(AbsLinear{1}(), a1, A) ≈ 2.0 atol=1e-8
+    @test cover_objective(AbsLinear{1}(), a1, A) ≈ 0.0 atol=1e-8
 end
 
 @testset "AbsLinear{2} soft refinement converges from dispersed starts" begin

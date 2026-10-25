@@ -1,5 +1,5 @@
 # ============================================================
-# ρ types
+# Penalty types
 # ============================================================
 
 """
@@ -8,17 +8,23 @@
 Supertype of cover penalties. Built-in subtypes are [`AbsLog`](@ref),
 [`AbsLinear`](@ref), and [`PowerMean`](@ref).
 
-[`cover_objective`](@ref) applies the penalty to
-`r = |A[i,j]|/(a[i]*b[j])` and sums over `A`.
+A penalty is a function `ρ(z)` of the log slack
+
+    z = log(a[i]*b[j]) - log|A[i,j]| = -log(r),    r = |A[i,j]|/(a[i]*b[j]),
+
+of a nonzero entry of `A`. A hard cover has `z ≥ 0` on every nonzero entry,
+`z = 0` marks a tight entry, and `z < 0` an entry the cover violates.
+[`cover_objective`](@ref) sums `ρ(z)` over the nonzero entries of `A`.
 
 # Extending
 
-A subtype must be callable on a nonnegative real:
+A subtype must be callable on a real log slack:
 
-    (::MyPenalty)(r::Real)
+    (::MyPenalty)(z::Real)
 
-The method must accept `r = 0` and `r = typemax(...)`. Penalties are usually
-singleton structs.
+The method must accept `z = -Inf`, which [`cover_objective`](@ref) passes for a
+nonzero entry over a zero product `a[i]*b[j]`, and `z = Inf`, which it passes
+when the ratio underflows to zero. Penalties are usually singleton structs.
 
 [`cover_objective`](@ref) works for any subtype, but solvers support only
 specific built-in penalties:
@@ -35,14 +41,14 @@ abstract type AbstractCoverPenalty<:Function end
 """
     AbsLog{p}
 
-Penalty type for
+The ℓ_p penalty on the log slack,
 
-    ρ(r) = |log(r)|^p  if r > 0
-           0           if r = 0
+    ρ(z) = |z|^p.
 
-Defining `ρ(0) = 0` makes zero entries of `A`, for which `log(r) = -∞`,
-contribute nothing to the objective. The objective is convex in the logarithms
-of the scales; `AbsLog{1}` may have multiple minima.
+`AbsLog{1}` gives the ℓ₁ objective, a linear program, and `AbsLog{2}` the ℓ₂
+objective, whose minimizer among hard covers is the ℓ₂-minimal cover. The
+objective is convex in the logarithms of the scales;
+`AbsLog{1}` may have multiple minima. `ρ(±Inf) = Inf`.
 
 See also: [`AbsLinear`](@ref).
 """
@@ -51,9 +57,13 @@ struct AbsLog{p} <: AbstractCoverPenalty end
 """
     AbsLinear{p}
 
-Penalty type for `ρ(r) = |1 - r|^p`. Unlike [`AbsLog`](@ref), this penalty is
-continuous at `r = 0`, so each zero entry of `A` contributes `ρ(0) = 1` to the
-objective.
+Penalty type for
+
+    ρ(z) = |1 - exp(-z)|^p,
+
+which is `|1 - r|^p` in the ratio `r = exp(-z)`. It is bounded for slack
+entries, approaching `ρ(Inf) = 1`, and grows exponentially for violated ones,
+with `ρ(-Inf) = Inf`.
 
 The resulting optimization problems are not convex and may have multiple local
 minima.
@@ -65,11 +75,10 @@ struct AbsLinear{p} <: AbstractCoverPenalty end
 
 Penalty type for
 
-    ρ(r) = (r^p - 1 - p*log(r)) / p  if r > 0
-           0                         if r = 0
+    ρ(z) = (exp(-p*z) - 1 + p*z) / p,
 
-with `p > 0`. As for [`AbsLog`](@ref), defining `ρ(0) = 0` makes zero entries
-of `A` contribute nothing.
+with `p > 0`. In the ratio `r = exp(-z)`, this is `(r^p - 1 - p*log(r)) / p`.
+`ρ(±Inf) = Inf`.
 
 `PowerMean{2}` is the default penalty for soft covers. For entries modeled as
 independent normal variables with standard deviations `a[i]*b[j]`, it gives the
@@ -93,15 +102,15 @@ struct PowerMean{p} <: AbstractCoverPenalty
     end
 end
 
-(::AbsLog{p})(r::Real) where p = iszero(r) ? zero(float(r)) : abs(log(r))^p
-(::AbsLinear{p})(r::Real) where p = abs(oneunit(r) - r)^p
-# `expm1(t) - t` avoids the cancellation in `r^p - 1 - t` near `r = 1`.
-function (::PowerMean{p})(r::Real) where p
-    rf = float(r)
-    iszero(rf) && return zero(rf)
-    isinf(rf) && return rf
-    t = p * log(rf)
-    return (expm1(t) - t) / p
+(::AbsLog{p})(z::Real) where p = abs(float(z))^p
+(::AbsLinear{p})(z::Real) where p = abs(expm1(-float(z)))^p
+# `expm1(-t) + t` avoids the cancellation in `exp(-t) - 1 + t` near `z = 0`. At
+# `z = -Inf` that sum is `Inf - Inf`.
+function (::PowerMean{p})(z::Real) where p
+    zf = float(z)
+    zf == -Inf && return -zf
+    t = p * zf
+    return (expm1(-t) + t) / p
 end
 
 # ============================================================
@@ -131,15 +140,14 @@ end
     cover_objective(ρ, a, b, A)
     cover_objective(ρ, a, A)
 
-Compute `∑ ρ(|A[i,j]|/(a[i]*b[j]))`. The shorter form uses the symmetric cover
-`a*a'`.
+Compute `∑ ρ(z[i,j])` over the nonzero entries of `A`, where
+`z[i,j] = log(a[i]*b[j]) - log|A[i,j]|` is the log slack. The shorter form uses
+the symmetric cover `a*a'`.
 
-Both forms sum over every entry of `A`, so in the symmetric form each
-off-diagonal pair contributes twice and each diagonal entry once.
-
-Zero entries of `A` are handled according to `ρ`:
-- `AbsLog{p}`, `PowerMean{p}`: zero entries contribute 0 (ρ(0) = 0 by convention).
-- `AbsLinear{p}`: zero entries contribute 1 (ρ(0) = |1-0|^p = 1).
+Both forms sum over every nonzero entry of `A`, so in the symmetric form each
+off-diagonal pair contributes twice and each diagonal entry once. Zero entries
+of `A` constrain nothing and are excluded from the sum; `ρ` is never evaluated
+for them. A nonzero entry over a zero product `a[i]*b[j]` has `z = -Inf`.
 
 `eachindex(a)` must match `axes(A, 1)` and `eachindex(b)` must match `axes(A, 2)`.
 
@@ -156,22 +164,14 @@ function cover_objective(ρ, a, b, A)
         throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
     T = promote_type(objective_type(A), objective_type(a), objective_type(b))
     s = Ref(zero(T))
-    nsupport = Ref(0)
     foreach_support(A) do i, j, v
         ab = a[i] * b[j]
-        # A nonzero entry over a zero scale is uncovered; `typemax` is the ratio's
-        # stand-in for the infinite excess.
-        r = iszero(ab) ? typemax(T) : T(v / ab)
-        s[] += T(ρ(r))
-        nsupport[] += 1
+        # The slack comes from the unitless ratio, so scales and entries may carry
+        # units. A nonzero entry over a zero scale is uncovered by an infinite amount.
+        z = iszero(ab) ? -T(Inf) : -log(T(v / ab))
+        s[] += T(ρ(z))
     end
-    # Every entry outside the support has `r = 0` whatever its scales, including a
-    # zero entry over a zero scale, which constrains nothing. They therefore share
-    # one penalty value, and only their count is needed: zero for `AbsLog` and
-    # `PowerMean`, but a nonzero constant for `AbsLinear`, which is continuous at `r = 0`.
-    # The guard prevents `0 * Inf` for penalties that are infinite at zero.
-    nzero = length(a) * length(b) - nsupport[]
-    return iszero(nzero) ? s[] : s[] + nzero * T(ρ(zero(T)))
+    return s[]
 end
 cover_objective(ρ, a, A) = cover_objective(ρ, a, a, A)
 
