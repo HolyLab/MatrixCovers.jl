@@ -28,6 +28,17 @@ function logproduct_gap(a, b, a2, b2, A)
     return g
 end
 
+# Jacobian of the Brusselator reaction-diffusion model on a line of `n ÷ 2` grid
+# points, linearized at its homogeneous steady state (the Bai/bwm* matrices of the
+# SuiteSparse collection): tridiagonal diffusion blocks coupled by diagonal reaction terms.
+function brusselator_jacobian(n; δ1=0.008, δ2=0.004, α=2.0, β=5.45, L=0.51302)
+    N = n ÷ 2
+    τ1, τ2 = (δ1, δ2) ./ (L / (N + 1))^2
+    T = spdiagm(-1 => ones(N - 1), 0 => fill(-2.0, N), 1 => ones(N - 1))
+    return [τ1 * T + (β - 1) * I   α^2 * I;
+            -β * I                 τ2 * T - α^2 * I]
+end
+
 @testset "maximum-product transversal" begin
     for (_, A) in general_matrices[1:400]
         Af = Float64.(A)
@@ -123,6 +134,19 @@ end
         @test logproduct_gap(a, b, ad, bd, A) <= 1e-6
         @test iscover(a, b, A)
         @test isbalanced(a, b, A)
+    end
+    # A cover reported as converged is covariant under a change of units to
+    # well within the accuracy of the sparse linear solves, including when the
+    # multiplier iteration meets its tolerance within its first stages.
+    for n in (200, 400)
+        J = brusselator_jacobian(n)
+        d = 2.0 .^ rand(StableRNG(2), -10:10, n)
+        for f in (cover_transversal, cover_min)
+            a, b, st = f(J)
+            ã, b̃, st̃ = f(d .* J)
+            @test st.converged && st̃.converged
+            @test logproduct_gap(ã ./ d, b̃, a, b, J) <= 1e-8
+        end
     end
 
     # Entries (i,j) and (k,σ(i)) with j = σ(k) join the same pair of rows, so the
