@@ -107,8 +107,12 @@ shortest-path algorithm of Young, Tarjan & Orlin (Networks 21:205–221, 1991).
 For a block with `n` rows and `m` entries, its cost is at most
 `O(nm + n² log n)`. The cost is roughly linear in `m` when the block's
 shortest-path tree stays shallow, as it does for most sparse matrices, and
-about `O(nm)` for a banded block, whose tree is a path. The active-set Newton
-method then runs with one scale per block.
+about `O(nm)` for a banded block, whose tree is a path. A block with more than
+`n²/8` entries is held in two dense `n×n` arrays, so that a row moving in the
+tree costs `O(n)` operations without a heap update for each of its entries; on
+dense random matrices the cost then grows about as `n^2.4` and is comparable
+to that of finding the transversal. The active-set Newton method then runs with
+one scale per block.
 
 `tol` (default `1e-9`) is the stopping tolerance: the groups are stationary when
 the derivative of the objective with respect to each group's scale is at most

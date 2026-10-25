@@ -70,7 +70,8 @@ end
 
 @testset "_maxbalance" begin
     # Random strongly connected digraphs with parallel arcs, self loops, and
-    # (on even trials) many tied weights.
+    # (on even trials) many tied weights, with the arcs held in lists and in
+    # matrices.
     rng = StableRNG(3)
     for trial in 1:200
         nv = rand(rng, 2:9)
@@ -79,9 +80,32 @@ end
         src = vcat(perm, rand(rng, 1:nv, extra))
         dst = vcat(perm[mod1.(2:nv+1, nv)], rand(rng, 1:nv, extra))
         w = isodd(trial) ? randn(rng, length(src)) : Float64.(rand(rng, -2:2, length(src)))
-        x = _maxbalance(nv, src, dst, w)
-        @test x[1] == 0
-        @test maxbalanced(nv, src, dst, w, x)
+        for dense in (false, true)
+            x = _maxbalance(nv, src, dst, w; dense)
+            @test x[1] == 0
+            @test maxbalanced(nv, src, dst, w, x)
+        end
+    end
+    # Larger digraphs of either density: the two representations agree.
+    for (nv, extra) in ((60, 120), (60, 3000), (200, 30000))
+        perm = randperm(rng, nv)
+        src = vcat(perm, rand(rng, 1:nv, extra))
+        dst = vcat(perm[mod1.(2:nv+1, nv)], rand(rng, 1:nv, extra))
+        for w in (randn(rng, length(src)), Float64.(rand(rng, -2:2, length(src))))
+            @test _maxbalance(nv, src, dst, w; dense=true) ≈ _maxbalance(nv, src, dst, w; dense=false) atol = 1e-12
+        end
+    end
+    # Other weight types.
+    nv = 30
+    perm = randperm(rng, nv)
+    src = vcat(perm, rand(rng, 1:nv, 200))
+    dst = vcat(perm[mod1.(2:nv+1, nv)], rand(rng, 1:nv, 200))
+    w = randn(rng, length(src))
+    x = _maxbalance(nv, src, dst, w)
+    for dense in (false, true)
+        xB = _maxbalance(nv, src, dst, big.(w); dense)
+        @test eltype(xB) == BigFloat
+        @test xB ≈ x atol = 1e-12
     end
     # A banded digraph, whose shortest-path tree is deep and moves as a whole at
     # every contraction. It has too many vertices to check every partition, so
@@ -90,12 +114,14 @@ end
     src = vcat(1:nv-1, 2:nv, 1:nv-2)
     dst = vcat(2:nv, 1:nv-1, 3:nv)
     w = randn(rng, length(src))
-    x = _maxbalance(nv, src, dst, w)
-    wx = [w[e] - x[src[e]] + x[dst[e]] for e in eachindex(w)]
-    for v in 1:nv
-        out = maximum(wx[e] for e in eachindex(w) if src[e] == v)
-        inn = maximum(wx[e] for e in eachindex(w) if dst[e] == v)
-        @test out ≈ inn atol = 1e-9
+    for dense in (false, true)
+        x = _maxbalance(nv, src, dst, w; dense)
+        wx = [w[e] - x[src[e]] + x[dst[e]] for e in eachindex(w)]
+        for v in 1:nv
+            out = maximum(wx[e] for e in eachindex(w) if src[e] == v)
+            inn = maximum(wx[e] for e in eachindex(w) if dst[e] == v)
+            @test out ≈ inn atol = 1e-9
+        end
     end
 end
 

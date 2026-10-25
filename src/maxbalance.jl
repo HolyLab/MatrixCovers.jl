@@ -141,21 +141,54 @@ function ParametricTree(nv::Int, src::Vector{Int}, dst::Vector{Int}, w::Vector{T
                              zeros(Int, 2ne), zeros(Int, 2ne), IndexedHeap{T}(ne))
 end
 
-function _child_append!(S::ParametricTree, p::Int, c::Int)
+# The parametric shortest-path tree of a dense digraph, with its arcs held in
+# matrices. Parallel arcs are merged into one of largest weight: they share the
+# coefficient of `λ` in their reduced lengths, so that one becomes tight first.
+# Between live nodes `p ≠ q` there is then at most one arc `p → q`, of weight
+# `win[p, q] == wout[q, p]`, or `-Inf` if there is none; column `q` of `win`
+# holds the arcs entering `q`, and column `p` of `wout` the arcs leaving `p`.
+#
+# - `live` lists the live nodes, and `islive` marks them.
+# - `a`, `b`, and the lists of children are as for `ParametricTree`;
+#   `parent[v]` is the tail of the tree arc entering `v`, or 0 at the root.
+# - The candidate arcs are the non-tree arcs `p → q` with `a[p] + 1 > a[q]`,
+#   keyed by the `λ` at which they become tight. `heap` holds each live node `q`
+#   that a candidate arc enters, keyed by an upper bound on the keys of those
+#   arcs; unless `dirty[q]`, the bound is the key of the arc from `best[q]`.
+struct DenseParametricTree{T}
+    win::Matrix{T}
+    wout::Matrix{T}
+    live::Vector{Int}
+    islive::BitVector
+    a::Vector{Int}
+    b::Vector{T}
+    parent::Vector{Int}
+    fchild::Vector{Int}
+    lchild::Vector{Int}
+    nsib::Vector{Int}
+    psib::Vector{Int}
+    heap::IndexedHeap{T}
+    best::Vector{Int}
+    dirty::BitVector
+end
+
+const ParametricTrees = Union{ParametricTree,DenseParametricTree}
+
+function _child_append!(S::ParametricTrees, p::Int, c::Int)
     S.psib[c] = S.lchild[p]
     S.nsib[c] = 0
     S.lchild[p] == 0 ? (S.fchild[p] = c) : (S.nsib[S.lchild[p]] = c)
     S.lchild[p] = c
     return nothing
 end
-function _child_remove!(S::ParametricTree, p::Int, c::Int)
+function _child_remove!(S::ParametricTrees, p::Int, c::Int)
     pr, nx = S.psib[c], S.nsib[c]
     pr == 0 ? (S.fchild[p] = nx) : (S.nsib[pr] = nx)
     nx == 0 ? (S.lchild[p] = pr) : (S.psib[nx] = pr)
     return nothing
 end
 # Moves the children of `z` to the end of the children of `p`.
-function _child_concat!(S::ParametricTree, p::Int, z::Int)
+function _child_concat!(S::ParametricTrees, p::Int, z::Int)
     S.fchild[z] == 0 && return nothing
     if S.lchild[p] == 0
         S.fchild[p] = S.fchild[z]
@@ -235,7 +268,7 @@ function _shift_subtree!(S::ParametricTree, sub::Vector{Int}, Δa::Int, Δb, sta
 end
 
 # Appends the descendants of `v` to `sub`, with `stack` as workspace.
-function _subtree!(sub::Vector{Int}, S::ParametricTree, v::Int, stack::Vector{Int})
+function _subtree!(sub::Vector{Int}, S::ParametricTrees, v::Int, stack::Vector{Int})
     empty!(stack)
     c = S.fchild[v]
     while c != 0
@@ -277,35 +310,20 @@ end
 # largest weight. Each time an arc becomes tight, the work is proportional to
 # the size of the subtrees whose depths change plus the number of arcs incident
 # to them: `O(nm + n² log n)` in all, and far less when the tree stays shallow.
-function _maxbalance(nv::Int, src::Vector{Int}, dst::Vector{Int}, w::Vector{T}) where {T}
+#
+# On a dense digraph, with `dense`, the tree is held by `DenseParametricTree`:
+# each node whose depth changes then costs a pass over the live nodes rather
+# than a heap update for each of its arcs.
+function _maxbalance(nv::Int, src::Vector{Int}, dst::Vector{Int}, w::Vector{T};
+                     dense::Bool=8 * length(w) > nv^2) where {T}
     x = zeros(T, nv)
     nv == 1 && return x
+    dense && return _maxbalance_dense(nv, src, dst, w)
     ne = length(w)
     S = ParametricTree(nv, src, dst, w)
     a, b, tarc, heap = S.a, S.b, S.tarc, S.heap
     csrc, cdst, cw = S.src, S.dst, S.w
-    fill!(a, -1)
-    ptr, adj = _out_arcs(nv, src, e -> S.alive[e])
-    queue = Int[1]
-    a[1] = 0
-    i = 1
-    while i <= length(queue)
-        v = queue[i]
-        i += 1
-        for s in ptr[v]:ptr[v+1]-1
-            e = adj[s]
-            q = dst[e]
-            if a[q] == -1
-                a[q] = a[v] + 1
-                push!(queue, q)
-            end
-            if a[q] == a[v] + 1 && (tarc[q] == 0 || b[v] + w[e] > b[q])
-                b[q] = b[v] + w[e]
-                tarc[q] = e
-            end
-        end
-    end
-    length(queue) == nv || error("internal error: the digraph is not strongly connected")
+    _initial_tree!(a, b, tarc, src, dst, w)
     for q in 2:nv
         _child_append!(S, src[tarc[q]], q)
     end
@@ -414,9 +432,47 @@ function _maxbalance(nv::Int, src::Vector{Int}, dst::Vector{Int}, w::Vector{T}) 
             nlive -= length(path)
         end
     end
-    # Sum `uΔ` along each vertex's chain of contractions, compressing the
-    # chains as they are summed.
-    for z in 1:nv
+    return _chain_sums!(x, uf, uΔ, stack)
+end
+
+# The shortest-path tree for `λ → ∞` on the strongly connected digraph on
+# `1:length(a)` with arcs `src[e] → dst[e]` of weight `w[e]`, rooted at vertex
+# 1: fewest arcs, then largest weight. Sets the depths `a`, the path weights
+# `b`, and the tree arcs `tarc`, with `tarc[1] == 0`.
+function _initial_tree!(a::Vector{Int}, b::Vector, tarc::Vector{Int}, src::Vector{Int}, dst::Vector{Int}, w::Vector)
+    nv = length(a)
+    fill!(a, -1)
+    fill!(b, zero(eltype(b)))
+    fill!(tarc, 0)
+    ptr, adj = _out_arcs(nv, src, e -> src[e] != dst[e])
+    queue = Int[1]
+    a[1] = 0
+    i = 1
+    while i <= length(queue)
+        v = queue[i]
+        i += 1
+        for s in ptr[v]:ptr[v+1]-1
+            e = adj[s]
+            q = dst[e]
+            if a[q] == -1
+                a[q] = a[v] + 1
+                push!(queue, q)
+            end
+            if a[q] == a[v] + 1 && (tarc[q] == 0 || b[v] + w[e] > b[q])
+                b[q] = b[v] + w[e]
+                tarc[q] = e
+            end
+        end
+    end
+    length(queue) == nv || error("internal error: the digraph is not strongly connected")
+    return nothing
+end
+
+# The shift `x` of each vertex `z`, as the sum of `uΔ` along its chain of
+# contractions `z`, `uf[z]`, `uf[uf[z]]`, …, with `x[1] == 0`; the chains are
+# compressed as they are summed, with `stack` as workspace.
+function _chain_sums!(x::Vector{T}, uf::Vector{Int}, uΔ::Vector{T}, stack::Vector{Int}) where {T}
+    for z in eachindex(uf)
         empty!(stack)
         y = z
         while uf[y] != y
@@ -435,6 +491,210 @@ function _maxbalance(nv::Int, src::Vector{Int}, dst::Vector{Int}, w::Vector{T}) 
     end
     x .-= x[1]
     return x
+end
+
+# The `λ` at which the arc `p → q` of weight `wpq` between live nodes becomes
+# tight, as for `_key!`, or `-Inf` if it is not a candidate arc.
+function _dense_key(S::DenseParametricTree{T}, p::Int, q::Int, wpq::T) where {T}
+    c = S.a[p] + 1 - S.a[q]
+    (c <= 0 || S.parent[q] == p) && return -T(Inf)
+    return (S.b[p] + wpq - S.b[q]) / c
+end
+
+# Sets `best[q]` to `p` and the key of `q` to `k`, or removes `q` from the heap
+# if `p == 0`.
+function _dense_set_best!(S::DenseParametricTree, q::Int, p::Int, k)
+    S.best[q] = p
+    S.dirty[q] = false
+    p == 0 ? _heap_remove!(S.heap, q) : _heap_set!(S.heap, q, k)
+    return nothing
+end
+
+# Sets `best[q]` to the tail of the candidate arc entering `q` with the
+# largest key.
+function _dense_best!(S::DenseParametricTree{T}, q::Int) where {T}
+    f, kf = 0, -T(Inf)
+    for p in S.live
+        k = _dense_key(S, p, q, S.win[p, q])
+        if k > kf
+            f, kf = p, k
+        end
+    end
+    _dense_set_best!(S, q, f, kf)
+    return nothing
+end
+
+# Updates `q` after the key of the arc `p → q` of weight `wpq` has changed: the
+# arc from `p` becomes `best[q]` if its key exceeds the key of `q`, and `q`
+# becomes dirty if `best[q] == p` and the key fell.
+function _dense_offer!(S::DenseParametricTree{T}, p::Int, q::Int, wpq::T) where {T}
+    k = _dense_key(S, p, q, wpq)
+    h = S.heap
+    if k > -T(Inf) && (h.pos[q] == 0 || k > h.key[q])
+        S.best[q] = p
+        S.dirty[q] = false
+        _heap_set!(h, q, k)
+    elseif S.best[q] == p && k != h.key[q]
+        S.dirty[q] = true
+    end
+    return nothing
+end
+
+# Adds `Δa` to the depth and `Δb` to the path weight of each node `y` of the
+# subtree listed in `sub`, marks it with `stamp[y] = st`, and updates `best` at
+# the subtree and at the heads of the arcs leaving it. Arcs within the subtree
+# keep their keys, since both ends shift alike.
+function _dense_shift!(S::DenseParametricTree{T}, sub::Vector{Int}, Δa::Int, Δb, stamp::Vector{Int},
+                       st::Int) where {T}
+    for y in sub
+        S.a[y] += Δa
+        S.b[y] += Δb
+        stamp[y] = st
+    end
+    for y in sub
+        f, kf = 0, -T(Inf)
+        for p in S.live
+            k = _dense_key(S, p, y, S.win[p, y])
+            if k > kf
+                f, kf = p, k
+            end
+            wyp = S.wout[p, y]
+            stamp[p] == st || wyp == -T(Inf) || _dense_offer!(S, y, p, wyp)
+        end
+        _dense_set_best!(S, y, f, kf)
+    end
+    return nothing
+end
+
+# `_maxbalance` with the tree held by `DenseParametricTree`.
+function _maxbalance_dense(nv::Int, src::Vector{Int}, dst::Vector{Int}, w::Vector{T}) where {T}
+    all(isfinite, w) || error("internal error: the weights must be finite")
+    tarc = zeros(Int, nv)
+    S = DenseParametricTree{T}(fill(-T(Inf), nv, nv), fill(-T(Inf), nv, nv), collect(1:nv), trues(nv),
+                               zeros(Int, nv), zeros(T, nv), zeros(Int, nv), zeros(Int, nv), zeros(Int, nv),
+                               zeros(Int, nv), zeros(Int, nv), IndexedHeap{T}(nv), zeros(Int, nv), falses(nv))
+    a, b, parent, win, wout, heap = S.a, S.b, S.parent, S.win, S.wout, S.heap
+    for e in eachindex(w)
+        p, q = src[e], dst[e]
+        if p != q && w[e] > win[p, q]
+            win[p, q] = wout[q, p] = w[e]
+        end
+    end
+    # The tree arc chosen among parallel arcs has the largest weight, so
+    # `b[q] == b[parent[q]] + win[parent[q], q]`.
+    _initial_tree!(a, b, tarc, src, dst, w)
+    for q in 2:nv
+        parent[q] = src[tarc[q]]
+        _child_append!(S, parent[q], q)
+    end
+    for q in 1:nv
+        _dense_best!(S, q)
+    end
+    uf = collect(1:nv)
+    uΔ = zeros(T, nv)
+    stamp = zeros(Int, nv)
+    st = 0
+    sub = Int[]
+    stack = Int[]
+    path = Int[]
+    while length(S.live) > 1
+        isempty(heap.heap) && error("internal error: no arc can become tight on a strongly connected digraph")
+        v = heap.heap[1]
+        while S.dirty[v]
+            _dense_best!(S, v)
+            isempty(heap.heap) && error("internal error: no arc can become tight on a strongly connected digraph")
+            v = heap.heap[1]
+        end
+        u = S.best[v]
+        λ = heap.key[v]
+        # Decide whether `u` is a descendant of `v` as in `_maxbalance`.
+        cycle = false
+        z = u
+        empty!(sub)
+        empty!(stack)
+        push!(stack, v)
+        while true
+            if z != 0
+                z == v && (cycle = true; break)
+                z = parent[z]
+            end
+            isempty(stack) && break
+            y = pop!(stack)
+            y == v || push!(sub, y)
+            y == u && (cycle = true; break)
+            c = S.fchild[y]
+            while c != 0
+                push!(stack, c)
+                c = S.nsib[c]
+            end
+        end
+        if !cycle
+            # The arc `u → v` replaces the tree arc into `v`: the subtree of `v`
+            # moves under `u` and becomes deeper.
+            Δa = a[u] + 1 - a[v]
+            Δb = b[u] + win[u, v] - b[v]
+            _child_remove!(S, parent[v], v)
+            _child_append!(S, u, v)
+            parent[v] = u
+            push!(sub, v)
+            _dense_shift!(S, sub, Δa, Δb, stamp, st += 1)
+        else
+            # Contract the cycle `v → ⋯ → u → v` into `v`.
+            empty!(path)
+            z = u
+            while z != v
+                push!(path, z)
+                z = parent[z]
+            end
+            for z in path
+                uf[z] = v
+                uΔ[z] = (a[z] - a[v]) * λ - (b[z] - b[v])
+                _child_remove!(S, parent[z], z)
+                S.islive[z] = false
+            end
+            filter!(y -> S.islive[y], S.live)
+            for z in path
+                # The arcs between `z` and the live nodes join `v`, merged with
+                # the parallel arcs there; a tree arc keeps its weight.
+                δ = uΔ[z]
+                for p in S.live
+                    p == v && continue
+                    wi = win[p, z]
+                    if wi != -T(Inf) && parent[v] != p
+                        wv = wi + δ
+                        wv > win[p, v] && (win[p, v] = wout[v, p] = wv)
+                    end
+                    wo = wout[p, z]
+                    if wo != -T(Inf) && parent[p] != v
+                        wv = wo - δ
+                        (parent[p] == z || wv > wout[p, v]) && (wout[p, v] = win[v, p] = wv)
+                    end
+                end
+                # The children of `z` move under `v`, which is shallower, and
+                # their subtrees rise by `a[z] - a[v]`.
+                c = S.fchild[z]
+                while c != 0
+                    parent[c] = v
+                    c = S.nsib[c]
+                end
+                Δa = a[v] - a[z]
+                _dense_shift!(S, _subtree!(empty!(sub), S, z, stack), Δa, Δa * λ, stamp, st += 1)
+                _child_concat!(S, v, z)
+            end
+            for z in path
+                _dense_set_best!(S, z, 0, λ)
+            end
+            for q in S.live
+                q == v && continue
+                f = S.best[q]
+                f == 0 || S.islive[f] || (S.dirty[q] = true)
+                wvq = wout[q, v]
+                wvq == -T(Inf) || _dense_offer!(S, v, q, wvq)
+            end
+            _dense_best!(S, v)
+        end
+    end
+    return _chain_sums!(zeros(T, nv), uf, uΔ, stack)
 end
 
 # The scales `y` of the difference system `sys` shifted by the max-balancing

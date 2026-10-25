@@ -88,8 +88,9 @@ The method used to minimize the objective depends on the penalty:
 - `PowerMean{p}` with a target ratio, for [`cover_transversal`](@ref) (native),
   uses an active-set Newton method that keeps every iterate a hard cover
   tight on the transversal. With `maxbalance=true`, a parametric shortest-path
-  algorithm max-balances each block first, and the Newton method acts on one
-  scale per block.
+  algorithm max-balances each block first, at a cost comparable to that of
+  finding the transversal for dense and for typical sparse matrices, and the
+  Newton method acts on one scale per block.
 - `AbsLog{1}` is a linear program solved with JuMP and HiGHS.
 - `AbsLinear` is not convex; several starts are each refined to a local minimum
   with JuMP and Ipopt, and the best is returned.
