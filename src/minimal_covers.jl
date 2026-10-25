@@ -9,9 +9,10 @@
     a, stats = symcover_min(ρ, A; kwargs...)
     a, stats = symcover_min(A; kwargs...)
 
-Return the ρ-minimal symmetric hard cover of `A`: the vector `a` minimizing
-`∑ ρ(|A[i,j]|/(a[i]*a[j]))` subject to `a[i]*a[j] >= |A[i,j]|`. The
-default penalty is `AbsLog{2}()`.
+Return the symmetric hard cover of `A` that minimizes the penalty `ρ`: the
+vector `a` minimizing `∑ ρ(log(a[i]*a[j]) - log|A[i,j]|)` over the nonzero
+entries of `A`, subject to `a[i]*a[j] >= |A[i,j]|`. The default penalty is
+`AbsLog{2}()`, which gives the ℓ₂-minimal cover.
 
 Supported ρ values:
 - `AbsLog{2}()`: native.
@@ -94,9 +95,10 @@ symcover_min(A::AbstractMatrix; kwargs...) = symcover_min(AbsLog{2}(), A; kwargs
     a, b, stats = cover_min(ρ, A; kwargs...)
     a, b, stats = cover_min(A; kwargs...)
 
-Return the ρ-minimal asymmetric hard cover of `A`: vectors `a`, `b` minimizing
-`∑ ρ(|A[i,j]|/(a[i]*b[j]))` subject to `a[i]*b[j] >= |A[i,j]|`. The
-default penalty is `AbsLog{2}()`.
+Return the asymmetric hard cover of `A` that minimizes the penalty `ρ`:
+vectors `a`, `b` minimizing `∑ ρ(log(a[i]*b[j]) - log|A[i,j]|)` over the
+nonzero entries of `A`, subject to `a[i]*b[j] >= |A[i,j]|`. The default penalty
+is `AbsLog{2}()`, which gives the ℓ₂-minimal cover.
 
 The objective and the constraints depend only on the products `a[i]*b[j]`,
 which do not change when `a` is multiplied by `c` and `b` divided by `c` on one

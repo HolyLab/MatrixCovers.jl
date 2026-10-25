@@ -13,8 +13,8 @@ C_{ij} \;\geq\; |A_{ij}| \quad \text{for all } i, j.
 ```
 
 For symmetric `A`, a single vector suffices (`b = a`). A matrix has many hard
-covers; a *minimal cover* is the one that minimizes a chosen penalty on the gap
-between `C` and `|A|`. A *soft cover* penalizes violations of the inequality
+covers; a *minimal cover* is the one that minimizes a chosen penalty on the log
+slack `log C[i,j] - log|A[i,j]|` of each nonzero entry. A *soft cover* penalizes violations of the inequality
 instead of enforcing it.
 
 ## Installation

@@ -7,27 +7,44 @@ CurrentModule = MatrixCovers
 ## Penalty functions
 
 Any hard cover is valid, but tighter covers better capture the scaling of `A`.
-The tightness of a cover is measured through the ratios
-`r[i, j] = |A[i,j]| / (a[i] * b[j])`: a hard cover has every `0 ≤ r[i, j] ≤ 1`,
-and `r[i, j] == 1` means the constraint is exactly tight.
-
-A **penalty function** `ϕ` combines those ratios into a scalar objective:
+The tightness of a cover is measured on each nonzero entry by the coverage ratio
+`r[i, j] = |A[i,j]| / (a[i] * b[j])`, or equivalently by the log slack
 
 ```math
-\sum_{i,j} \phi\!\left(\frac{|A_{ij}|}{a_i\, b_j}\right).
+z_{ij} = \log(a_i b_j) - \log|A_{ij}| = -\log r_{ij}.
 ```
 
-Three penalty families are provided:
+A hard cover has every `z[i, j] ≥ 0` (every `r[i, j] ≤ 1`), `z[i, j] == 0` means
+the constraint is exactly tight, and `z[i, j] < 0` marks an entry the cover
+violates.
 
-- [`AbsLog`](@ref)`{p}`: `ϕ(r) = |log r|^p`, with `ϕ(0) = 0`. It is convex in
-  log space and is the default for hard covers.
-- [`PowerMean`](@ref)`{p}`: `ϕ(r) = (r^p - 1 - p log r)/p`, with `ϕ(0) = 0`. It
-  is strictly convex in log space and is the default for soft covers. Its
-  minimizer makes the mean of `r^p` over the nonzero entries of every row and
-  column equal to one.
-- [`AbsLinear`](@ref)`{p}`: `ϕ(r) = |1-r|^p`. It is nonconvex but finite and
-  continuous at zero, so an entry that shrinks to zero drops out of the soft
-  cover continuously.
+A **penalty function** `ρ` combines the log slacks into a scalar objective, a
+sum over the nonzero entries of `A`:
+
+```math
+E = \sum_{i,j:\, A_{ij} \ne 0} \rho(z_{ij}).
+```
+
+Zero entries constrain nothing and are excluded from the sum. A nonzero entry
+over a zero product `a[i] * b[j]` has `z = -∞`, and every built-in penalty is
+infinite there.
+
+Three penalty families are provided, all parameterized by an exponent `p`:
+
+- [`AbsLog`](@ref)`{p}`: `ρ(z) = |z|^p`, the ℓ_p penalty on the log slacks.
+  `AbsLog{1}` gives the ℓ₁ objective, a linear program, and `AbsLog{2}` the ℓ₂
+  objective, whose minimizer among hard covers is the ℓ₂-minimal cover. It is
+  convex in log space, and `AbsLog{2}` is the default for hard covers.
+- [`PowerMean`](@ref)`{p}`: `ρ(z) = (exp(-p z) - 1 + p z)/p`, which is
+  `(r^p - 1 - p log r)/p` in the ratio. It is strictly convex in log space and
+  power-mean `p = 2` is the default for soft covers. Its minimizer makes the
+  mean of `r^p` over the nonzero entries of every row and column equal to one.
+- [`AbsLinear`](@ref)`{p}`: `ρ(z) = |1 - exp(-z)|^p`, which is `|1 - r|^p` in
+  the ratio. It is nonconvex. On entries the cover satisfies it is at most one,
+  approaching one as `r → 0`, so a small entry costs a soft cover at most a
+  bounded amount; an exact zero is excluded from the sum and costs nothing.
+
+A penalty object is callable on a log slack: `AbsLog{2}()(z)` returns `z^2`.
 
 [`cover_objective`](@ref) evaluates any penalty for a given cover:
 
@@ -41,10 +58,10 @@ julia> a = symcover(A)
  2.0
  4.0
 
-julia> cover_objective(AbsLog{1}(), a, A)   # sum of log-excesses (L1)
+julia> cover_objective(AbsLog{1}(), a, A)   # ℓ₁: sum of log slacks
 2.772588722239781
 
-julia> cover_objective(AbsLog{2}(), a, A)   # sum of squared log-excesses (L2)
+julia> cover_objective(AbsLog{2}(), a, A)   # ℓ₂: sum of squared log slacks
 3.843624111345611
 ```
 
@@ -68,8 +85,8 @@ their `_min` counterparts minimize the selected objective.
 covers that are tight on a maximum-product transversal (see
 [Transversals and conditioning](@ref)); with a `PowerMean{p}` penalty and a
 `target` ratio `t`, it instead pushes the ratios of the entries off the
-transversal toward `t`, minimizing `∑ t^p φ(r/t)` over them with `φ` the
-`PowerMean{p}` penalty. Adding `maxbalance=true` replaces that objective within
+transversal toward `t`, minimizing `∑ t^p ρ(z + log t)` over them with `ρ` the
+`PowerMean{p}` penalty, which is least at `z = -log t`, where `r = t`. Adding `maxbalance=true` replaces that objective within
 each fully indecomposable block by its `p → ∞` limit, max-balancing: across
 every partition of a block's rows, the largest ratio in one direction equals
 the largest in the other, which also minimizes the block's largest ratio. The

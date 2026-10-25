@@ -8,8 +8,8 @@
     a, stats = soft_symcover(ρ, A; kwargs...)
     a, stats = soft_symcover(A; kwargs...)
 
-Return the scales `a` that minimize `∑ ρ(|A[i,j]|/(a[i]*a[j]))` for symmetric
-`A`. Unlike a hard cover, this soft cover penalizes violations of
+Return the scales `a` that minimize `∑ ρ(log(a[i]*a[j]) - log|A[i,j]|)` over
+the nonzero entries of symmetric `A`. Unlike a hard cover, this soft cover penalizes violations of
 `a[i]*a[j] >= |A[i,j]|` rather than forbidding them. The default penalty is
 `PowerMean{2}()`.
 
@@ -150,7 +150,8 @@ end
     a, b, stats = soft_cover(ρ, A; kwargs...)
     a, b, stats = soft_cover(A; kwargs...)
 
-Return the scales `a`, `b` that minimize `∑ ρ(|A[i,j]|/(a[i]*b[j]))`. This is
+Return the scales `a`, `b` that minimize `∑ ρ(log(a[i]*b[j]) - log|A[i,j]|)`
+over the nonzero entries of `A`. This is
 the asymmetric counterpart of [`soft_symcover`](@ref): it penalizes violations
 of `a[i]*b[j] >= |A[i,j]|` rather than forbidding them. The default penalty is
 `PowerMean{2}()`. `stats` and the failure behavior are as for

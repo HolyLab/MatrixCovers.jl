@@ -18,9 +18,11 @@ to [bounds on $`\hat A`$'s eigenvalues](https://en.wikipedia.org/wiki/Gershgorin
 
 The package provides O(mn) heuristics (`symcover`, `cover`), *soft* covers that
 penalize violations (`soft_symcover`, `soft_cover`), and objective-minimal hard
-covers (`symcover_min`, `cover_min`). The default penalties, squared-log for
-hard covers and the power-mean penalty `PowerMean{2}` for soft covers, use
-built-in solvers; other penalties use JuMP with HiGHS or Ipopt.
+covers (`symcover_min`, `cover_min`). Penalties are functions of the log slack
+`z = log(a[i]*b[j]) - log|A[i,j]|` of each nonzero entry. The defaults, the ℓ₂
+penalty `AbsLog{2}` (`z^2`) for hard covers and the power-mean penalty
+`PowerMean{2}` for soft covers, use built-in solvers; other penalties use JuMP
+with HiGHS or Ipopt.
 
 ## Installation
 

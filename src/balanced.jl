@@ -32,16 +32,17 @@ const BALANCED_RIDGE_GROWTH = 1e4
 
 Return the hard cover of the square matrix `A` that is tight on its
 maximum-product transversals and pushes the coverage ratios
-`r = |A[i,j]| / (a[i]*b[j])` of the other nonzero entries toward `target`: it
-minimizes
+`r = |A[i,j]| / (a[i]*b[j])` of the other nonzero entries toward `target`. In
+terms of the log slack `z = -log(r)`, it minimizes
 
-    ∑ (r^p - 1 - p*log(r/target)*target^p) / p,
+    ∑ ((exp(-p*z) - 1)/p + target^p * z),
 
 the sum taken over the nonzero entries off the transversals, among the hard
 covers with `prod(a) * prod(b) == π*` (see [`cover_transversal(A)`](@ref
-cover_transversal)). Each term is `target^p * ρ(r/target)` up to a constant, with
-`ρ` the [`PowerMean{p}`](@ref) penalty, so it is least at `r = target`; the hard
-constraint caps every ratio at one, and the transversal entries have ratio one.
+cover_transversal)). Each term is `target^p * ρ(z + log(target))` up to a
+constant, with `ρ` the [`PowerMean{p}`](@ref) penalty, so it is least at
+`z = -log(target)`, where `r = target`; the hard constraint keeps every `z ≥ 0`
+(every ratio at most one), and the transversal entries have `z = 0`.
 `0 < target <= 1` and `0 < p < ∞` are required; otherwise an `ArgumentError` is
 thrown. `cover_transversal(AbsLog{2}(), A)` is `cover_transversal(A)`.
 
