@@ -180,7 +180,7 @@ Supported penalties and their keywords are:
 - `AbsLinear{1}()`, `AbsLinear{2}()`: requires JuMP and Ipopt. The objective is
   not convex, so several starts are each refined to a local minimum, and the
   result with the least objective is returned. `starts` (default 4) is the
-  number of starts: the boosted covariant start of [`cover`](@ref) and the hard cover
+  number of starts: the boosted unconstrained start of [`cover`](@ref) and the hard cover
   tightened from it, then log-normal perturbations of the first with spread `σ`
   (default 2.0; `sigma` is an alias), drawn from `rng` (default
   `MersenneTwister(0)`). A perturbed start whose refinement throws a
@@ -404,14 +404,14 @@ function _soft_symcover_abslinear(ϕ::AbsLinear, A::AbstractMatrix, starts::Int,
                            A, starts, σ, rng)
 end
 
-# Asymmetric `AbsLinear` starts: boosted covariant start, tightened cover, and
+# Asymmetric `AbsLinear` starts: boosted unconstrained start, tightened cover, and
 # log-normal perturbations. Every start is covariant, so the selection is too.
 function _soft_cover_abslinear_inits(A::AbstractMatrix, starts::Int, σ::Real, rng)
     T = float(real(eltype(A)))
-    ag, bg = initialize_cover(A; strategy=:covariant, feasible=:boost)
+    ag, bg = initialize_cover(A; strategy=:unconstrained, feasible=:boost)
     labels = [:boost]
     inits = [(copy(ag), copy(bg))]
-    # Reuse the covariant start and boost pass when constructing the hard start.
+    # Reuse the unconstrained start and boost pass when constructing the hard start.
     length(inits) < starts && (push!(labels, :hardcover); push!(inits, tighten_cover!(copy(ag), copy(bg), A)))
     nfixed, k = length(inits), 0
     while length(inits) < starts

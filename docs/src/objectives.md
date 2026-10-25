@@ -247,7 +247,7 @@ julia> a, b = cover(A); scaledcond(a, b)
 ```
 
 For a square, structurally nonsingular matrix, [`cover`](@ref) is tight on a
-transversal by default (`start=:transversal`). The `:covariant` and `:geomean`
+transversal by default (`start=:transversal`). The `:unconstrained` and `:geomean`
 starts, and the `_min` solvers, do not guarantee this. Tightness on a
 transversal prevents only this one cause of ill-conditioning, and it comes at
 the cost of a somewhat larger objective than that of the minimal cover.
