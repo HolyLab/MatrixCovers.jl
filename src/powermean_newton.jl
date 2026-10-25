@@ -198,7 +198,9 @@ function _powermean_linsolve(sys::PowerMeanSystem{T}, linsolve::Symbol) where {T
     end
     H = kind === :dense ? zeros(T, N, N) : zeros(T, 0, 0)
     epos = zeros(Int, kind === :cholesky ? length(sys.u) : 0)
-    dpos = kind === :cholesky ? [_nzindex(M, q, q) for q in 1:N] : Int[]
+    # `M` is reassigned above, so the comprehension captures a binding made once.
+    Mp = M
+    dpos = kind === :cholesky ? [_nzindex(Mp, q, q) for q in 1:N] : Int[]
     if kind === :cholesky
         for e in eachindex(sys.u, sys.v)
             a, b = sys.u[e], sys.v[e]
@@ -286,9 +288,11 @@ function _powermean_direction!(d, ls::PowerMeanLinsolve{T}, sys::PowerMeanSystem
         for e in eachindex(sys.u, sys.v, W)
             a, b = sys.u[e], sys.v[e]
             h = p * sys.mult[e] * W[e]
-            z = h * (xx[a] + xx[b])
-            y[a] += z
-            y[b] += z
+            # Not named `z`: the CG work vector `z` bound below would make a
+            # shared name a boxed capture.
+            δ = h * (xx[a] + xx[b])
+            y[a] += δ
+            y[b] += δ
         end
         for q in eachindex(y, pinned)
             pinned[q] && (y[q] = xx[q])

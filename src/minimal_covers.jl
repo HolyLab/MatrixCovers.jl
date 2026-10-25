@@ -1396,7 +1396,8 @@ function _difference_solve!(sol, x, f, czero, dfull, zedges, vpairs, dκ, dmin,
     factorize!(F, B)
     out = zeros(Float64, N)
     solve!(out, F, CHOLMOD_A, Vector{Float64}(f))
-    return out, it, true
+    # Both branches return a `Vector{T}`; CHOLMOD solves in `Float64`.
+    return convert(Vector{T}, out), it, true
 end
 
 # Storage for the dense normal-equation factorization of the `:dense` path.
