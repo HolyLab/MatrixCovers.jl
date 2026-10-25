@@ -10,7 +10,11 @@
 # most violated constraint until none is violated; the final point satisfies the
 # KKT conditions to rounding error, which certifies it as the minimizer. Holding
 # the edges of a tree tight fixes the differences of `u` along it, so each
-# linear solve is a graph Laplacian with one unknown per tree.
+# linear solve is a graph Laplacian with one unknown per tree. Bulk steps add
+# many constraints at once: the violated constraints, most violated first, that
+# extend `W` to a larger forest. Like a single addition, each bulk step raises
+# the dual function; they run while the number of violated constraints falls,
+# within a fixed budget, and single additions finish the solve.
 
 # Constraint supports. Constraint `e` is a position in an `EdgeList`, or a
 # linear index into the matrix `C` of a difference grid; grid entries outside
@@ -617,9 +621,30 @@ function _most_violated(u::Vector{T}, inW::Matrix{Bool}, s::_DiffGridQP, de::T) 
     error("internal error: the most violated constraint was not found")
 end
 
+# Constraints outside `W` with residual below `-ptol`, most violated first.
+function _violated(u::Vector{T}, inW, s::EdgeList, ptol::T) where {T}
+    viol = [e for e in 1:_nconstraints(s) if !inW[e] && _resid(u, s, e) < -ptol]
+    return sort!(viol; by=e -> _resid(u, s, e))
+end
+
+function _violated(u::Vector{T}, inW::Matrix{Bool}, s::_DiffGridQP, ptol::T) where {T}
+    C = s.C
+    L = LinearIndices(C)
+    ur = u[s.rowidx]
+    viol = Int[]
+    for j in axes(C, 2)
+        uj = u[s.colidx[j]]
+        for i in eachindex(ur, view(C, :, j))
+            # Entries outside the support have residual `+Inf`.
+            !inW[i, j] && ur[i] - uj - C[i, j] < -ptol && push!(viol, L[i, j])
+        end
+    end
+    return sort!(viol; by=e -> _resid(u, s, e))
+end
+
 """
-    u, certified, nsteps, kkt = _polish_difference_qp(supp, u0; τ, maxsteps, seed, budgets)
-    u, certified, nsteps, kkt = _polish_difference_qp(edges, cvals, u0; τ, maxsteps, seed, budgets)
+    u, certified, nsteps, kkt = _polish_difference_qp(supp, u0; τ, maxsteps, maxbulk, seed, budgets)
+    u, certified, nsteps, kkt = _polish_difference_qp(edges, cvals, u0; τ, maxsteps, maxbulk, seed, budgets)
 
 Minimize `½ ∑ₑ (u[p] - u[q] - c[e])²` subject to every term being nonnegative,
 starting from the near-optimal `u0`. The constraints are those of `supp`, an
@@ -639,6 +664,14 @@ positive weight or residual below `ptol`, largest weight first and then
 tightest first. Constraints on no cycle of the support graph are activated
 ahead of the candidates: they are tight with zero multiplier at the minimizer,
 so a solve error must not let them appear violated.
+
+From the seed, each bulk step adds the violated constraints, most violated
+first, that extend the active forest without closing a cycle, and drops active
+constraints whose multipliers would become negative. Bulk steps repeat while
+the number of violated constraints falls, up to `maxbulk` bulk steps in all;
+single-constraint steps then finish the solve. A single-constraint step that
+leaves more than 8 violated constraints re-enters the bulk steps while the
+budget lasts. Each Laplacian solve of a bulk step counts toward `nsteps`.
 
 `certified` reports that the
 returned `u` satisfies the KKT conditions to tolerances proportional to the
@@ -660,7 +693,7 @@ function _polish_difference_qp(edges::Vector{Tuple{Int,Int}}, cvals::Vector{T}, 
 end
 
 function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{T};
-                               τ::Real=T(1e-4), maxsteps::Int=max(1000, 2 * length(u0)),
+                               τ::Real=T(1e-4), maxsteps::Int=max(1000, 2 * length(u0)), maxbulk::Int=20,
                                seed::Union{Nothing,AbstractVector}=nothing,
                                budgets::NamedTuple=(;)) where {T}
     s = _qp_support(supp)
@@ -670,6 +703,8 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
     dtol = ptol * max(1, _nsupported(s))
     # Seed: Kruskal's algorithm on the candidate constraints, in the order the
     # docstring describes.
+    inW = _active_flags(s)
+    W = Int[]   # the active constraints, in increasing order
     if seed === nothing
         cand = _seed_candidates(u0, s, max(T(τ), ptol))
         sort!(cand; by=e -> _resid(u0, s, e))
@@ -682,20 +717,7 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
         sort!(cand; by=e -> (-seed[e], _resid(u0, s, e)))
     end
     # Constraints on no cycle come first; Kruskal then skips them if they recur.
-    cand = vcat(_acyclic_constraints(s, nV), cand)
-    uf = collect(1:nV)
-    find(x) = (while uf[x] != x; uf[x] = uf[uf[x]]; x = uf[x]; end; x)
-    inW = _active_flags(s)
-    W = Int[]   # the active constraints, in increasing order
-    for e in cand
-        p, q = _edge(s, e)
-        rp, rq = find(p), find(q)
-        rp == rq && continue
-        uf[rp] = rq
-        inW[e] = true
-        push!(W, e)
-    end
-    sort!(W)
+    _activate!(inW, W, _forest_extension(W, vcat(_acyclic_constraints(s, nV), cand), s, nV))
     # Multipliers and their rates; only the entries in `W` are meaningful.
     E = _nconstraints(s)
     λ = zeros(T, E)
@@ -705,12 +727,24 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
     u, nsteps, ptol_eff, dtol_eff = _dual_feasible!(inW, W, λ, s, nV, ptol, nsteps, maxsteps; budgets)
     certified = false
     nokkt = (; primal=T(NaN), ptol, dual=T(NaN), dtol)
+    nbulk = 0       # bulk steps taken
+    bulkon = maxbulk > 0
+    bulkmin = 0     # bulk steps run while more than this many constraints are violated
     while nsteps <= maxsteps
-        e, de = _most_violated(u, inW, s, -ptol_eff)
+        if bulkon
+            u, nsteps, ptol_eff, dtol_eff, nbulk, e, bulkon =
+                _bulk_steps!(inW, W, λ, s, nV, u, ptol, ptol_eff, dtol_eff, nsteps, maxsteps, nbulk, maxbulk, bulkmin; budgets)
+        else
+            e, _ = _most_violated(u, inW, s, -ptol_eff)
+        end
+        e < 0 && break
         if e == 0
             certified = all(k -> λ[k] >= -dtol_eff, W)
             break
         end
+        # Single-constraint step; bulk steps resume only when it leaves more
+        # than `bulkmin` constraints violated.
+        bulkmin = 8
         p, q = _edge(s, e)
         λe = zero(T)
         added = false
@@ -773,7 +807,8 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
     ustar = u
     kkt = (; primal=max(zero(T), -minimum(e -> _resid(ustar, s, e), 1:_nconstraints(s))), ptol=ptol_eff,
            dual=max(zero(T), -minimum(k -> λ[k], W; init=zero(T))), dtol=dtol_eff)
-    uf .= 1:nV
+    uf = collect(1:nV)
+    find(x) = (while uf[x] != x; uf[x] = uf[uf[x]]; x = uf[x]; end; x)
     _foreach_constraint(s) do p, q
         rp, rq = find(p), find(q)
         rp == rq || (uf[max(rp, rq)] = min(rp, rq))
@@ -785,6 +820,170 @@ function _polish_difference_qp(supp::Union{EdgeList{T},DiffGrid{T}}, u0::Vector{
         rv == v && (shift[v] = u0[v] - ustar[v])
     end
     return [ustar[v] + shift[find(v)] for v in 1:nV], true, nsteps, kkt
+end
+
+# Objective `½ ∑ₑ dₑ(u)²`.
+_objective(u::Vector{T}, s::EdgeList) where {T} = sum(e -> _resid(u, s, e)^2, 1:_nconstraints(s); init=zero(T)) / 2
+function _objective(u::Vector{T}, s::_DiffGridQP) where {T}
+    C = s.C
+    ur = u[s.rowidx]
+    f = zero(T)
+    for j in axes(C, 2)
+        uj = u[s.colidx[j]]
+        for i in eachindex(ur, view(C, :, j))
+            c = C[i, j]
+            isfinite(c) && (f += (ur[i] - uj - c)^2)
+        end
+    end
+    return f / 2
+end
+
+# Bulk steps from the tight minimizer `u` of the dual-feasible forest `W`, run
+# while more than `minviol` constraints are violated and their number falls.
+# Each step adds `V`, the violated constraints, most violated first, that
+# extend `W` to a larger forest. It first tries a primal-dual active-set step:
+# activate all of `V`, then drop constraints with negative multipliers
+# (`_dual_feasible!`). At the tight minimizer of a dual-feasible forest the
+# objective equals the dual function, so the step is kept only if it raises
+# the objective, as every single-constraint step does. Otherwise it is undone
+# and `V` is added by `_bulk_ascent!`, which raises the dual function by
+# construction, and the remaining steps of this call use `_bulk_ascent!`
+# directly. Returns the updated `u`, `nsteps`, tolerances and `nbulk`; the most
+# violated constraint (0 when none is violated, -1 when `maxsteps` interrupts
+# `_bulk_ascent!`); and whether further bulk steps may run.
+function _bulk_steps!(inW, W::Vector{Int}, λ::Vector{T}, s, nV::Int, u::Vector{T}, ptol, ptol_eff, dtol_eff,
+                      nsteps::Int, maxsteps::Int, nbulk::Int, maxbulk::Int, minviol::Int; budgets) where {T}
+    viol = _violated(u, inW, s, ptol_eff)
+    f = _objective(u, s)
+    pdas = true
+    while length(viol) > minviol && nbulk < maxbulk && nsteps < maxsteps
+        V = _forest_extension(W, viol, s, nV)
+        isempty(V) && break
+        nbulk += 1
+        if pdas
+            Wold, λold = copy(W), λ[W]
+            _activate!(inW, W, V)
+            nsteps += 1
+            u1, nsteps, ptol1, dtol1 = _dual_feasible!(inW, W, λ, s, nV, ptol, nsteps, maxsteps; budgets)
+            f1 = _objective(u1, s)
+            if f1 > f
+                u, f, ptol_eff, dtol_eff = u1, f1, ptol1, dtol1
+            else
+                for e in W
+                    inW[e] = false
+                end
+                copyto!(resize!(W, length(Wold)), Wold)
+                for (e, λe) in zip(Wold, λold)
+                    inW[e] = true
+                    λ[e] = λe
+                end
+                pdas = false
+            end
+        end
+        if !pdas
+            u, nsteps, ptol_eff, dtol_eff, done = _bulk_ascent!(inW, W, λ, V, s, nV, u, ptol, ptol_eff, dtol_eff,
+                                                               nsteps, maxsteps; budgets)
+            done || return u, nsteps, ptol_eff, dtol_eff, nbulk, -1, false
+            f = _objective(u, s)
+        end
+        nprev = length(viol)
+        viol = _violated(u, inW, s, ptol_eff)
+        length(viol) < nprev || break
+    end
+    return u, nsteps, ptol_eff, dtol_eff, nbulk, isempty(viol) ? 0 : first(viol), nbulk < maxbulk
+end
+
+# Starting from the tight minimizer `u` of the dual-feasible forest `W`,
+# activate the constraints `V`, which extend `W`, keeping the multipliers
+# nonnegative. The segment from `u` to the tight minimizer of `W ∪ V`, with the multipliers
+# interpolated linearly, satisfies stationarity throughout and raises the dual
+# function. Each pass solves for the far end and moves along the segment until
+# a multiplier reaches zero; that constraint leaves `W` or `V`. Constraints
+# that leave `V` remain violated and are left for later steps. Returns `u`,
+# `nsteps`, the tolerances (as `_dual_feasible!` does), and whether the
+# remaining `V` became active; when `maxsteps` is reached first, `u` is a point
+# on a segment, not the tight minimizer of `W`.
+function _bulk_ascent!(inW, W::Vector{Int}, λ::Vector{T}, V::Vector{Int}, s, nV::Int, u::Vector{T}, ptol,
+                       ptol_eff, dtol_eff, nsteps::Int, maxsteps::Int; budgets) where {T}
+    E = max(1, _nsupported(s))
+    λ1 = zeros(T, length(λ))
+    inV = Set(V)
+    for e in V
+        λ[e] = zero(T)
+    end
+    while nsteps < maxsteps
+        nsteps += 1
+        A = sort!(vcat(W, V))
+        F = _Forest(nV, s, A)
+        K = _TreeLaplacian(F, s; budgets)
+        u1, δ = _tight_minimizer(F, K, s)
+        _route!(λ1, _difference_gradient(u1, s), F, s)
+        t, kb = one(T), 0
+        for k in A
+            λk = max(λ[k], zero(T))
+            if λ1[k] < λk
+                tk = λk / (λk - λ1[k])
+                if tk < t
+                    t, kb = tk, k
+                end
+            end
+        end
+        if kb == 0
+            _activate!(inW, W, V)
+            for k in W
+                λ[k] = λ1[k]
+            end
+            ptol_eff = max(ptol, T(2δ))
+            return u1, nsteps, ptol_eff, ptol_eff * E, true
+        end
+        if t > 0
+            u = u .+ t .* (u1 .- u)
+            for k in A
+                λ[k] += t * (λ1[k] - λ[k])
+            end
+            blocked = [kb]
+        else
+            # Every constraint at zero multiplier whose multiplier would
+            # decrease blocks the step; none of them moves `u`.
+            blocked = [k for k in A if max(λ[k], zero(T)) == 0 && λ1[k] < 0]
+        end
+        for k in blocked
+            λ[k] = zero(T)
+            k in inV ? delete!(inV, k) : (inW[k] = false)
+        end
+        filter!(in(inV), V)
+        filter!(k -> inW[k], W)
+    end
+    return u, nsteps, ptol_eff, dtol_eff, false
+end
+
+# Add the constraints `V` to the active set `W`, keeping `W` sorted.
+function _activate!(inW, W::Vector{Int}, V)
+    for e in V
+        inW[e] = true
+    end
+    append!(W, V)
+    return sort!(W)
+end
+
+# The constraints of `cand`, in order, that extend the forest `W` without
+# closing a cycle with `W` or with those before them.
+function _forest_extension(W::Vector{Int}, cand, s, nV::Int)
+    uf = collect(1:nV)
+    find(x) = (while uf[x] != x; uf[x] = uf[uf[x]]; x = uf[x]; end; x)
+    for e in W
+        p, q = _edge(s, e)
+        uf[find(p)] = find(q)
+    end
+    ext = Int[]
+    for e in cand
+        p, q = _edge(s, e)
+        rp, rq = find(p), find(q)
+        rp == rq && continue
+        uf[rp] = rq
+        push!(ext, e)
+    end
+    return ext
 end
 
 function _deactivate!(inW, W::Vector{Int}, λ, w::Int)

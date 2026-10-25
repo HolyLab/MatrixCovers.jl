@@ -423,11 +423,14 @@ function _pcg!(Bmul!, x, dg, f, r, z, d, Ad, maxiter::Int, tol)
     return iters, fresh && nrm <= tol
 end
 
+# Full-accuracy stopping tolerance of `_lsqr`.
+_lsqr_atol(::Type{T}) where {T} = 5000 * eps(T)
+
 # Matrix-free LSQR for `min norm(M*x-b)`, warm-started from `x0`. The stopping
 # test uses the normal-equations residual estimated from the bidiagonalization.
 # Returns `(x, iters)`.
 function _lsqr(Amul!, Atmul!, b::AbstractVector{T}, x0::AbstractVector{T};
-               atol=5000 * eps(T), maxiter::Int=2 * (length(b) + length(x0)) + 100) where {T}
+               atol=_lsqr_atol(T), maxiter::Int=2 * (length(b) + length(x0)) + 100) where {T}
     x = copy(x0)
     u = similar(b)
     Amul!(u, x)
@@ -1217,6 +1220,10 @@ end
 const AL_PENALTY = 1e2
 const AL_MAXOUTER = 32
 const AL_MAXITER = 40
+# At the penalty cap the multiplier iteration contracts at a fixed rate. When
+# the active-set finish follows, two consecutive updates that contract the KKT
+# residual by less than this factor end the iteration.
+const AL_CAP_CONTRACTION = 3
 
 # Warn when the returned scales may not minimize the objective. With
 # `maxouter = 0` there is no iteration and no warning.
@@ -1292,6 +1299,13 @@ const LSQR_FILL_BUDGET = 1 << 30
 # repeated refactorization of the preconditioner costs more than the extra
 # LSQR iterations of spanning-forest preconditioning.
 const LSQR_FLOP_BUDGET = 8.0e3
+
+# The Newton steps of the multiplier iteration need only inexact solves: each
+# stage runs LSQR with tolerance `LSQR_FORCING` times the KKT residual of the previous
+# update, capped at `LSQR_ATOL_MAX` and floored at the full-accuracy tolerance
+# `_lsqr_atol`.
+const LSQR_ATOL_MAX = 1e-6
+const LSQR_FORCING = 1e-3
 
 # Return the symbolic factorization of `M`, its predicted number of values,
 # and its predicted numeric-factorization flop count.
@@ -1539,6 +1553,8 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     DF = use_cg_diff ? SparseCholesky() : nothing
     nsolves = Ref(0)
     nlsqr = Ref(0)
+    # LSQR tolerance: full accuracy for the unweighted start, then per stage.
+    lsqratol = Ref(_lsqr_atol(T))
     lsqrtrace = Int[]   # LSQR iterations of each solve
     ncg = Ref(0)
     nchol = Ref(0)
@@ -1693,7 +1709,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                 end
                 mul!(px, Msp, x)
                 solve_ptl!(px, MF, px)
-                soly, it = _lsqr(Pmul!, Ptmul!, cv, px)
+                soly, it = _lsqr(Pmul!, Ptmul!, cv, px; atol=lsqratol[])
                 nlsqr[] += it
                 push!(lsqrtrace, it)
                 return solve_up!(soly, MF, soly)
@@ -1752,7 +1768,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                     return z
                 end
                 lt_mul!(px, HFc, x)
-                soly, it = _lsqr(Fmul!, Ftmul!, cv, px)
+                soly, it = _lsqr(Fmul!, Ftmul!, cv, px; atol=lsqratol[])
                 nlsqr[] += it
                 push!(lsqrtrace, it)
                 return solve_up!(soly, HFc, soly)
@@ -1774,7 +1790,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                 @. z += v0 * y[g]
                 return z
             end
-            sol, it = _lsqr(Amul!, Atmul!, cv, x)
+            sol, it = _lsqr(Amul!, Atmul!, cv, x; atol=lsqratol[])
             nlsqr[] += it
             push!(lsqrtrace, it)
             return sol
@@ -1835,7 +1851,9 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     vbest = T(Inf)   # residual that the next tenfold contraction is measured from
     nzeroing = 0     # direct zeroings of slack multipliers since `vbest` was set
     nzeroed = 0
+    nslow = 0        # consecutive slow updates at the penalty cap
     for _ in 1:maxouter
+        lsqratol[] = clamp(T(LSQR_FORCING) * vprev, _lsqr_atol(T), T(LSQR_ATOL_MAX))
         sscale = inv(2 * κcur)
         bscale = inv(2 * (κcur - oneunit(T)))
         fcur = _fal(x, κcur, λ, sscale, bscale, supp, symmetric)
@@ -1879,6 +1897,16 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
         if v <= vtol
             converged = true
             break
+        end
+        # At the penalty cap the contraction rate is fixed, so when the
+        # active-set finish follows, two consecutive slow updates end the
+        # iteration: the finish resolves the remaining constraints in fewer
+        # solves than further updates would. A stage that ran out of inner
+        # iterations is skipped: its update does not reflect the contraction
+        # of a minimized stage.
+        if !zeroslack && κcur >= κcap && exit != :maxiter
+            nslow = v * AL_CAP_CONTRACTION > vprev ? nslow + 1 : 0
+            nslow >= 2 && break
         end
         κnext = v > vprev / 10 ? 10 * κcur : κcur
         if 10 * v <= vbest
