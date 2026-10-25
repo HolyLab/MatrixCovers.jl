@@ -82,6 +82,22 @@ end
         @test d1 ≈ d2 atol=1e-10
         @test d1 ≈ d3 atol=1e-10
     end
+    # A poor start on a larger problem, with costs in general position so that
+    # the minimizer is not degenerate: the bulk steps bring the step count far
+    # below the number of nodes, and the minimizer matches the one reached from
+    # a feasible start.
+    nV = 2000
+    edges = unique!([(p, q) for (p, q) in zip(rand(rng, 1:nV, 6nV), rand(rng, 1:nV, 6nV)) if p != q])
+    φ = randn(rng, nV)
+    cvals = [φ[p] - φ[q] - abs(randn(rng)) for (p, q) in edges]
+    u1, c1, _ = _polish_difference_qp(edges, cvals, φ)
+    u2, c2, nsteps2, _ = _polish_difference_qp(edges, cvals, randn(rng, nV); τ=0.0)
+    @test c1 && c2
+    @test nsteps2 < 100
+    d1 = [u1[p] - u1[q] - cvals[e] for (e, (p, q)) in enumerate(edges)]
+    d2 = [u2[p] - u2[q] - cvals[e] for (e, (p, q)) in enumerate(edges)]
+    @test all(>=(-1e-12), d1)
+    @test d1 ≈ d2 atol=1e-10
     @test_throws "seed must have axes 1:3" _polish_difference_qp([(1, 2), (2, 3), (1, 3)], [0.0, 0.0, 0.0], zeros(3); seed=ones(2))
     # Infeasible constraints (a cycle with positive total cost) are not certified.
     edges = [(1, 2), (2, 3), (3, 1)]
