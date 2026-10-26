@@ -30,61 +30,89 @@ const BALANCED_RIDGE_GROWTH = 1e4
 """
     a, b, stats = cover_transversal(ρ::PowerMean{p}, A; target=1e-2, maxbalance=false, tol=1e-9, maxiter, fillbudget, flopbudget)
 
-Return the hard cover of the square matrix `A` that is tight on its
-maximum-product transversals and pushes the coverage ratios
-`r = |A[i,j]| / (a[i]*b[j])` of the other nonzero entries toward `target`. In
-terms of the log slack `z = -log(r)`, it minimizes
+Return a hard cover of the square matrix `A` whose aim is to make the scaled
+matrix `A ./ (a .* b')` as diagonally dominant as possible, given a permutation
+that puts a maximum-product transversal on the diagonal. The cover is tight on
+the maximum-product transversals, so their entries scale to magnitude one, and
+it pushes the coverage ratios `r = |A[i,j]| / (a[i]*b[j])` of the other nonzero
+entries toward `target`. In terms of the log slack `z = -log(r)`, it minimizes
 
     ∑ ((exp(-p*z) - 1)/p + target^p * z),
 
 the sum taken over the nonzero entries off the transversals, among the hard
 covers with `prod(a) * prod(b) == π*` (see [`cover_transversal(A)`](@ref
-cover_transversal)). Each term is `target^p * ρ(z + log(target))` up to a
-constant, with `ρ` the [`PowerMean{p}`](@ref) penalty, so it is least at
-`z = -log(target)`, where `r = target`; the hard constraint keeps every `z ≥ 0`
-(every ratio at most one), and the transversal entries have `z = 0`.
-`0 < target <= 1` and `0 < p < ∞` are required; otherwise an `ArgumentError` is
-thrown. `cover_transversal(AbsLog{2}(), A)` is `cover_transversal(A)`.
+cover_transversal)). Each term is least at `r = target`, and the hard
+constraint keeps every ratio at most one. `0 < target <= 1` and `0 < p < ∞` are
+required; otherwise an `ArgumentError` is thrown.
+`cover_transversal(AbsLog{2}(), A)` is `cover_transversal(A)`.
 
-The objective is strictly convex in the products `a[i]*b[j]`, so they are
-unique on the support of `A`. As for `cover_transversal(A)`, they do not depend
-on which maximum-product transversal is used, they are scale-covariant, and the
-factors use the balance convention of [`cover_min`](@ref).
+The products `a[i]*b[j]` are unique on the support of `A`. As for
+`cover_transversal(A)`, they do not depend on which maximum-product transversal
+is used, they are scale-covariant, and the factors use the balance convention
+of [`cover_min`](@ref).
 
 With `target = 1`, every ratio is pushed up to one, as far as the constraints
-allow. With small `target`, the ratios within each block of a block-triangular
-form of `A` balance in the sense of the `p`-power mean, and the entries joining
-different blocks are pushed toward `target`; at the minimizer, the `p`-power
-mean of the ratios of the entries crossing such a cut equals `target` whenever
-none of them has ratio one. Large `p` approaches the cover that minimizes the
-largest ratio within each block.
+allow. With small `target`, the entries joining different blocks of a
+block-triangular form of `A` are pushed toward `target`, while within each block
+the scales approach those that minimize the sum of `r^p` over the block's
+entries off the transversal.
 
-With `maxbalance=true`, the criterion within each fully indecomposable block of
-`A` is the `p → ∞` limit of the objective (Hook, Pestana, Tisseur & Hogg, SIAM
-J. Matrix Anal. Appl. 40:320–346, 2019, Theorem 3.2): the scales are
-*max-balanced* within each block. Let `σ` be a maximum-product transversal,
-and let an entry `A[i,j]` off it lead from row `i` to the row `k` with
-`σ[k] == j`. For every partition of the rows of a block into two nonempty sets
-`I` and `K`, the largest ratio of an entry leading from `I` to `K` equals the
-largest ratio of an entry leading from `K` to `I`. This determines the products
-`a[i]*b[j]` within each block uniquely. When `σ` is the only maximum-product
-transversal, the largest ratio within a block equals the block's `θ`, the
-largest geometric-mean ratio of a cycle of entries off `σ`, which is the least
-largest ratio that any cover tight on `σ` can have there. `ρ` and `target` fix
-the scales between blocks: they minimize the objective above summed over the
-entries joining different blocks, with each block's scales moving together. At
-the minimizer, for every set of blocks that the entries joining it to the other
-blocks all lead out of, the `p`-power mean of the ratios of those entries
-equals `target` whenever none of them has ratio one.
-The result is a hard cover tight on the maximum-product transversals, and its
-products are unique on the support and scale-covariant.
+With `maxbalance=true`, the scales within each fully indecomposable block of `A`
+are instead *max-balanced*, which minimizes the largest ratio within the block;
+`ρ` and `target` then fix only the scales between blocks. Raising `p` at a fixed
+`target` need not approach this result.
 
 `stats` is a [`BalancedCoverStats`](@ref MatrixCovers.BalancedCoverStats). The
 solver warns when [`MatrixCovers.converged(stats)`](@ref MatrixCovers.converged)
 is `false`; the result is then still a hard cover tight on the maximum-product
 transversals.
 
+`A` must be square and structurally nonsingular. Narrower element types than
+`Float64` are computed in `Float64` and narrowed, with the coverage certified
+afterwards.
+
+See also: [`cover_transversal!`](@ref), [`PowerMean`](@ref).
+
 # Extended help
+
+## Characterization
+
+Each term of the objective is `target^p * ρ(z + log(target))` up to a constant,
+with `ρ` the [`PowerMean{p}`](@ref) penalty, so it is least at
+`z = -log(target)`. The hard constraint keeps every `z ≥ 0`, and the transversal
+entries have `z = 0`. The objective is strictly convex in the products
+`a[i]*b[j]`, which makes them unique on the support.
+
+Let `σ` be a maximum-product transversal; an entry `A[i,j]` off it *leads* from
+row `i` to the row `k` with `σ[k] == j`. At the minimizer, the `p`-power mean of
+the ratios of the entries crossing a cut between blocks of a block-triangular
+form of `A` equals `target` whenever none of them has ratio one.
+
+Within each block, as `target → 0`, the scales approach those that minimize the
+sum of `r^p` over the block's entries off the transversal, subject to the same
+constraints. When no constraint binds, these are the *`p`-balanced* scales of
+Hook, Pestana, Tisseur & Hogg (SIAM J. Matrix Anal. Appl. 40:320–346, 2019),
+whose Theorem 3.2 shows that they approach the max-balanced scales of
+`maxbalance=true` as `p → ∞`. At a fixed `target`, large `p` does not approach
+them: where a block holds ratios below `target` and the entries leading out of
+some set of its rows differ in number from those leading in, the minimizer
+raises some of these ratios to about `target`.
+
+With `maxbalance=true`, for every partition of the rows of a fully
+indecomposable block into two nonempty sets `I` and `K`, the largest ratio of an
+entry leading from `I` to `K` equals the largest ratio of an entry leading from
+`K` to `I`. This determines the products `a[i]*b[j]` within each block uniquely.
+When `σ` is the only maximum-product transversal, the largest ratio within a
+block equals the block's `θ`, the largest geometric-mean ratio of a cycle of
+entries off `σ`, which is the least largest ratio that any cover tight on `σ`
+can have there. The scales between blocks minimize the objective summed over
+the entries joining different blocks, with each block's scales moving together.
+At the minimizer, for every set of blocks that the entries joining it to the
+other blocks all lead out of, the `p`-power mean of the ratios of those entries
+equals `target` whenever none of them has ratio one. The products are unique on
+the support and scale-covariant.
+
+## Algorithm
 
 As for `cover_transversal(A)`, tightness on a maximum-product transversal `σ`
 leaves the row log scales as unknowns, with one constraint `d ≥ 0` on the log
@@ -115,6 +143,8 @@ dense random matrices the cost then grows about as `n^2.4` and is comparable
 to that of finding the transversal. The active-set Newton method then runs with
 one scale per block.
 
+## Keywords
+
 `tol` (default `1e-9`) is the stopping tolerance: the groups are stationary when
 the derivative of the objective with respect to each group's scale is at most
 `tol` times the sum of the magnitudes of its terms, or when roundoff keeps the
@@ -130,12 +160,6 @@ accurate. The Newton systems have condition numbers of order `target^(-p)`
 times that of the graph, and of order `r^(-p)` where cycles of entries hold
 ratios `r` far below `target`, so a very small `target^p` or a large `p`
 degrades the linear solves and the convergence.
-
-`A` must be square and structurally nonsingular. Narrower element types than
-`Float64` are computed in `Float64` and narrowed, with the coverage certified
-afterwards.
-
-See also: [`cover_transversal!`](@ref), [`PowerMean`](@ref).
 """
 function cover_transversal(ρ::PowerMean{p}, A::AbstractMatrix; target::Real=1e-2,
                            maxbalance::Bool=false,

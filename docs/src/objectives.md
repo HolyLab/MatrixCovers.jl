@@ -87,7 +87,9 @@ covers that are tight on a maximum-product transversal (see
 `target` ratio `t`, it instead pushes the ratios of the entries off the
 transversal toward `t`, minimizing `∑ t^p ρ(z + log t)` over them with `ρ` the
 `PowerMean{p}` penalty, which is least at `z = -log t`, where `r = t`. Adding `maxbalance=true` replaces that objective within
-each fully indecomposable block by its `p → ∞` limit, max-balancing: across
+each fully indecomposable block by its limit as `t → 0` and then `p → ∞`,
+max-balancing (at a fixed `t`, large `p` alone need not reach this limit when a
+block holds ratios below `t`): across
 every partition of a block's rows, the largest ratio in one direction equals
 the largest in the other, which also minimizes the block's largest ratio. The
 `PowerMean{p}` objective then fixes only the scales between blocks. A soft cover has no constraint to
