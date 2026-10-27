@@ -83,8 +83,8 @@ with `ρ` the [`PowerMean{p}`](@ref) penalty, so it is least at
 entries have `z = 0`. The objective is strictly convex in the products
 `a[i]*b[j]`, which makes them unique on the support.
 
-Let `σ` be a maximum-product transversal; an entry `A[i,j]` off it *leads* from
-row `i` to the row `k` with `σ[k] == j`. At the minimizer, the `p`-power mean of
+Let `π` be a maximum-product transversal; an entry `A[i,j]` off it *leads* from
+row `i` to the row `k` with `π(k) = j`. At the minimizer, the `p`-power mean of
 the ratios of the entries crossing a cut between blocks of a block-triangular
 form of `A` equals `target` whenever none of them has ratio one.
 
@@ -102,9 +102,9 @@ With `maxbalance=true`, for every partition of the rows of a fully
 indecomposable block into two nonempty sets `I` and `K`, the largest ratio of an
 entry leading from `I` to `K` equals the largest ratio of an entry leading from
 `K` to `I`. This determines the products `a[i]*b[j]` within each block uniquely.
-When `σ` is the only maximum-product transversal, the largest ratio within a
-block equals the block's `θ`, the largest geometric-mean ratio of a cycle of
-entries off `σ`, which is the least largest ratio that any cover tight on `σ`
+When `π` is the only maximum-product transversal, the largest ratio within a
+block equals the block's `r_cyc`, the largest geometric-mean ratio of a cycle of
+entries off `π`, which is the least largest ratio that any cover tight on `π`
 can have there. The scales between blocks minimize the objective summed over
 the entries joining different blocks, with each block's scales moving together.
 At the minimizer, for every set of blocks that the entries joining it to the
@@ -114,7 +114,7 @@ the support and scale-covariant.
 
 ## Algorithm
 
-As for `cover_transversal(A)`, tightness on a maximum-product transversal `σ`
+As for `cover_transversal(A)`, tightness on a maximum-product transversal `π`
 leaves the row log scales as unknowns, with one constraint `d ≥ 0` on the log
 slack `d = -log(r)` of each entry off the transversal. Starting from the
 transversal's dual variables, which are feasible, a primal active-set Newton

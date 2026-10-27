@@ -93,7 +93,7 @@ otherwise `last(kkt)` and `tol`). `iterations` counts multiplier updates.
 
 - `converged::Bool`, `tol::T`: as above.
 - `nouter::Int`: multiplier updates.
-- `kkt::Vector{T}`, `κs::Vector{T}`, `exits::Vector{Symbol}`, `drops::Vector{T}`:
+- `kkt::Vector{T}`, `θs::Vector{T}`, `exits::Vector{Symbol}`, `drops::Vector{T}`:
   per update, the KKT residual after the update, the penalty weight, how the
   inner minimization ended, and its last relative decrease of the objective.
 - `polish::Union{Nothing,ActiveSetStats{T}}`: the active-set finish, or
@@ -109,7 +109,7 @@ struct AugmentedLagrangianStats{T} <: AbstractCoverStats
     tol::T
     nouter::Int
     kkt::Vector{T}
-    κs::Vector{T}
+    θs::Vector{T}
     exits::Vector{Symbol}
     drops::Vector{T}
     polish::Union{Nothing,ActiveSetStats{T}}
@@ -177,7 +177,7 @@ function AugmentedLagrangianStats{T}(nt::NamedTuple) where {T}
     polish = p === nothing ? nothing :
              ActiveSetStats{T}(p.certified, p.nsteps, p.primal, p.ptol, p.dual, p.dtol)
     return AugmentedLagrangianStats{T}(nt.converged, nt.tol, nt.nouter, collect(T, nt.kkt),
-                                       collect(T, nt.κs), collect(Symbol, nt.exits),
+                                       collect(T, nt.θs), collect(Symbol, nt.exits),
                                        collect(T, nt.drops), polish, nt.linsolve, nt.nsolves,
                                        nt.lsqriters, collect(Int, nt.lsqrtrace), nt.cgiters,
                                        nt.cholsolves, nt.precond, nt.nrefactor, nt.nforest,

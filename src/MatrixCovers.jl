@@ -8,7 +8,7 @@ using Random: Random, AbstractRNG, MersenneTwister
 using SparseArrays: SparseArrays, SparseMatrixCSC, nnz, nonzeros, nzrange, rowvals, sparse, spzeros
 
 export AbsLog, AbsLinear, PowerMean
-export cover_objective, iscover, max_coverage_ratio, level_profile
+export cover_objective, iscover, max_coverage_ratio, level_dispersion
 export cover, cover!, symcover, symcover!
 export gramcover, gramcover!
 export soft_symcover, soft_symcover!, soft_cover, soft_cover!

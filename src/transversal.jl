@@ -6,10 +6,10 @@
 Return the minimal hard cover of the square matrix `A` among those that are
 tight on its maximum-product transversals.
 
-A *transversal* of `A` is a set of entries `A[i,σ(i)]`, one in each row and
-each column, for a permutation `σ`. Let
+A *transversal* of `A` is a set of entries `A[i,π(i)]`, one in each row and
+each column, for a permutation `π`. Let
 
-    π* = max over permutations σ of ∏ᵢ |A[i,σ(i)]|.
+    π* = max over permutations π of ∏ᵢ |A[i,π(i)]|.
 
 Every hard cover has `prod(a) * prod(b) >= π*`, with equality exactly when it
 is tight (`a[i]*b[j] == |A[i,j]|`) on every entry of every transversal whose
@@ -35,14 +35,14 @@ as for [`cover_min`](@ref), the solver warns when
 
 # Extended help
 
-A maximum-product transversal `σ` is found by shortest augmenting paths on the
-costs `log(max_k |A[k,j]|) - log|A[i,j]|`. Tightness on `σ` determines `b` from
-`a`, `b[σ[i]] = |A[i,σ[i]]| / a[i]`, so the remaining problem is posed on the
+A maximum-product transversal `π` is found by shortest augmenting paths on the
+costs `log(max_k |A[k,j]|) - log|A[i,j]|`. Tightness on `π` determines `b` from
+`a`, `b[π(i)] = |A[i,π(i)]| / a[i]`, so the remaining problem is posed on the
 row scales alone, with one constraint per entry off the transversal. The
 augmented-Lagrangian solver of [`cover_min`](@ref) solves it, starting from the
-dual variables of the transversal, which are a hard cover tight on `σ`.
+dual variables of the transversal, which are a hard cover tight on `π`.
 
-The keywords `κ`, `maxouter`, `maxiter`, `tol`, `fillbudget`, `flopbudget`, and
+The keywords `θ`, `maxouter`, `maxiter`, `tol`, `fillbudget`, `flopbudget`, and
 `linsolve` are as for [`cover_min`](@ref). `linsolve=:woodbury` solves the
 row-scale system as a sparse matrix (conjugate gradients, or sparse Cholesky
 when poorly conditioned). For `n×n` `A`, it requires at most `n ÷ 4` zeros in
@@ -59,12 +59,12 @@ pushes the coverage ratios of the entries off the transversal toward `target`.
 
 See also: [`cover_transversal!`](@ref), [`cover_min`](@ref).
 """
-function cover_transversal(A::AbstractMatrix; κ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
+function cover_transversal(A::AbstractMatrix; θ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
                            maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto,
                            fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
                            tol::Union{Real,Nothing}=nothing)
     a, b, nt = _cover_min_abslog2(A; transversal=true, fname=:cover_transversal,
-                                  κ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
+                                  θ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
     return a, b, AugmentedLagrangianStats(A, nt)
 end
 
