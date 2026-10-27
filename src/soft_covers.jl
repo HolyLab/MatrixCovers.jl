@@ -5,11 +5,11 @@
 # ============================================================
 
 """
-    a, stats = soft_symcover(ϕ, A; kwargs...)
+    a, stats = soft_symcover(ρ, A; kwargs...)
     a, stats = soft_symcover(A; kwargs...)
 
-Return the scales `a` that minimize `∑ ϕ(|A[i,j]|/(a[i]*a[j]))` for symmetric
-`A`. Unlike a hard cover, this soft cover penalizes violations of
+Return the scales `a` that minimize `∑ ρ(log(a[i]*a[j]) - log|A[i,j]|)` over
+the nonzero entries of symmetric `A`. Unlike a hard cover, this soft cover penalizes violations of
 `a[i]*a[j] >= |A[i,j]|` rather than forbidding them. The default penalty is
 `PowerMean{2}()`.
 
@@ -108,20 +108,20 @@ function soft_symcover(::AbsLog{2}, A::AbstractMatrix; linsolve::Symbol=:auto,
 end
 
 # Sole owner of the starts/σ/rng defaults for the symmetric `AbsLinear` multistart.
-function soft_symcover(ϕ::AbsLinear, A::AbstractMatrix; starts::Int=5,
+function soft_symcover(ρ::AbsLinear, A::AbstractMatrix; starts::Int=5,
                        σ::Union{Real,Nothing}=nothing, sigma::Union{Real,Nothing}=nothing,
                        rng::AbstractRNG=MersenneTwister(_MULTISTART_SEED))
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("soft_symcover requires a square matrix"))
     require_abs_symmetric(A, :soft_symcover)
-    return _soft_symcover_abslinear(ϕ, A, starts, _resolve_alias(σ, sigma, 2.0, :σ, :sigma), rng)
+    return _soft_symcover_abslinear(ρ, A, starts, _resolve_alias(σ, sigma, 2.0, :σ, :sigma), rng)
 end
 
 """
-    a, stats = soft_symcover!(ϕ, a, A; kwargs...)
+    a, stats = soft_symcover!(ρ, a, A; kwargs...)
     a, stats = soft_symcover!(a, A; kwargs...)
 
-Refine one symmetric soft-cover start in place. The no-ϕ form uses
+Refine one symmetric soft-cover start in place. The no-ρ form uses
 `PowerMean{2}()`. Build a start with [`initialize_symcover`](@ref) and
 `feasible=:none`.
 
@@ -147,10 +147,11 @@ function soft_symcover!(::AbsLog{2}, a::AbstractVector, A::AbstractMatrix; kwarg
 end
 
 """
-    a, b, stats = soft_cover(ϕ, A; kwargs...)
+    a, b, stats = soft_cover(ρ, A; kwargs...)
     a, b, stats = soft_cover(A; kwargs...)
 
-Return the scales `a`, `b` that minimize `∑ ϕ(|A[i,j]|/(a[i]*b[j]))`. This is
+Return the scales `a`, `b` that minimize `∑ ρ(log(a[i]*b[j]) - log|A[i,j]|)`
+over the nonzero entries of `A`. This is
 the asymmetric counterpart of [`soft_symcover`](@ref): it penalizes violations
 of `a[i]*b[j] >= |A[i,j]|` rather than forbidding them. The default penalty is
 `PowerMean{2}()`. `stats` and the failure behavior are as for
@@ -220,20 +221,20 @@ function soft_cover(::AbsLog{2}, A::AbstractMatrix; linsolve::Symbol=:auto,
 end
 
 # Sole owner of the starts/σ/rng defaults for the asymmetric `AbsLinear` multistart.
-function soft_cover(ϕ::AbsLinear, A::AbstractMatrix; starts::Int=4,
+function soft_cover(ρ::AbsLinear, A::AbstractMatrix; starts::Int=4,
                     σ::Union{Real,Nothing}=nothing, sigma::Union{Real,Nothing}=nothing,
                     rng::AbstractRNG=MersenneTwister(_MULTISTART_SEED))
-    return _soft_cover_abslinear(ϕ, A, starts, _resolve_alias(σ, sigma, 2.0, :σ, :sigma), rng)
+    return _soft_cover_abslinear(ρ, A, starts, _resolve_alias(σ, sigma, 2.0, :σ, :sigma), rng)
 end
 
 """
-    a, b, stats = soft_cover!(ϕ, a, b, A; kwargs...)
+    a, b, stats = soft_cover!(ρ, a, b, A; kwargs...)
     a, b, stats = soft_cover!(a, b, A; kwargs...)
 
 Refine the starting point `(a, b)` into a soft cover of `A` in place. Scales must
 be finite and positive on supported rows and columns; unsupported scales are
 zeroed. The start need not cover `A`. Build one with [`initialize_cover`](@ref)
-and `feasible=:none`. The no-ϕ form uses `PowerMean{2}()`.
+and `feasible=:none`. The no-ρ form uses `PowerMean{2}()`.
 
 For the convex penalties (`PowerMean`, `AbsLog`) the result is the minimizer
 returned by [`soft_cover`](@ref), with the same keywords, and does not depend on
@@ -397,10 +398,10 @@ function _soft_symcover_abslinear_inits(A::AbstractMatrix, starts::Int, σ::Real
 end
 
 # Scale-covariant symmetric `AbsLinear` multistart.
-function _soft_symcover_abslinear(ϕ::AbsLinear, A::AbstractMatrix, starts::Int, σ::Real, rng)
+function _soft_symcover_abslinear(ρ::AbsLinear, A::AbstractMatrix, starts::Int, σ::Real, rng)
     return _multistart_run(ExternalSolverStats, _soft_symcover_abslinear_inits,
-                           (a, A) -> last(soft_symcover!(ϕ, a, A)),
-                           (a, A) -> cover_objective(ϕ, a, A),
+                           (a, A) -> last(soft_symcover!(ρ, a, A)),
+                           (a, A) -> cover_objective(ρ, a, A),
                            A, starts, σ, rng)
 end
 
@@ -430,10 +431,10 @@ function _soft_cover_abslinear_inits(A::AbstractMatrix, starts::Int, σ::Real, r
 end
 
 # Scale-covariant asymmetric `AbsLinear` multistart.
-function _soft_cover_abslinear(ϕ::AbsLinear, A::AbstractMatrix, starts::Int, σ::Real, rng)
+function _soft_cover_abslinear(ρ::AbsLinear, A::AbstractMatrix, starts::Int, σ::Real, rng)
     (a, b), stats = _multistart_run(ExternalSolverStats, _soft_cover_abslinear_inits,
-                                    (ab, A) -> last(soft_cover!(ϕ, ab[1], ab[2], A)),
-                                    (ab, A) -> cover_objective(ϕ, ab[1], ab[2], A),
+                                    (ab, A) -> last(soft_cover!(ρ, ab[1], ab[2], A)),
+                                    (ab, A) -> cover_objective(ρ, ab[1], ab[2], A),
                                     A, starts, σ, rng)
     return a, b, stats
 end

@@ -4,7 +4,7 @@
 # symmetric: one scale per row), the objective has one term per stored entry `e`
 # joining unknowns `u[e] <= v[e]`:
 #
-#     E(x) = ∑_e mult[e] * ψ(x[u] + x[v] - L[e]),   ψ(z) = (exp(-p z) - 1 + p z)/p,
+#     E(x) = ∑_e mult[e] * ρ(x[u] + x[v] - L[e]),   ρ(z) = (exp(-p z) - 1 + p z)/p,
 #
 # with `L = log|A|`. An asymmetric entry has multiplicity one. A symmetric
 # off-diagonal pair is stored once with multiplicity two and a diagonal entry once

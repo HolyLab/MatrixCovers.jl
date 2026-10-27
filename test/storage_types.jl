@@ -28,8 +28,8 @@ end
                    [100.0 1.0; 1.0 0.01])
         for A in (sparse(Adense), Symmetric(sparse(tril(Adense)), :L), Symmetric(sparse(triu(Adense)), :U),
                   Hermitian(sparse(tril(Adense)), :L), Hermitian(sparse(triu(Adense)), :U))
-            for ϕ in PENALTIES
-                a = symcover(ϕ, A)
+            for ρ in PENALTIES
+                a = symcover(ρ, A)
                 @test iscover(a, Adense; atol=1e-12)
             end
             # Default dispatch
@@ -55,8 +55,8 @@ end
         for dv in ([4.0, 9.0, 1.0], [4.0, 0.0, 1.0], [0.25, 100.0])
             D = Diagonal(dv)
             Ddense = Matrix(D)
-            for ϕ in PENALTIES
-                a = symcover(ϕ, D)
+            for ρ in PENALTIES
+                a = symcover(ρ, D)
                 @test iscover(a, Ddense; atol=1e-12)
             end
             a3, b3 = cover(D)
@@ -84,8 +84,8 @@ end
             Adense = Matrix(A)
             a, b = cover(A)
             @test iscover(a, b, Adense; atol=1e-12)
-            for ϕ in PENALTIES
-                a = symcover(ϕ, A)
+            for ρ in PENALTIES
+                a = symcover(ρ, A)
                 @test iscover(a, Adense; atol=1e-12)
             end
             # cover_objective matches dense for AbsLog{2}
@@ -209,9 +209,9 @@ end
     @test first(symcover_min(AbsLog{2}(), sparse(symdenses[1]))) isa Vector{Float64}
     # Every soft_symcover penalty returns a dense Vector on sparse-backed input.
     let Ssp = sparse(symdenses[1])
-        for ϕ in SOFT_PENALTIES
-            @test first(soft_symcover(ϕ, Ssp)) isa Vector{Float64}
-            @test first(soft_symcover(ϕ, Symmetric(Ssp))) isa Vector{Float64}
+        for ρ in SOFT_PENALTIES
+            @test first(soft_symcover(ρ, Ssp)) isa Vector{Float64}
+            @test first(soft_symcover(ρ, Symmetric(Ssp))) isa Vector{Float64}
         end
     end
 

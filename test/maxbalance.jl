@@ -153,7 +153,7 @@ end
         θ, σ = minimax_ratio(A)
         @test cut_imbalance(a, b, A, σ, 1:n) <= 1e-10
         @test maximum(last, offtransversal_ratios(a, b, A, σ)) ≈ θ rtol = 1e-10
-        # The products do not depend on `ϕ` or `target`.
+        # The products do not depend on `ρ` or `target`.
         a1, b1 = cover_transversal(PowerMean{1}(), A; target=0.5, maxbalance=true)
         @test logproduct_gap(a, b, a1, b1, A) <= 1e-12
         a2, b2 = cover_transversal(PowerMean{2}(), A)

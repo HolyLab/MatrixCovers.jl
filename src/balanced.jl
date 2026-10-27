@@ -28,20 +28,21 @@ const BALANCED_NRIDGE = 4
 const BALANCED_RIDGE_GROWTH = 1e4
 
 """
-    a, b, stats = cover_transversal(ϕ::PowerMean{p}, A; target=1e-2, maxbalance=false, tol=1e-9, maxiter, fillbudget, flopbudget)
+    a, b, stats = cover_transversal(ρ::PowerMean{p}, A; target=1e-2, maxbalance=false, tol=1e-9, maxiter, fillbudget, flopbudget)
 
 Return the hard cover of the square matrix `A` that is tight on its
 maximum-product transversals and pushes the coverage ratios
-`r = |A[i,j]| / (a[i]*b[j])` of the other nonzero entries toward `target`: it
-minimizes
+`r = |A[i,j]| / (a[i]*b[j])` of the other nonzero entries toward `target`. In
+terms of the log slack `z = -log(r)`, it minimizes
 
-    ∑ (r^p - 1 - p*log(r/target)*target^p) / p,
+    ∑ ((exp(-p*z) - 1)/p + target^p * z),
 
 the sum taken over the nonzero entries off the transversals, among the hard
 covers with `prod(a) * prod(b) == π*` (see [`cover_transversal(A)`](@ref
-cover_transversal)). Each term is `target^p * φ(r/target)` up to a constant, with
-`φ` the [`PowerMean{p}`](@ref) penalty, so it is least at `r = target`; the hard
-constraint caps every ratio at one, and the transversal entries have ratio one.
+cover_transversal)). Each term is `target^p * ρ(z + log(target))` up to a
+constant, with `ρ` the [`PowerMean{p}`](@ref) penalty, so it is least at
+`z = -log(target)`, where `r = target`; the hard constraint keeps every `z ≥ 0`
+(every ratio at most one), and the transversal entries have `z = 0`.
 `0 < target <= 1` and `0 < p < ∞` are required; otherwise an `ArgumentError` is
 thrown. `cover_transversal(AbsLog{2}(), A)` is `cover_transversal(A)`.
 
@@ -69,7 +70,7 @@ largest ratio of an entry leading from `K` to `I`. This determines the products
 `a[i]*b[j]` within each block uniquely. When `σ` is the only maximum-product
 transversal, the largest ratio within a block equals the block's `θ`, the
 largest geometric-mean ratio of a cycle of entries off `σ`, which is the least
-largest ratio that any cover tight on `σ` can have there. `ϕ` and `target` fix
+largest ratio that any cover tight on `σ` can have there. `ρ` and `target` fix
 the scales between blocks: they minimize the objective above summed over the
 entries joining different blocks, with each block's scales moving together. At
 the minimizer, for every set of blocks that the entries joining it to the other
@@ -136,7 +137,7 @@ afterwards.
 
 See also: [`cover_transversal!`](@ref), [`PowerMean`](@ref).
 """
-function cover_transversal(ϕ::PowerMean{p}, A::AbstractMatrix; target::Real=1e-2,
+function cover_transversal(ρ::PowerMean{p}, A::AbstractMatrix; target::Real=1e-2,
                            maxbalance::Bool=false,
                            tol::Real=BALANCED_TOL, maxiter::Union{Integer,Nothing}=nothing,
                            fillbudget::Real=LSQR_FILL_BUDGET,
@@ -148,16 +149,16 @@ end
 cover_transversal(::AbsLog{2}, A::AbstractMatrix; kwargs...) = cover_transversal(A; kwargs...)
 
 """
-    a, b, stats = cover_transversal!(ϕ::PowerMean, a, b, A; kwargs...)
+    a, b, stats = cover_transversal!(ρ::PowerMean, a, b, A; kwargs...)
 
-Mutating counterpart of [`cover_transversal(ϕ, A)`](@ref cover_transversal):
+Mutating counterpart of [`cover_transversal(ρ, A)`](@ref cover_transversal):
 writes the cover into `a` and `b` and returns them with the solver's
 statistics. The initial contents of `a` and `b` are ignored. `eachindex(a)` must
 match `axes(A, 1)` and `eachindex(b)` must match `axes(A, 2)`.
 """
-function cover_transversal!(ϕ::PowerMean, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
+function cover_transversal!(ρ::PowerMean, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
     _check_cover_axes(a, b, A)
-    anew, bnew, stats = cover_transversal(ϕ, A; kwargs...)
+    anew, bnew, stats = cover_transversal(ρ, A; kwargs...)
     a .= anew
     b .= bnew
     return a, b, stats

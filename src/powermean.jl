@@ -49,28 +49,28 @@ _powermean_type(Ts::Type...) = float(promote_type(Ts..., Float64))
 # Public methods
 # ============================================================
 
-function soft_cover(ϕ::PowerMean, A::AbstractMatrix; tol::Union{Real,Nothing}=nothing,
+function soft_cover(ρ::PowerMean, A::AbstractMatrix; tol::Union{Real,Nothing}=nothing,
                     maxiter::Integer=POWERMEAN_MAXITER, newton::Bool=true,
                     maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto)
-    return _soft_cover_powermean(ϕ, A, :soft_cover; tol, maxiter, newton, maxnewton, linsolve)
+    return _soft_cover_powermean(ρ, A, :soft_cover; tol, maxiter, newton, maxnewton, linsolve)
 end
 
-function soft_cover!(ϕ::PowerMean, a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
+function soft_cover!(ρ::PowerMean, a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
                      tol::Union{Real,Nothing}=nothing, maxiter::Integer=POWERMEAN_MAXITER,
                      newton::Bool=true, maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto)
-    return _soft_cover_powermean!(ϕ, a, b, A, :soft_cover!; tol, maxiter, newton, maxnewton, linsolve)
+    return _soft_cover_powermean!(ρ, a, b, A, :soft_cover!; tol, maxiter, newton, maxnewton, linsolve)
 end
 
-function soft_symcover(ϕ::PowerMean, A::AbstractMatrix; tol::Union{Real,Nothing}=nothing,
+function soft_symcover(ρ::PowerMean, A::AbstractMatrix; tol::Union{Real,Nothing}=nothing,
                        maxiter::Integer=POWERMEAN_MAXITER, newton::Bool=true,
                        maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto)
-    return _soft_symcover_powermean(ϕ, A, :soft_symcover; tol, maxiter, newton, maxnewton, linsolve)
+    return _soft_symcover_powermean(ρ, A, :soft_symcover; tol, maxiter, newton, maxnewton, linsolve)
 end
 
-function soft_symcover!(ϕ::PowerMean, a::AbstractVector, A::AbstractMatrix;
+function soft_symcover!(ρ::PowerMean, a::AbstractVector, A::AbstractMatrix;
                         tol::Union{Real,Nothing}=nothing, maxiter::Integer=POWERMEAN_MAXITER,
                         newton::Bool=true, maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto)
-    return _soft_symcover_powermean!(ϕ, a, A, :soft_symcover!; tol, maxiter, newton, maxnewton, linsolve)
+    return _soft_symcover_powermean!(ρ, a, A, :soft_symcover!; tol, maxiter, newton, maxnewton, linsolve)
 end
 
 # ============================================================
@@ -82,9 +82,9 @@ end
 # convention selects `b == a`. The test is exact, since a nearly symmetric matrix
 # has a genuinely asymmetric minimizer.
 # The `:unconstrained` start makes a truncated iteration scale-covariant as well.
-function _soft_cover_powermean(ϕ::PowerMean, A::AbstractMatrix, fname::Symbol; kwargs...)
+function _soft_cover_powermean(ρ::PowerMean, A::AbstractMatrix, fname::Symbol; kwargs...)
     if _abs_symmetric_exact(A)
-        a, stats = _soft_symcover_powermean(ϕ, A, fname; kwargs...)
+        a, stats = _soft_symcover_powermean(ρ, A, fname; kwargs...)
         return a, copy(a), stats
     end
     T = float(real(eltype(A)))
@@ -92,7 +92,7 @@ function _soft_cover_powermean(ϕ::PowerMean, A::AbstractMatrix, fname::Symbol; 
     b = similar(Array{T}, axes(A, 2))
     covariant_start!(a, b, flat_support(A, T); fname)
     _balance_cover!(a, b, A)
-    return _soft_cover_powermean!(ϕ, a, b, A, fname; kwargs...)
+    return _soft_cover_powermean!(ρ, a, b, A, fname; kwargs...)
 end
 
 function _soft_cover_powermean!(::PowerMean{p}, a::AbstractVector, b::AbstractVector,
@@ -117,13 +117,13 @@ function _soft_cover_powermean!(::PowerMean{p}, a::AbstractVector, b::AbstractVe
     return a, b, PowerMeanStats{T}(stats)
 end
 
-function _soft_symcover_powermean(ϕ::PowerMean, A::AbstractMatrix, fname::Symbol; kwargs...)
+function _soft_symcover_powermean(ρ::PowerMean, A::AbstractMatrix, fname::Symbol; kwargs...)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("$fname requires a square matrix"))
     # Symmetry is checked by `_soft_symcover_powermean!`; the start is only read there.
     a = similar(Array{float(real(eltype(A)))}, ax)
     _initialize_symcover!(a, A, :geomean, :none)
-    return _soft_symcover_powermean!(ϕ, a, A, fname; kwargs...)
+    return _soft_symcover_powermean!(ρ, a, A, fname; kwargs...)
 end
 
 function _soft_symcover_powermean!(::PowerMean{p}, a::AbstractVector, A::AbstractMatrix, fname::Symbol;
@@ -286,10 +286,10 @@ function _powermean_target(S::GroupedSupport{T}, sl, y, p::T) where {T}
 end
 
 # The objective restricted to one group scale `x`, with its partners fixed, is
-# `n * ψ(x - F) + const`, where `F` is the group's target and
-# `ψ(z) = (exp(-p z) - 1 + p z) / p`. This gives the exact change of the objective
+# `n * ρ(x - F) + const`, where `F` is the group's target and
+# `ρ(z) = (exp(-p z) - 1 + p z) / p`. This gives the exact change of the objective
 # under a relaxed step.
-_powermean_ψ(p, z) = (expm1(-p * z) + p * z) / p
+_powermean_ρ(p, z) = (expm1(-p * z) + p * z) / p
 
 # Largest `|∑ R^p / n - 1|` over the groups of `S`, the scale-invariant imbalance
 # of the balance conditions `∑_j R[i,j]^p = n_i`.
@@ -322,10 +322,10 @@ function _powermean_halfsweep!(x, y, S::GroupedSupport{T}, p::T, ω::T) where {T
         imb = max(imb, abs(expm1(-p * δ)))
         xg = F
         if ω != 1
-            ψδ = _powermean_ψ(p, δ)
+            ρδ = _powermean_ρ(p, δ)
             w = ω
             for _ in 0:POWERMEAN_NBACKTRACK
-                if _powermean_ψ(p, (1 - w) * δ) <= (1 + (w - 1)^2) / 2 * ψδ
+                if _powermean_ρ(p, (1 - w) * δ) <= (1 + (w - 1)^2) / 2 * ρδ
                     xg = F + (1 - w) * δ
                     break
                 end
@@ -399,13 +399,13 @@ function _powermean_sinkhorn!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}
         if ω == 1
             nplain += 1
             if nplain >= POWERMEAN_NESTIMATE
-                ρ, ρprev = sqrt(r / r2), sqrt(r1 / r3)
-                if zero(T) < ρ < one(T) && zero(T) < ρprev < one(T) &&
-                        log(ρ) >= POWERMEAN_STEADY * log(ρprev)
-                    ωopt = min(ωmax, 2 / (1 + sqrt(1 - ρ)))
+                μ2, μ2prev = sqrt(r / r2), sqrt(r1 / r3)
+                if zero(T) < μ2 < one(T) && zero(T) < μ2prev < one(T) &&
+                        log(μ2) >= POWERMEAN_STEADY * log(μ2prev)
+                    ωopt = min(ωmax, 2 / (1 + sqrt(1 - μ2)))
                     ω = min(ωopt, T(POWERMEAN_OMEGA_START))
                     rprev, rwin, nwin, nstall = r, T(Inf), 0, 0
-                    _powermean_nsweeps(r, tol, _sor_rate(ρ, ωopt)) > budget && break
+                    _powermean_nsweeps(r, tol, _sor_rate(μ2, ωopt)) > budget && break
                 end
             end
             r3, r2, r1 = r2, r1, r

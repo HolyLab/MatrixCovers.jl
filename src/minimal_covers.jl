@@ -6,14 +6,15 @@
 # ============================================================
 
 """
-    a, stats = symcover_min(ϕ, A; kwargs...)
+    a, stats = symcover_min(ρ, A; kwargs...)
     a, stats = symcover_min(A; kwargs...)
 
-Return the ϕ-minimal symmetric hard cover of `A`: the vector `a` minimizing
-`∑ ϕ(|A[i,j]|/(a[i]*a[j]))` subject to `a[i]*a[j] >= |A[i,j]|`. The
-default penalty is `AbsLog{2}()`.
+Return the symmetric hard cover of `A` that minimizes the penalty `ρ`: the
+vector `a` minimizing `∑ ρ(log(a[i]*a[j]) - log|A[i,j]|)` over the nonzero
+entries of `A`, subject to `a[i]*a[j] >= |A[i,j]|`. The default penalty is
+`AbsLog{2}()`, which gives the ℓ₂-minimal cover.
 
-Supported ϕ values:
+Supported ρ values:
 - `AbsLog{2}()`: native.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
 - `AbsLinear{1}()` and `AbsLinear{2}()`: require JuMP and Ipopt and return the
@@ -91,12 +92,13 @@ function symcover_min end
 symcover_min(A::AbstractMatrix; kwargs...) = symcover_min(AbsLog{2}(), A; kwargs...)
 
 """
-    a, b, stats = cover_min(ϕ, A; kwargs...)
+    a, b, stats = cover_min(ρ, A; kwargs...)
     a, b, stats = cover_min(A; kwargs...)
 
-Return the ϕ-minimal asymmetric hard cover of `A`: vectors `a`, `b` minimizing
-`∑ ϕ(|A[i,j]|/(a[i]*b[j]))` subject to `a[i]*b[j] >= |A[i,j]|`. The
-default penalty is `AbsLog{2}()`.
+Return the asymmetric hard cover of `A` that minimizes the penalty `ρ`:
+vectors `a`, `b` minimizing `∑ ρ(log(a[i]*b[j]) - log|A[i,j]|)` over the
+nonzero entries of `A`, subject to `a[i]*b[j] >= |A[i,j]|`. The default penalty
+is `AbsLog{2}()`, which gives the ℓ₂-minimal cover.
 
 The objective and the constraints depend only on the products `a[i]*b[j]`,
 which do not change when `a` is multiplied by `c` and `b` divided by `c` on one
@@ -115,7 +117,7 @@ distant rows or columns, such as `norm(a)`, inherit the spread.
 the floating-point range throw an error; converting `A` to `BigFloat` extends
 the range.
 
-Supported ϕ values, `stats`, and the failure behavior are as for
+Supported ρ values, `stats`, and the failure behavior are as for
 [`symcover_min`](@ref):
 - `AbsLog{2}()`: native.
 - `AbsLog{1}()`: requires JuMP and HiGHS.
@@ -154,10 +156,10 @@ function cover_min end
 cover_min(A::AbstractMatrix; kwargs...) = cover_min(AbsLog{2}(), A; kwargs...)
 
 """
-    a, stats = symcover_min!(ϕ, a, A; kwargs...)
+    a, stats = symcover_min!(ρ, a, A; kwargs...)
     a, stats = symcover_min!(a, A; kwargs...)
 
-Refine the symmetric hard cover `a` in place. The no-ϕ form uses `AbsLog{2}()`;
+Refine the symmetric hard cover `a` in place. The no-ρ form uses `AbsLog{2}()`;
 supported penalties, keywords, `stats`, and failure behavior match
 [`symcover_min`](@ref).
 
@@ -176,12 +178,12 @@ symcover_min!(a::AbstractVector, A::AbstractMatrix; kwargs...) =
     symcover_min!(AbsLog{2}(), a, A; kwargs...)
 
 """
-    a, b, stats = cover_min!(ϕ, a, b, A; kwargs...)
+    a, b, stats = cover_min!(ρ, a, b, A; kwargs...)
     a, b, stats = cover_min!(a, b, A; kwargs...)
 
 Refine the asymmetric hard cover `(a, b)` in place. The start must cover `A` and
 be positive on supported rows and columns; unsupported scales are zeroed. The
-no-ϕ form uses `AbsLog{2}()`; supported penalties, keywords, `stats`, and
+no-ρ form uses `AbsLog{2}()`; supported penalties, keywords, `stats`, and
 failure behavior match [`cover_min`](@ref).
 
 Equivalent starts `(c*a, b/c)` give the same balanced result.
@@ -241,7 +243,7 @@ function cover_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::Abstra
 end
 
 # Multistart drivers for the `AbsLinear` kernels in MatrixCoversIpoptExt.
-function symcover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=SYMCOVER_MIN_STRATEGIES)
+function symcover_min(ρ::AbsLinear, A::AbstractMatrix; strategies=SYMCOVER_MIN_STRATEGIES)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("symcover_min requires a square matrix"))
     isempty(strategies) &&
@@ -255,19 +257,19 @@ function symcover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=SYMCOVER_MIN_
         throw(ArgumentError("symcover_min: no strategy in $(string(strategies)) yields a starting cover of `A`"))
     labels = Symbol[strategy for (strategy, ok) in zip(strategies, built) if ok]
     covers = starts[built]
-    stats = [last(symcover_min!(ϕ, a, A))::ExternalSolverStats for a in covers]
-    objs = [cover_objective(ϕ, a, A) for a in covers]
+    stats = [last(symcover_min!(ρ, a, A))::ExternalSolverStats for a in covers]
+    objs = [cover_objective(ρ, a, A) for a in covers]
     k = _multistart_select(objs)
     return covers[k], MultistartStats{ExternalSolverStats,eltype(objs)}(labels, stats, objs, k, Symbol[])
 end
 
-function cover_min(ϕ::AbsLinear, A::AbstractMatrix; strategies=COVER_MIN_STRATEGIES)
+function cover_min(ρ::AbsLinear, A::AbstractMatrix; strategies=COVER_MIN_STRATEGIES)
     isempty(strategies) &&
         throw(ArgumentError("cover_min: `strategies` must name at least one starting cover"))
     labels = Symbol[strategy for strategy in strategies]
     covers = [initialize_cover(A; strategy) for strategy in strategies]
-    stats = [last(cover_min!(ϕ, a, b, A))::ExternalSolverStats for (a, b) in covers]
-    objs = [cover_objective(ϕ, a, b, A) for (a, b) in covers]
+    stats = [last(cover_min!(ρ, a, b, A))::ExternalSolverStats for (a, b) in covers]
+    objs = [cover_objective(ρ, a, b, A) for (a, b) in covers]
     k = _multistart_select(objs)
     a, b = covers[k]
     return a, b, MultistartStats{ExternalSolverStats,eltype(objs)}(labels, stats, objs, k, Symbol[])
@@ -445,7 +447,7 @@ function _lsqr(Amul!, Atmul!, b::AbstractVector{T}, x0::AbstractVector{T};
     tmpm = similar(u)
     tmpn = similar(v)
     ϕbar = β
-    ρbar = α
+    rdiagbar = α
     anorm2 = α^2          # Frobenius norm² of the lower bidiagonal ≈ ‖M‖²
     (iszero(β) || iszero(α)) && return x, 0   # x0 already optimal
     iters = 0
@@ -462,16 +464,16 @@ function _lsqr(Amul!, Atmul!, b::AbstractVector{T}, x0::AbstractVector{T};
         α > 0 && (v ./= α)
         anorm2 += β^2 + α^2
         # Orthogonal transformation applied to the bidiagonal system.
-        ρ = hypot(ρbar, β)
-        iszero(ρ) && break
-        c = ρbar / ρ
-        s = β / ρ
+        rdiag = hypot(rdiagbar, β)
+        iszero(rdiag) && break
+        c = rdiagbar / rdiag
+        s = β / rdiag
         θ = s * α
-        ρbar = -c * α
+        rdiagbar = -c * α
         ϕ = c * ϕbar
         ϕbar = s * ϕbar
-        @. x += (ϕ / ρ) * w
-        @. w = v - (θ / ρ) * w
+        @. x += (ϕ / rdiag) * w
+        @. w = v - (θ / rdiag) * w
         # Stop when the normal-equations residual is negligible relative to ‖M‖‖r‖,
         # or when the least-squares residual itself has vanished (consistent system).
         arnorm = ϕbar * α * abs(c)
@@ -532,13 +534,13 @@ SupportSystem{T}(N, supp::S, args...) where {T,S} = SupportSystem{T,S}(N, supp, 
 #
 # Per-entry augmented-Lagrangian term with multiplier λ ≥ 0 and penalty weight κ:
 #
-#     ψ(z) = z²               for z ≥ b,
-#     ψ(z) = κ(z − s)² + s·b  for z < b,
+#     ℓ(z) = z²               for z ≥ b,
+#     ℓ(z) = κ(z − s)² + s·b  for z < b,
 #
 # where `s = λ/(2κ)` and `b = λ/(2(κ-1))`. The omitted constant is independent
 # of `z`. Precomputed scales keep the branch test identical across sweeps.
 
-# Objective `f(x) = Σ_e mult_e·ψ_e(z_e)`.
+# Objective `f(x) = Σ_e mult_e·ℓ_e(z_e)`.
 function _fal(x, κ, λ, sscale, bscale, supp::EdgeList{T}, symmetric::Bool) where {T}
     edges, cvals, qs = supp.edges, supp.cvals, supp.qsign
     κT = T(κ)
@@ -1275,9 +1277,9 @@ function _precond_pattern(::Type{T}, supp::EdgeList, v0, N::Int, mult) where {T}
         Mv[p] += v0[p]^2
         dmax = max(dmax, Mv[p])
     end
-    ρ = _precond_ridge(dmax)
+    ridge = _precond_ridge(dmax)
     for p in 1:N
-        push!(I, p); push!(J, p); push!(V, Mv[p] + ρ)
+        push!(I, p); push!(J, p); push!(V, Mv[p] + ridge)
     end
     # `sparse` sums duplicates and keeps any that cancel as stored zeros, so the
     # pattern holds every pair of unknowns that some entry joins.
@@ -1683,9 +1685,9 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                         mdiag[p] += v0[p]^2
                         dmax = max(dmax, mdiag[p])
                     end
-                    ρ = _precond_ridge(dmax)
+                    ridge = _precond_ridge(dmax)
                     for p in 1:N
-                        nzv[dpos[p]] = mdiag[p] + ρ
+                        nzv[dpos[p]] = mdiag[p] + ridge
                     end
                     factorize!(MF, Msp)
                     nrefactor[] += 1
@@ -1743,9 +1745,9 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
                         mdiag[p] += v0[p]^2
                         dmax = max(dmax, mdiag[p])
                     end
-                    ρ = _precond_ridge(dmax)
+                    ridge = _precond_ridge(dmax)
                     keep = max_weight_forest(N, hI, hJ, hW)
-                    HF[] = tree_cholesky(N, hI[keep], hJ[keep], hV[keep], mdiag .+ ρ)
+                    HF[] = tree_cholesky(N, hI[keep], hJ[keep], hV[keep], mdiag .+ ridge)
                     nrefactor[] += 1
                     prevκ[] = κl
                     copyto!(prevpat, vpat)

@@ -5,8 +5,8 @@
     # Cover property: a[i]*a[j] >= abs(A[i,j]) for all i, j
     for A in ([2.0 1.0; 1.0 3.0], [1.0 -0.2; -0.2 0.0], [1.0 0.0; 0.0 0.0],
               [100.0 1.0; 1.0 0.01])
-        for ϕ in PENALTIES
-            a = symcover(ϕ, A)
+        for ρ in PENALTIES
+            a = symcover(ρ, A)
             @test iscover(a, A; rtol=8eps())
         end
         # Default dispatch
@@ -24,22 +24,22 @@
     # Diagonal scaling covariance
     A = [2.0 1.0; 1.0 3.0]
     d = [2.0, 0.5]
-    for ϕ in PENALTIES
-        @test covaries(A -> symcover(ϕ, A), A, d)
+    for ρ in PENALTIES
+        @test covaries(A -> symcover(ρ, A), A, d)
     end
     # Non-square input is rejected, with the message naming the called function
     @test_throws "symcover requires a square matrix" symcover([1.0 2.0; 3.0 4.0; 5.0 6.0])
     @test_throws "symcover! requires a square matrix" symcover!(zeros(3), [1.0 2.0; 3.0 4.0; 5.0 6.0])
 end
 
-@testset "symcover does not currently consult ϕ" begin
+@testset "symcover does not currently consult ρ" begin
     # The current heuristic accepts but ignores the penalty.
     rng = StableRNG(1)
     for n in (2, 5, 40)
         B = randn(rng, n, n); A = (B + B') / 2
         a = symcover(A)
-        for ϕ in PENALTIES
-            @test symcover(ϕ, A) == a
+        for ρ in PENALTIES
+            @test symcover(ρ, A) == a
         end
     end
 
@@ -79,8 +79,8 @@ end
     # Cover property: a[i]*b[j] >= abs(A[i,j]) for all i, j
     for A in ([2.0 1.0; 1.0 3.0], [0.0 1.0; -2.0 0.0], [1.0 0.0; 0.0 0.0],
               [100.0 1.0; 1.0 0.01])
-        for ϕ in PENALTIES
-            a, b = cover(ϕ, A)
+        for ρ in PENALTIES
+            a, b = cover(ρ, A)
             @test iscover(a, b, A; rtol=8eps())
         end
         # Default dispatch
@@ -94,8 +94,8 @@ end
     @test a[1] == 0
     # Zero-diagonal matrix
     A = [0.0 1.0; -1.0 0.0]
-    for ϕ in PENALTIES
-        a, b = cover(ϕ, A)
+    for ρ in PENALTIES
+        a, b = cover(ρ, A)
         @test iscover(a, b, A; rtol=8eps())
     end
     # Rectangular matrix
@@ -105,8 +105,8 @@ end
     # Diagonal scaling covariance: cover(A .* dr .* dc') is cover(A) scaled by dr, dc up to a scalar
     A = [2.0 1.0; 1.0 3.0]
     dr, dc = [2.0, 0.5], [3.0, 0.25]
-    for ϕ in PENALTIES
-        @test covaries(A -> cover(ϕ, A), A, dr, dc)
+    for ρ in PENALTIES
+        @test covaries(A -> cover(ρ, A), A, dr, dc)
     end
 end
 
@@ -124,10 +124,10 @@ end
     @test r === (abuf2, bbuf2)
     @test abuf2 == aB && bbuf2 == bB
 
-    # The bang forms take the same ϕ as the allocating ones, and likewise ignore it.
-    for ϕ in PENALTIES
-        @test symcover!(ϕ, similar(a), A) == a
-        @test cover!(ϕ, similar(aB), similar(bB), B) == (aB, bB)
+    # The bang forms take the same ρ as the allocating ones, and likewise ignore it.
+    for ρ in PENALTIES
+        @test symcover!(ρ, similar(a), A) == a
+        @test cover!(ρ, similar(aB), similar(bB), B) == (aB, bB)
     end
 
     # Adjoint/Transpose wrappers match the allocating forms.
