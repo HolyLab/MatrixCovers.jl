@@ -541,16 +541,6 @@ end
     @test_throws "unknown start :nope; expected one of :auto, :transversal, :unconstrained, :geomean" cover!(abuf, bbuf, B; start=:nope)
 end
 
-@testset "deprecated :covariant start" begin
-    A = exp.(randn(StableRNG(7), 6, 4))
-    a0, b0 = cover(A; start=:unconstrained)
-    @test_deprecated "`start=:covariant` is deprecated; use `start=:unconstrained`" cover(A; start=:covariant)
-    @test (@test_deprecated cover(A; start=:covariant)) == (a0, b0)
-    ai, bi = initialize_cover(A; strategy=:unconstrained, feasible=:boost)
-    @test_deprecated "`strategy=:covariant` is deprecated; use `strategy=:unconstrained`" initialize_cover(A; strategy=:covariant, feasible=:boost)
-    @test (@test_deprecated initialize_cover(A; strategy=:covariant, feasible=:boost)) == (ai, bi)
-end
-
 @testset "cover: transversal start" begin
     # Largest product over transversals, and whether the cover is tight on every
     # entry of a maximum-product transversal (`∑ log a + ∑ log b == log π*`).

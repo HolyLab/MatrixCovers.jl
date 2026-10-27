@@ -115,7 +115,7 @@ entry is covered, and then applies `maxiter` improvement passes.
   nonsingular. Defaults: `cgiter=20`, `maxiter=5`.
 - `:unconstrained` approximates the unconstrained least-squares fit of the log
   scales and is scale-covariant (typically at the cost of
-  permutation-equivariance). `:covariant` is a deprecated alias. Defaults: `cgiter=16`, `maxiter=3`.
+  permutation-equivariance). Defaults: `cgiter=16`, `maxiter=3`.
 - `:geomean` makes the result permutation-equivariant up to floating-point
   round-off (typically at the cost of scale-covariance). Defaults as for
   `:unconstrained`.
@@ -224,7 +224,7 @@ end
 function _cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
                  maxiter::Union{Int,Nothing}=nothing, cgiter::Union{Int,Nothing}=nothing,
                  start::Symbol=:auto, fname::Symbol=:cover)
-    start = _normalize_cover_start(start)
+    _check_cover_start(start)
     T = float(promote_type(eltype(a), eltype(b)))
     if start === :auto || start === :transversal
         if length(axes(A, 1)) == length(axes(A, 2))
@@ -282,12 +282,7 @@ end
 # The starting points `cover!` accepts.
 const COVER_STARTS = (:auto, :transversal, :unconstrained, :geomean)
 
-# Validate `start` and map the deprecated `:covariant` to `:unconstrained`.
-function _normalize_cover_start(start::Symbol)
-    if start === :covariant
-        Base.depwarn("`start=:covariant` is deprecated; use `start=:unconstrained`", :cover)
-        return :unconstrained
-    end
+function _check_cover_start(start::Symbol)
     start in COVER_STARTS ||
         throw(ArgumentError("unknown start :$start; expected one of :auto, :transversal, :unconstrained, :geomean"))
     return start

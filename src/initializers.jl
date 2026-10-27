@@ -81,7 +81,6 @@ Build an asymmetric starting point for [`cover_min`](@ref) or
 - `:unconstrained` — the scale-covariant start of [`cover`](@ref) that
   approximates the unconstrained least-squares fit, without
   conjugate-gradient refinement. It agrees with `:geomean` on complete support.
-  `:covariant` is a deprecated alias.
 - `:hardcover` — the result of [`cover`](@ref), which is already a cover, so
   `feasible` is ignored. Additional keywords (`maxiter`, `cgiter`, `start`) are
   passed to `cover`; the other strategies accept none.
@@ -112,10 +111,6 @@ function initialize_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatr
                            strategy::Symbol=:hardcover, feasible::Symbol=:inflate, kwargs...)
     axes(A, 1) == eachindex(a) || throw(DimensionMismatch("indices of `a` must match row-indexing of `A`, got eachindex(a)=$(string(eachindex(a))), axes(A, 1)=$(string(axes(A, 1)))"))
     axes(A, 2) == eachindex(b) || throw(DimensionMismatch("indices of `b` must match column-indexing of `A`, got eachindex(b)=$(string(eachindex(b))), axes(A, 2)=$(string(axes(A, 2)))"))
-    if strategy === :covariant
-        Base.depwarn("`strategy=:covariant` is deprecated; use `strategy=:unconstrained`", :initialize_cover)
-        strategy = :unconstrained
-    end
     if strategy === :hardcover
         cover!(a, b, A; kwargs...)
     elseif strategy === :geomean
