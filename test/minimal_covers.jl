@@ -41,8 +41,8 @@ end
     a, _ = symcover_min(AbsLog{2}(), A)
     @test a ≈ [1, 2, 1]
     @test abs(cover_objective(AbsLog{2}(), a, A)) < 1e-8
-    # κ and maxouter keywords are accepted.
-    @test first(symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; κ=1e3, maxouter=16)) isa Vector
+    # θ and maxouter keywords are accepted.
+    @test first(symcover_min(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; θ=1e3, maxouter=16)) isa Vector
 end
 
 @testset "symcover_min active-set finish on dense supports" begin
@@ -81,9 +81,9 @@ end
 
     # Without the finish, the stalled iteration warns; an uncertified finish
     # says so. Any residual above the tolerance warns.
-    @test_logs (:warn, r"Increase `maxouter` or `κ`") MatrixCovers._symcover_min_abslog2(A; maxouter=3, polish=false)
+    @test_logs (:warn, r"Increase `maxouter` or `θ`") MatrixCovers._symcover_min_abslog2(A; maxouter=3, polish=false)
     stats = (; converged=false, kkt=(1e-12,), tol=1e-13, nouter=32, polish=nothing)
-    @test_logs (:warn, r"Increase `maxouter` or `κ`") MatrixCovers._warn_unconverged(:symcover_min, stats, 32)
+    @test_logs (:warn, r"Increase `maxouter` or `θ`") MatrixCovers._warn_unconverged(:symcover_min, stats, 32)
     stats = merge(stats, (; polish=(; certified=false, nsteps=5)))
     @test_logs (:warn, r"active-set finish .* did not certify") MatrixCovers._warn_unconverged(:symcover_min, stats, 32)
     # A certified finish reports a KKT check that meets its tolerances, and the
@@ -160,8 +160,8 @@ end
     a, b = cover_min(AbsLog{2}(), A)
     @test iscover(a, b, A; atol=1e-8)
     @test cover_objective(AbsLog{2}(), a, b, A) ≈ 2 * log(sqrt(2))^2
-    # κ and maxouter keywords are accepted.
-    @test scales(cover_min(AbsLog{2}(), [1.0 2.0; 3.0 4.0]; κ=1e3, maxouter=16)) isa Tuple
+    # θ and maxouter keywords are accepted.
+    @test scales(cover_min(AbsLog{2}(), [1.0 2.0; 3.0 4.0]; θ=1e3, maxouter=16)) isa Tuple
 end
 
 @testset "MMC native AbsLog{2} matrix-free LSQR path" begin
@@ -236,7 +236,7 @@ end
                 @test aw ≈ ad rtol=1e-7
                 @test aa == aw
                 @test iscover(aw, M; atol=1e-8)
-                # Adaptive κ keeps the default run in the CG regime.
+                # Adaptive θ keeps the default run in the CG regime.
                 @test sw.cgiters > 0
                 @test sd.cgiters == 0
                 @test sd.cholsolves == 0
@@ -244,7 +244,7 @@ end
         end
         # A large penalty weight pushes the condition estimate past the CG
         # threshold, reaching the factorized Woodbury solve.
-        ac, sc = MatrixCovers._symcover_min_abslog2(A; linsolve=:woodbury, κ=1e7, maxouter=2)
+        ac, sc = MatrixCovers._symcover_min_abslog2(A; linsolve=:woodbury, θ=1e7, maxouter=2)
         @test sc.cholsolves > 0
         @test iscover(ac, A; atol=1e-8)
     end
@@ -269,7 +269,7 @@ end
                 @test sd.cholsolves == 0
             end
         end
-        _, _, sc = MatrixCovers._cover_min_abslog2(A; linsolve=:woodbury, κ=1e7, maxouter=2)
+        _, _, sc = MatrixCovers._cover_min_abslog2(A; linsolve=:woodbury, θ=1e7, maxouter=2)
         @test sc.cholsolves > 0
     end
 
@@ -307,16 +307,16 @@ end
     @test axes(bgo, 1) == axes(Ago, 2)
     @test collect(ago) .* collect(bgo)' ≈ agm .* bgm' rtol=1e-10
 
-    # A single pass at κ = 1e2 stays inside the conjugate-gradient regime
+    # A single pass at θ = 1e2 stays inside the conjugate-gradient regime
     # throughout, so the factorization is never reached.
     A1 = symlognormal(24)
-    c1, s1 = MatrixCovers._symcover_min_abslog2(A1; κ=1e2, maxouter=1, linsolve=:woodbury)
+    c1, s1 = MatrixCovers._symcover_min_abslog2(A1; θ=1e2, maxouter=1, linsolve=:woodbury)
     @test s1.cgiters > 0
     @test s1.cholsolves == 0
-    @test c1 ≈ MatrixCovers._symcover_min_abslog2(A1; κ=1e2, maxouter=1, linsolve=:dense)[1] rtol=1e-8
+    @test c1 ≈ MatrixCovers._symcover_min_abslog2(A1; θ=1e2, maxouter=1, linsolve=:dense)[1] rtol=1e-8
     G1 = lognormal(24, 18)
-    p1, q1, t1 = MatrixCovers._cover_min_abslog2(G1; κ=1e2, maxouter=1, linsolve=:woodbury)
-    pd1, qd1, _ = MatrixCovers._cover_min_abslog2(G1; κ=1e2, maxouter=1, linsolve=:dense)
+    p1, q1, t1 = MatrixCovers._cover_min_abslog2(G1; θ=1e2, maxouter=1, linsolve=:woodbury)
+    pd1, qd1, _ = MatrixCovers._cover_min_abslog2(G1; θ=1e2, maxouter=1, linsolve=:dense)
     @test t1.cgiters > 0
     @test t1.cholsolves == 0
     @test p1 .* q1' ≈ pd1 .* qd1' rtol=1e-8
@@ -585,7 +585,7 @@ end
     # does not rely on it. When the asymmetric solve does stop at the multiplier
     # iteration's KKT tolerance, its scaled entries are within about 1e-10 of the
     # certified minimizer rather than at roundoff.)
-    an, sn = @test_logs (:warn, r"Increase `maxouter` or `κ`") MatrixCovers._symcover_min_abslog2(A; flopbudget=Inf, maxouter=3,
+    an, sn = @test_logs (:warn, r"Increase `maxouter` or `θ`") MatrixCovers._symcover_min_abslog2(A; flopbudget=Inf, maxouter=3,
                                                                                                     polish=false)
     @test !sn.converged
     ga, gb, gs = MatrixCovers._cover_min_abslog2(A; flopbudget=Inf)
@@ -867,15 +867,15 @@ end
     rng = StableRNG(17)
     A = (X = exp.(randn(rng, 40, 40)); (X .+ X') ./ 2)
     _, s = MatrixCovers._symcover_min_abslog2(A)
-    @test s.nouter == length(s.exits) == length(s.drops) == length(s.kkt) == length(s.κs)
+    @test s.nouter == length(s.exits) == length(s.drops) == length(s.kkt) == length(s.θs)
     @test s.nouter <= 32
     @test all(in((:stable, :decrease, :linesearch, :maxiter)), s.exits)
     # With room to converge, no outer pass runs out of Newton steps.
     @test all(!=(:maxiter), s.exits)
-    # κ starts at the default, escalates monotonically, and respects the cap.
-    @test s.κs[1] == 1e2
-    @test issorted(s.κs)
-    @test s.κs[end] <= 1e8
+    # θ starts at the default, escalates monotonically, and respects the cap.
+    @test s.θs[1] == 1e2
+    @test issorted(s.θs)
+    @test s.θs[end] <= 1e8
     @test s.kkt[end] < 1e-8
 
     G = exp.(randn(rng, 40, 30))
@@ -886,7 +886,7 @@ end
     # The LSQR path caps escalation where its accuracy floor makes larger
     # weights useless.
     _, sl = MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr)
-    @test sl.κs[end] <= 1e6
+    @test sl.θs[end] <= 1e6
     @test sl.kkt[end] < 1e-8
 
     # Stopping far short of convergence without the active-set finish emits a warning.
@@ -894,14 +894,14 @@ end
         MatrixCovers._symcover_min_abslog2(A; maxouter=1, maxiter=1, polish=false)
     end
 
-    # The initial κ must define a penalty.
-    @test_throws "κ must exceed 1" MatrixCovers._symcover_min_abslog2(A; κ=1.0)
+    # The initial θ must define a penalty.
+    @test_throws "θ must exceed 1" MatrixCovers._symcover_min_abslog2(A; θ=1.0)
 end
 
 @testset "MMC drains multipliers of entries with small slack" begin
     # The (1,2) block is nearly rank one, H₁₁H₂₂/H₁₂² ≈ 1 + 6.4e-4, so entry
     # (1,2) has slack 3.2e-4 at the minimizer. Its multiplier drains by only
-    # `2(κ-1)z` per update, holding the KKT residual near 1.6e-4 meanwhile.
+    # `2(θ-1)z` per update, holding the KKT residual near 1.6e-4 meanwhile.
     H = [8.567765848595938e18   1.678712474552239e20   1.2739305494462144e11  4.834432693545447e10
          1.678712474552239e20   3.2912739530914445e21  2.446339938313649e12   9.791207851386554e11
          1.2739305494462144e11  2.446339938313649e12   2.8559219495320074e18  1.7997017727682363e18
@@ -925,7 +925,7 @@ end
         @test eltype(h) === Double64
         @test s.converged
         @test s.kkt[end] <= 1000 * eps(Double64)
-        @test s.κs[end] > 1e8
+        @test s.θs[end] > 1e8
         @test h[1]^2 ≈ H[1, 1] rtol=1e-25
         @test h[2]^2 ≈ H[2, 2] rtol=1e-25
     end
@@ -934,7 +934,7 @@ end
 @testset "MMC :lsqr drains slack multipliers at the penalty cap" begin
     # Draining these multipliers needs a penalty above the `:lsqr` cap of 1e6.
     # With the penalty held at the cap they are zeroed directly; left to drain by
-    # `2(κ-1)z` per update they hold the KKT residual at 6.2e-8.
+    # `2(θ-1)z` per update they hold the KKT residual at 6.2e-8.
     # Without the active-set finish (`polish=false`), slack multipliers are zeroed.
     # Whether the residual then reaches the tolerance depends on rounding (with the
     # forest preconditioner it can stall just above it); the solve warns exactly
@@ -945,10 +945,10 @@ end
             MatrixCovers._symcover_min_abslog2(A; linsolve=:lsqr, fillbudget, polish=false)
         end
         @test isempty(logs) == s.converged
-        @test all(l -> l.level == Base.CoreLogging.Warn && occursin("try a larger `κ`", l.message), logs)
+        @test all(l -> l.level == Base.CoreLogging.Warn && occursin("try a larger `θ`", l.message), logs)
         @test s.precond === (fillbudget == 0 ? :forest : :factor)
         @test s.nzeroed > 0
-        @test maximum(s.κs) == 1e6
+        @test maximum(s.θs) == 1e6
         @test s.kkt[end] < 1e-9
         _, sp = @test_logs symcover_min(AbsLog{2}(), A; fillbudget)
         @test MatrixCovers.converged(sp)
@@ -1002,20 +1002,20 @@ end
     end
     @test s2.nzeroed > 0
     @test isempty(logs) == s2.converged
-    @test all(l -> l.level == Base.CoreLogging.Warn && occursin("try a larger `κ`", l.message), logs)
+    @test all(l -> l.level == Base.CoreLogging.Warn && occursin("try a larger `θ`", l.message), logs)
 end
 
 @testset "MMC multiplier update is exact on an analytic problem" begin
     # A = [1 e; e 1]: the (1,2) constraint is active with multiplier λ* = 2, and
-    # the violation contracts by exactly 2/(κ+1) per multiplier update.
+    # the violation contracts by exactly 2/(θ+1) per multiplier update.
     A2 = [1.0 exp(1.0); exp(1.0) 1.0]
-    a2, s2 = MatrixCovers._symcover_min_abslog2(A2; linsolve=:dense, κ=1e2)
+    a2, s2 = MatrixCovers._symcover_min_abslog2(A2; linsolve=:dense, θ=1e2)
     @test s2.converged
     @test a2[1] * a2[2] ≈ exp(1.0)
     v = s2.kkt
     @test all(k -> isapprox(v[k+1] / v[k], 2 / 101; rtol=1e-3), 1:3)
-    # Contraction beats the tenfold target, so κ never escalates.
-    @test all(==(1e2), s2.κs)
+    # Contraction beats the tenfold target, so θ never escalates.
+    @test all(==(1e2), s2.θs)
 end
 
 @testset "covariance under power-of-two rescaling" begin
@@ -1107,32 +1107,32 @@ end
         λg[i, j] = rand(rng) < 0.5 ? 0.0 : rand(rng)
     end
     λe = [λg[i, j] for (i, j) in pos]
-    κ = 10.0
-    sscale, bscale = inv(2κ), inv(2(κ - 1))
-    @test MC._fal(x, κ, λg, sscale, bscale, grid, false) ≈ MC._fal(x, κ, λe, sscale, bscale, elist, false)
+    θ = 10.0
+    sscale, bscale = inv(2θ), inv(2(θ - 1))
+    @test MC._fal(x, θ, λg, sscale, bscale, grid, false) ≈ MC._fal(x, θ, λe, sscale, bscale, elist, false)
     patg = falses(m, n)
     pate = falses(length(pos))
     fg = zeros(N)
     fe = zeros(N)
-    MC._assemble_difference!(fg, patg, x, κ, λg, bscale, true, grid)
-    MC._assemble_difference!(fe, pate, x, κ, λe, bscale, true, elist)
+    MC._assemble_difference!(fg, patg, x, θ, λg, bscale, true, grid)
+    MC._assemble_difference!(fe, pate, x, θ, λe, bscale, true, elist)
     @test fg ≈ fe
     @test [patg[i, j] for (i, j) in pos] == pate && count(patg) == count(pate)
     @test MC._violated_pairs!(Tuple{Int,Int}[], patg, grid) == MC._violated_pairs!(Tuple{Int,Int}[], pate, elist)
     patg = Matrix(patg)
-    vg, okg = MC._falpat(x, κ, λg, sscale, bscale, patg, grid, false)
-    ve, oke = MC._falpat(x, κ, λe, sscale, bscale, pate, elist, false)
+    vg, okg = MC._falpat(x, θ, λg, sscale, bscale, patg, grid, false)
+    ve, oke = MC._falpat(x, θ, λe, sscale, bscale, pate, elist, false)
     @test vg ≈ ve && okg && oke
     patg[1, 1] = !patg[1, 1]
     pate[1] = !pate[1]
-    @test !MC._falpat(x, κ, λg, sscale, bscale, patg, grid, false)[2]
-    @test !MC._falpat(x, κ, λe, sscale, bscale, pate, elist, false)[2]
-    @test MC._update_multipliers!(λg, x, κ, 1e-3, grid, false) == MC._update_multipliers!(λe, x, κ, 1e-3, elist, false)
+    @test !MC._falpat(x, θ, λg, sscale, bscale, patg, grid, false)[2]
+    @test !MC._falpat(x, θ, λe, sscale, bscale, pate, elist, false)[2]
+    @test MC._update_multipliers!(λg, x, θ, 1e-3, grid, false) == MC._update_multipliers!(λe, x, θ, 1e-3, elist, false)
     @test [λg[i, j] for (i, j) in pos] == λe
     @test all(iszero, λg[.!isfinite.(C)])
     @test MC._zero_slack_multipliers!(λg, x, 1e-3, grid, false) == MC._zero_slack_multipliers!(λe, x, 1e-3, elist, false)
     @test [λg[i, j] for (i, j) in pos] == λe
     @test MC._mark_supported!(falses(N), grid) == MC._mark_supported!(falses(N), elist)
-    @test_throws "a difference grid has no symmetric layout" MC._fal(x, κ, λg, sscale, bscale, grid, true)
+    @test_throws "a difference grid has no symmetric layout" MC._fal(x, θ, λg, sscale, bscale, grid, true)
     @test_throws "a uniform shift cannot restore feasibility" MC._boost_shift(x, grid, false)
 end

@@ -262,6 +262,6 @@ end
 
     # A large penalty weight pushes the condition estimate past the CG
     # threshold, reaching the sparse Cholesky solve.
-    _, _, sc = tt(A; linsolve=:woodbury, κ=1e7, maxouter=2)
+    _, _, sc = tt(A; linsolve=:woodbury, θ=1e7, maxouter=2)
     @test sc.cholsolves > 0
 end

@@ -28,12 +28,12 @@ end
 @testset "PowerMean soft covers" begin
 
     @testset "symmetric 2×2 closed form" begin
-        for κ in (1/4, 4.0, 32.0), p in (1, 2, 3)
-            m = sqrt(κ)
+        for χ in (1/4, 4.0, 32.0), p in (1, 2, 3)
+            m = sqrt(χ)
             A = [1.0 -m; -m 1.0]
-            R11 = (2 / (1 + κ^(p/2)))^(1/p)
-            R12 = (2 * κ^(p/2) / (1 + κ^(p/2)))^(1/p)
-            E = (4 / p) * log(cosh((p / 4) * log(κ)))
+            R11 = (2 / (1 + χ^(p/2)))^(1/p)
+            R12 = (2 * χ^(p/2) / (1 + χ^(p/2)))^(1/p)
+            E = (4 / p) * log(cosh((p / 4) * log(χ)))
             a, _ = soft_symcover(PowerMean{p}(), A)
             R = abs.(A) ./ (a .* a')
             @test R[1, 1] ≈ R11 rtol=1e-13

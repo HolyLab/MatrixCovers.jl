@@ -164,58 +164,58 @@ end
     end
 end
 
-@testset "level_profile" begin
+@testset "level_dispersion" begin
     A = [1.0 2.0 0.0; 3.0 0.0 5.0]
 
     @testset "agreement with the definition" begin
         a, b, aref, bref = [1.0, 3.0], [0.5, 2.0, 4.0], [2.0, 1.0], [1.0, 1.0, 3.0]
         ℓ = [log(a[i] * b[j] / (aref[i] * bref[j])) for (i, j) in Tuple.(findall(!iszero, A))]
-        lp = level_profile((a, b), (aref, bref), A)
-        @test lp.level ≈ sum(ℓ) / length(ℓ)
-        @test lp.profile ≈ sqrt(sum(abs2, ℓ .- lp.level) / length(ℓ))
+        ld = level_dispersion((a, b), (aref, bref), A)
+        @test ld.level ≈ sum(ℓ) / length(ℓ)
+        @test ld.dispersion ≈ sqrt(sum(abs2, ℓ .- ld.level) / length(ℓ))
         # Exchanging the products negates the level.
-        lpr = level_profile((aref, bref), (a, b), A)
-        @test lpr.level ≈ -lp.level
-        @test lpr.profile ≈ lp.profile
+        ldr = level_dispersion((aref, bref), (a, b), A)
+        @test ldr.level ≈ -ld.level
+        @test ldr.dispersion ≈ ld.dispersion
     end
 
-    @testset "level and profile separate" begin
+    @testset "level and dispersion separate" begin
         a, b = cover(A)
-        @test level_profile((3a, b), (a, b), A) == (level=log(3.0), profile=0.0)
-        @test level_profile((a, b), (a, b), A) == (level=0.0, profile=0.0)
+        @test level_dispersion((3a, b), (a, b), A) == (level=log(3.0), dispersion=0.0)
+        @test level_dispersion((a, b), (a, b), A) == (level=0.0, dispersion=0.0)
         # A gauge that differs between components leaves the products on the support unchanged.
         Ab = [1.0 2.0 0.0 0.0; 3.0 4.0 0.0 0.0; 0.0 0.0 5.0 6.0]
         a, b = cover(Ab)
         g = [10.0, 10.0, 0.01]
         h = [0.1, 0.1, 100.0, 100.0]
-        lp = level_profile((a .* g, b .* h), (a, b), Ab)
-        @test abs(lp.level) < 10eps()
-        @test lp.profile < 10eps()
+        ld = level_dispersion((a .* g, b .* h), (a, b), Ab)
+        @test abs(ld.level) < 10eps()
+        @test ld.dispersion < 10eps()
     end
 
     @testset "symmetric form" begin
         Asym = [4.0 1.0; 1.0 0.0]
         a, aref = [2.0, 1.0], [1.0, 3.0]
-        @test level_profile(a, aref, Asym) == level_profile((a, a), (aref, aref), Asym)
-        @test_throws DimensionMismatch level_profile([1.0, 1.0], [1.0, 1.0], A)
+        @test level_dispersion(a, aref, Asym) == level_dispersion((a, a), (aref, aref), Asym)
+        @test_throws DimensionMismatch level_dispersion([1.0, 1.0], [1.0, 1.0], A)
     end
 
     @testset "zero entries are skipped" begin
         # b[2] and bref[2] multiply only zeros of A2, so they do not matter.
         A2 = [1.0 0.0; 3.0 0.0]
-        @test level_profile(([1.0, 2.0], [1.0, 0.0]), ([1.0, 1.0], [1.0, 7.0]), A2) ==
-              level_profile(([1.0, 2.0], [1.0, 5.0]), ([1.0, 1.0], [1.0, 1.0]), A2)
+        @test level_dispersion(([1.0, 2.0], [1.0, 0.0]), ([1.0, 1.0], [1.0, 7.0]), A2) ==
+              level_dispersion(([1.0, 2.0], [1.0, 5.0]), ([1.0, 1.0], [1.0, 1.0]), A2)
     end
 
     @testset "argument checks" begin
         o = ([1.0, 1.0], [1.0, 1.0, 1.0])
-        @test_throws "level_profile requires products that are positive and finite" level_profile(([1.0, 0.0], o[2]), o, A)
-        @test_throws "level_profile requires products that are positive and finite" level_profile(o, ([1.0, 1.0], [1.0, 1.0, Inf]), A)
-        @test_throws "level_profile requires `A` to have at least one nonzero entry" level_profile(o, o, zeros(2, 3))
-        @test_throws "level_profile requires nonnegative scales" level_profile(([-1.0, 1.0], o[2]), o, A)
-        @test_throws "level_profile requires nonnegative scales" level_profile(o, (o[1], [1.0, NaN, 1.0]), A)
-        @test_throws "indices of `aref` must match" level_profile(o, ([1.0], o[2]), A)
-        @test_throws "indices of `b` must match" level_profile(([1.0, 1.0], [1.0, 1.0]), o, A)
+        @test_throws "level_dispersion requires products that are positive and finite" level_dispersion(([1.0, 0.0], o[2]), o, A)
+        @test_throws "level_dispersion requires products that are positive and finite" level_dispersion(o, ([1.0, 1.0], [1.0, 1.0, Inf]), A)
+        @test_throws "level_dispersion requires `A` to have at least one nonzero entry" level_dispersion(o, o, zeros(2, 3))
+        @test_throws "level_dispersion requires nonnegative scales" level_dispersion(([-1.0, 1.0], o[2]), o, A)
+        @test_throws "level_dispersion requires nonnegative scales" level_dispersion(o, (o[1], [1.0, NaN, 1.0]), A)
+        @test_throws "indices of `aref` must match" level_dispersion(o, ([1.0], o[2]), A)
+        @test_throws "indices of `b` must match" level_dispersion(([1.0, 1.0], [1.0, 1.0]), o, A)
     end
 
     @testset "offset axes" begin
@@ -223,15 +223,15 @@ end
         a, b, aref, bref = [1.0, 3.0], [0.5, 2.0, 4.0], [2.0, 1.0], [1.0, 1.0, 3.0]
         oa(x) = OffsetArray(x, -1:0)
         ob(x) = OffsetArray(x, 3:5)
-        @test level_profile((oa(a), ob(b)), (oa(aref), ob(bref)), Ao) ==
-              level_profile((a, b), (aref, bref), A)
-        @test_throws DimensionMismatch level_profile((a, b), (aref, bref), Ao)
+        @test level_dispersion((oa(a), ob(b)), (oa(aref), ob(bref)), Ao) ==
+              level_dispersion((a, b), (aref, bref), A)
+        @test_throws DimensionMismatch level_dispersion((a, b), (aref, bref), Ao)
     end
 
     @testset "element types" begin
         o = (Float32[1, 1], Float32[1, 1, 1])
-        @test level_profile((Float32[2, 1], o[2]), o, Float32.(A)).level isa Float32
-        @test level_profile(([2, 1], [1, 1, 1]), ([1, 1], [1, 1, 1]), [1 2 0; 3 0 5]).level isa Float64
+        @test level_dispersion((Float32[2, 1], o[2]), o, Float32.(A)).level isa Float32
+        @test level_dispersion(([2, 1], [1, 1, 1]), ([1, 1], [1, 1, 1]), [1 2 0; 3 0 5]).level isa Float64
     end
 
     @testset "storage types agree with the dense reference: $(typeof(S))" for S in (
@@ -243,17 +243,17 @@ end
             Symmetric(sparse([4.0 1.0; 1.0 3.0])))
         D = Matrix(S)
         a, aref = [2.0, 0.5], [1.0, 3.0]
-        @test all(values(level_profile(a, aref, S)) .≈ values(level_profile(a, aref, D)))
+        @test all(values(level_dispersion(a, aref, S)) .≈ values(level_dispersion(a, aref, D)))
     end
 
     @testset "units cancel" begin
         L = u"m"
         Au = [1.0/L^2 2.0/L^2; 2.0/L^2 0.0/L^2]
-        lp = level_profile([2.0/L, 1.0/L], [1.0/L, 1.0/L], Au)
-        @test lp == level_profile([2.0, 1.0], [1.0, 1.0], ustrip.(Au))
-        # A change of units on each coordinate leaves level and profile unchanged.
+        ld = level_dispersion([2.0/L, 1.0/L], [1.0/L, 1.0/L], Au)
+        @test ld == level_dispersion([2.0, 1.0], [1.0, 1.0], ustrip.(Au))
+        # A change of units on each coordinate leaves level and dispersion unchanged.
         d = [2.0, 0.25]
         Ad = [1.0 2.0; 2.0 0.0]
-        @test all(values(level_profile([2.0, 1.0] .* d, d, Ad .* (d * d'))) .≈ values(level_profile([2.0, 1.0], [1.0, 1.0], Ad)))
+        @test all(values(level_dispersion([2.0, 1.0] .* d, d, Ad .* (d * d'))) .≈ values(level_dispersion([2.0, 1.0], [1.0, 1.0], Ad)))
     end
 end

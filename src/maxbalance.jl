@@ -1,6 +1,7 @@
 # Max-balancing of the transversal-tight difference system within its strongly
 # connected components: the max-balanced Hungarian scaling of Hook, Pestana,
-# Tisseur & Hogg (SIAM J. Matrix Anal. Appl. 40:320–346, 2019).
+# Tisseur & Hogg (SIAM J. Matrix Anal. Appl. 40:320–346, 2019). Their Hungarian
+# scalings are the scalings by optimal assignment duals.
 #
 # In the difference system on the component scales `y`, entry `e` joins
 # `P[e] → Q[e]` with log slack `d[e] = y[P[e]] - y[Q[e]] - C[e] >= 0`, and so log

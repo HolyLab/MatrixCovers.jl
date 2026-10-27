@@ -144,7 +144,7 @@ julia> a * b'
 # Extended help
 
 For square `A`, every hard cover has `prod(a) * prod(b) >= π*`, where `π*` is
-the largest product `∏ᵢ |A[i,σ(i)]|` over permutations `σ`. Equality holds
+the largest product `∏ᵢ |A[i,π(i)]|` over permutations `π`. Equality holds
 exactly when the cover is tight on every entry of every transversal attaining
 `π*`, and these covers maximize `|det(A ./ (a .* b'))|`. A cover that leaves
 such a transversal loose can make the scaled matrix far more ill-conditioned

@@ -201,19 +201,19 @@ asymmetric covers computed by [`cover`](@ref), [`cover_min`](@ref), and
 [`cover_transversal`](@ref).
 
 A *transversal* of an `n×n` matrix is a set of `n` entries with exactly one in
-each row and each column: `A[1,σ[1]], A[2,σ[2]], …, A[n,σ[n]]` for some
-permutation `σ`. Permuting the columns turns any transversal into the main
-diagonal, since `A[:, σ][i, i] == A[i, σ[i]]`, so a transversal is a diagonal
+each row and each column: `A[1,π(1)], A[2,π(2)], …, A[n,π(n)]` for some
+permutation `π`. Permuting the columns so that column `π(i)` becomes column `i`
+turns any transversal into the main diagonal, so a transversal is a diagonal
 up to the ordering of the columns; some authors call it a *diagonal* or
 *generalized diagonal*. "Transversal" is the usual term in the literature on
 sparse direct solvers. It comes from combinatorics, where a
 [transversal](https://en.wikipedia.org/wiki/Transversal_(combinatorics)) of a
 collection of sets picks a distinct element from each set; here each row
 contributes the set of columns of its nonzero entries. The products
-`prod(A[i,σ[i]] for i in 1:n)` are, up to sign, the terms of `det(A)`, so a
+`∏ᵢ A[i,π(i)]` are, up to sign, the terms of `det(A)`, so a
 nonsingular matrix has at least one transversal of nonzero entries. A matrix
 with such a transversal is *structurally nonsingular*. A *maximum-product
-transversal* is one for which `prod(abs(A[i,σ[i]]) for i in 1:n)` is largest.
+transversal* is one for which `∏ᵢ |A[i,π(i)]|` is largest.
 By the inequality above, the main diagonal of a symmetric positive-definite
 matrix is a maximum-product transversal.
 
@@ -224,7 +224,7 @@ otherwise balanced.
 
 For any hard cover, `prod(a) * prod(b)` is at least the product of the
 magnitudes on any transversal of `A`, with equality exactly when
-`abs(Ahat[i,σ[i]]) == 1` on every entry of that transversal. Since
+`|Ahat[i,π(i)]| == 1` on every entry of that transversal. Since
 `det(Ahat) = det(A) / (prod(a) * prod(b))`, the hard covers that are tight on a
 maximum-product transversal are those that maximize `abs(det(Ahat))`. Such
 scalings are a standard preprocessing step for Gaussian elimination, where they
