@@ -453,6 +453,8 @@ end
     @test_throws "finite entries" cover_transversal(PowerMean{2}(), [1.0 Inf; 1 1])
     @test_throws "target must satisfy 0 < target <= 1, got 0" cover_transversal(PowerMean{2}(), A; target=0)
     @test_throws "target must satisfy 0 < target <= 1, got 1.5" cover_transversal(PowerMean{2}(), A; target=1.5)
+    @test_throws MethodError cover_transversal(PowerMean{2}(), A; tols=1e-8)
+    @test_throws MethodError cover_transversal(PowerMean{2}(), A; transversal=false)
     @test_throws "requires a finite exponent" cover_transversal(PowerMean{Inf}(), A)
     @test_throws "too small to evaluate the objective" cover_transversal(PowerMean{2}(), A; target=1e-200)
     @test_throws "tol must be positive" cover_transversal(PowerMean{2}(), A; tol=0)

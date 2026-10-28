@@ -196,6 +196,8 @@ end
     @test_throws "structurally nonsingular" cover_transversal(sparse([1.0 1 1; 1 0 0; 1 0 0]))
     @test_throws "finite entries" cover_transversal([1.0 Inf; 1 1])
     @test_throws "linsolve must be :auto, :dense, :lsqr, or :woodbury" cover_transversal(A; linsolve=:bad)
+    @test_throws MethodError cover_transversal(A; maxouters=3)
+    @test_throws MethodError cover_transversal(A; transversal=false)
 end
 
 @testset "cover_transversal, linsolve=:woodbury" begin

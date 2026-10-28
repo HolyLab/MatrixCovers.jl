@@ -30,6 +30,10 @@ end
         @test_throws "requires a square matrix" soft_symcover(ρ, [1.0 2.0; 3.0 4.0; 5.0 6.0])
     end
 
+    # The `AbsLog{2}` soft covers accept only the linear-solver keywords.
+    @test_throws MethodError soft_symcover(AbsLog{2}(), [2.0 1.0; 1.0 2.0]; maxouter=3)
+    @test_throws MethodError soft_cover(AbsLog{2}(), [2.0 1.0; 1.0 3.0]; linsolv=:dense)
+
     # Rank-1 is exact: A = [4 2; 2 1] = [2;1]*[2 1], so exact cover has all ratios = 1
     A = [4.0 2.0; 2.0 1.0]
     for ρ in SOFT_PENALTIES

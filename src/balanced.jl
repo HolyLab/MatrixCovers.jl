@@ -27,8 +27,16 @@ const BALANCED_CG_RTOL = 1e-4
 const BALANCED_NRIDGE = 4
 const BALANCED_RIDGE_GROWTH = 1e4
 
+# The solver keywords of `cover_transversal(::PowerMean, A)`, with their defaults;
+# `maxiter = nothing` selects a limit that grows with the size of `A`. Public methods
+# pass user keywords through this function, so that any other keyword throws a
+# `MethodError`.
+_balanced_options(; maxbalance::Bool=false, tol::Real=BALANCED_TOL,
+                  maxiter::Union{Integer,Nothing}=nothing, fillbudget::Real=LSQR_FILL_BUDGET,
+                  flopbudget::Real=LSQR_FLOP_BUDGET) = (; maxbalance, tol, maxiter, fillbudget, flopbudget)
+
 """
-    a, b, stats = cover_transversal(ρ::PowerMean{p}, A; target=1e-2, maxbalance=false, tol=1e-9, maxiter, fillbudget, flopbudget)
+    a, b, stats = cover_transversal(ρ::PowerMean{p}, A; target=1e-2, maxbalance=false, tol=$(BALANCED_TOL), maxiter, fillbudget, flopbudget)
 
 Return a hard cover of the square matrix `A` whose aim is to make the scaled
 matrix `A ./ (a .* b')` as diagonally dominant as possible, given a permutation
@@ -145,7 +153,7 @@ one scale per block.
 
 ## Keywords
 
-`tol` (default `1e-9`) is the stopping tolerance: the groups are stationary when
+`tol` (default `$(BALANCED_TOL)`) is the stopping tolerance: the groups are stationary when
 the derivative of the objective with respect to each group's scale is at most
 `tol` times the sum of the magnitudes of its terms. The solve stops unconverged
 when roundoff keeps the Newton step from reducing the objective before then:
@@ -162,12 +170,9 @@ times that of the graph, and of order `r^(-p)` where cycles of entries hold
 ratios `r` far below `target`, so a very small `target^p` or a large `p`
 degrades the linear solves and the convergence.
 """
-function cover_transversal(ρ::PowerMean{p}, A::AbstractMatrix; target::Real=1e-2,
-                           maxbalance::Bool=false,
-                           tol::Real=BALANCED_TOL, maxiter::Union{Integer,Nothing}=nothing,
-                           fillbudget::Real=LSQR_FILL_BUDGET,
-                           flopbudget::Real=LSQR_FLOP_BUDGET) where {p}
-    a, b, nt = _cover_transversal_balanced(A, p, target; maxbalance, tol, maxiter, fillbudget, flopbudget)
+function cover_transversal(ρ::PowerMean{p}, A::AbstractMatrix; target::Real=1e-2, kwargs...) where {p}
+    # The solver keywords pass through to `_balanced_options`, which holds their defaults.
+    a, b, nt = _cover_transversal_balanced(A, p, target; _balanced_options(; kwargs...)...)
     return a, b, BalancedCoverStats{_auglag_stats_type(A)}(nt)
 end
 
@@ -195,12 +200,10 @@ cover_transversal!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::Abstrac
 # Worker for `cover_transversal(::PowerMean{p}, A; target)`, returning `(a, b, nt)`
 # with the statistics as a named tuple. `transversal` is as for
 # `_transversal_system`.
-function _cover_transversal_balanced(A::AbstractMatrix, p::Real, target::Real; maxbalance::Bool=false,
-                                     tol::Real=BALANCED_TOL,
-                                     maxiter::Union{Integer,Nothing}=nothing,
-                                     fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
+function _cover_transversal_balanced(A::AbstractMatrix, p::Real, target::Real;
                                      transversal::Union{Bool,AbstractVector{<:Integer}}=true,
-                                     fname::Symbol=:cover_transversal)
+                                     fname::Symbol=:cover_transversal, kwargs...)
+    (; maxbalance, tol, maxiter, fillbudget, flopbudget) = _balanced_options(; kwargs...)
     isfinite(p) || throw(ArgumentError("$fname requires a finite exponent, got PowerMean{$p}"))
     0 < target <= 1 || throw(ArgumentError("$fname: target must satisfy 0 < target <= 1, got $target"))
     tol > 0 || throw(ArgumentError("$fname: tol must be positive, got $tol"))
@@ -454,8 +457,7 @@ end
 #
 # Returns `(y, nt)`, with `nt` the fields of `BalancedCoverStats`.
 function _balanced_newton!(y::Vector{T}, sys::EdgeList{T}, p::T, ℓ::T; tol::T, maxiter::Int,
-                           fillbudget::Real=LSQR_FILL_BUDGET,
-                           flopbudget::Real=LSQR_FLOP_BUDGET) where {T}
+                           fillbudget::Real, flopbudget::Real) where {T}
     nc = length(y)
     ne = length(sys.edges)
     P = first.(sys.edges)

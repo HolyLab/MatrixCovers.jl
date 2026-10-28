@@ -31,11 +31,11 @@ include("heuristic_covers.jl")
 include("dense_heuristic.jl")  # full-grid kernels for the heuristic covers
 include("gram_covers.jl")    # symmetric covers of A'*W*A, and the cover of A for a fixed row scale
 include("initializers.jl")   # the start menu; consumed by both solver families below
-include("soft_covers.jl")
 include("powermean.jl")        # the PowerMean soft covers, the soft-cover default
 include("sparse_cholesky.jl")  # CHOLMOD factorizations for the minimal-cover solvers
 include("tree_cholesky.jl")    # fill-free factorization of forest-patterned matrices, for preconditioning
 include("minimal_covers.jl")
+include("soft_covers.jl")      # soft-cover entry points; their docstrings show constants defined above
 include("active_set.jl")       # exact solution of the AbsLog{2} problem from a near-optimal point
 include("transversal.jl")      # transversal-tight minimal covers
 include("balanced.jl")         # transversal-tight covers pushed toward a target ratio

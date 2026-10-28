@@ -367,12 +367,20 @@ end
         # Solver statistics expose the combined cost.
         R = MatrixCovers._log_support(MatrixCovers._row_support(sp_gen[1], Float64))
         C = MatrixCovers._log_support(MatrixCovers._col_support(sp_gen[1], Float64))
-        st = MatrixCovers._powermean_solve!(zeros(100), zeros(100), R, C, 2.0, 4096 * eps())
+        st = MatrixCovers._powermean_solve!(zeros(100), zeros(100), R, C, 2.0, 4096 * eps();
+                                           MatrixCovers._powermean_options()...)
         @test st.converged && st.newton && st.linsolve === :cholesky
         @test 2 * st.nsweeps + st.npasses < 400
 
         @test_throws "linsolve must be :auto, :dense, :cholesky, or :cg" soft_cover(A; linsolve=:lsqr)
         @test_throws "linsolve=:cholesky requires Float64" soft_symcover(big.(S); maxiter=2, linsolve=:cholesky)
+        # Keywords outside the documented set throw before the start is modified.
+        @test_throws MethodError soft_cover(A; maxiters=2)
+        @test_throws MethodError soft_cover(A; terms=nothing)
+        @test_throws MethodError soft_symcover(S; tols=1e-8)
+        a0, b0 = fill(2.0, 30), fill(0.5, 20)
+        @test_throws MethodError soft_cover!(a0, b0, A; tols=1e-8)
+        @test a0 == fill(2.0, 30) && b0 == fill(0.5, 20)
     end
 
     @testset "symmetric input to soft_cover" begin

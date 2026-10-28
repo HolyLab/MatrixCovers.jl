@@ -2,6 +2,41 @@
 # other penalties.
 
 # ============================================================
+# Solver defaults
+# ============================================================
+
+# Augmented-Lagrangian defaults. The KKT tolerance is in units of `eps` of the
+# working type.
+const AL_PENALTY = 1e2
+const AL_MAXOUTER = 32
+const AL_MAXITER = 40
+const AL_TOL_EPS = 1000
+
+# Default storage limit, in bytes, for the LSQR Cholesky preconditioner.
+# Tripping this switches to spanning-forest preconditioning, which has no fill
+# but needs more iterations for convergence.
+const LSQR_FILL_BUDGET = 1 << 30
+
+# Largest predicted numeric-factorization flop count per stored entry of the
+# support for which the LSQR Cholesky preconditioner is used. Above it,
+# repeated refactorization of the preconditioner costs more than the extra
+# LSQR iterations of spanning-forest preconditioning.
+const LSQR_FLOP_BUDGET = 8.0e3
+
+# The keywords of the native `AbsLog{2}` solvers, with their defaults: those that
+# choose the linear solver, which the soft covers accept, and the full set of the
+# minimal covers and `cover_transversal`. Public methods pass user keywords
+# through these functions, so that any other keyword throws a `MethodError`; the
+# workers `_symcover_min_abslog2` and `_cover_min_abslog2` apply `_auglag_options`
+# again to fill in the defaults for internal callers. `tol = nothing` selects the
+# tolerance `AL_TOL_EPS * eps` of the working type.
+_auglag_linsolve_options(; linsolve::Symbol=:auto, fillbudget::Real=LSQR_FILL_BUDGET,
+                         flopbudget::Real=LSQR_FLOP_BUDGET) = (; linsolve, fillbudget, flopbudget)
+_auglag_options(; θ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER, maxiter::Int=AL_MAXITER,
+                tol::Union{Real,Nothing}=nothing, kwargs...) =
+    (; θ, maxouter, maxiter, tol, _auglag_linsolve_options(; kwargs...)...)
+
+# ============================================================
 # Public interface
 # ============================================================
 
@@ -36,10 +71,10 @@ solves throw a [`SolverFailure`](@ref MatrixCovers.SolverFailure) instead.
 # Extended help
 
 The native solver accepts `θ` (initial augmented-Lagrangian penalty, default
-`1e2`), `maxouter` (multiplier updates, default `32`; `0` returns the
+`$(AL_PENALTY)`), `maxouter` (multiplier updates, default `$(AL_MAXOUTER)`; `0` returns the
 unconstrained fit, shifted to cover `A`, with `converged(stats) == false` and no
 warning), `maxiter` (Newton steps per update), `tol` (the tolerance
-on the KKT residual, default `1000*eps` of the working type), `fillbudget` and
+on the KKT residual, default `$(AL_TOL_EPS)*eps` of the working type), `fillbudget` and
 `flopbudget` (see below), and `linsolve`:
 
 - `:dense` factorizes dense normal equations at O(n³) per Newton step.
@@ -55,8 +90,8 @@ positive multiplier remains on an entry with slack.
 
 The budgets choose the preconditioner of `:lsqr`. For `Float64`, it is a sparse
 Cholesky factorization when the factor's predicted storage is at most
-`fillbudget` bytes (default `2^30`) and its predicted flop count is at most
-`flopbudget` (default `8e3`) times the number of stored entries in the support
+`fillbudget` bytes (default `$(LSQR_FILL_BUDGET)`) and its predicted flop count is at most
+`flopbudget` (default `$(LSQR_FLOP_BUDGET)`) times the number of stored entries in the support
 of `A`, counting each symmetric off-diagonal pair twice, as `nnz` does for a
 fully stored matrix. Otherwise, and for every other element type, it is a
 factorization of a maximum-weight spanning forest of the couplings among
@@ -201,42 +236,34 @@ cover_min!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...) =
 #
 # Each `θ` stage freezes the weights, solves the normal equations, and uses a
 # backtracking line search. A final uniform shift restores feasibility.
-function symcover_min(::AbsLog{2}, A::AbstractMatrix; θ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
-                      maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto,
-                      fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
-                      tol::Union{Real,Nothing}=nothing)
-    a, nt = _symcover_min_abslog2(A; θ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
+# The solver keywords of the `AbsLog{2}` methods pass through to
+# `_auglag_options`, which holds their defaults.
+function symcover_min(::AbsLog{2}, A::AbstractMatrix; kwargs...)
+    a, nt = _symcover_min_abslog2(A; _auglag_options(; kwargs...)...)
     return a, AugmentedLagrangianStats(A, nt)
 end
 
 # Asymmetric counterpart on stacked log scales `(α; β)`. The solve pins the
 # global gauge; `_cover_min_abslog2` regularizes and balances the remaining
 # component gauges.
-function cover_min(::AbsLog{2}, A::AbstractMatrix; θ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
-                   maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto,
-                   fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
-                   tol::Union{Real,Nothing}=nothing)
-    a, b, nt = _cover_min_abslog2(A; θ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
+function cover_min(::AbsLog{2}, A::AbstractMatrix; kwargs...)
+    a, b, nt = _cover_min_abslog2(A; _auglag_options(; kwargs...)...)
     return a, b, AugmentedLagrangianStats(A, nt)
 end
 
 # The convex objective has the same result from every valid start.
-function symcover_min!(::AbsLog{2}, a::AbstractVector, A::AbstractMatrix; θ::Real=AL_PENALTY,
-                       maxouter::Int=AL_MAXOUTER, maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto,
-                       fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
-                       tol::Union{Real,Nothing}=nothing)
+function symcover_min!(::AbsLog{2}, a::AbstractVector, A::AbstractMatrix; kwargs...)
+    opts = _auglag_options(; kwargs...)
     _prepare_symcover_start!(a, A)
-    anew, nt = _symcover_min_abslog2(A; start=a, θ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
+    anew, nt = _symcover_min_abslog2(A; start=a, opts...)
     a .= anew
     return a, AugmentedLagrangianStats(A, nt)
 end
 
-function cover_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; θ::Real=AL_PENALTY,
-                    maxouter::Int=AL_MAXOUTER, maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto,
-                    fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
-                    tol::Union{Real,Nothing}=nothing)
+function cover_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A::AbstractMatrix; kwargs...)
+    opts = _auglag_options(; kwargs...)
     _prepare_cover_start!(a, b, A)
-    anew, bnew, nt = _cover_min_abslog2(A; start=(a, b), θ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
+    anew, bnew, nt = _cover_min_abslog2(A; start=(a, b), opts...)
     a .= anew
     b .= bnew
     return a, b, AugmentedLagrangianStats(A, nt)
@@ -1218,10 +1245,6 @@ function _symmul!(y::AbstractVector{T}, Cu::SparseMatrixCSC{T}, x::AbstractVecto
     return y
 end
 
-# Augmented-Lagrangian defaults.
-const AL_PENALTY = 1e2
-const AL_MAXOUTER = 32
-const AL_MAXITER = 40
 # At the penalty cap the multiplier iteration contracts at a fixed rate. When
 # the active-set finish follows, two consecutive updates that contract the KKT
 # residual by less than this factor end the iteration.
@@ -1290,17 +1313,6 @@ _precond_pattern(::Type{T}, ::Union{Grid,DiffGrid}, v0, N::Int, mult) where {T} 
 
 # Scale-relative ridge for a positive-definite preconditioner.
 _precond_ridge(dmax::T) where {T} = (dmax > 0 ? dmax : oneunit(T)) * sqrt(eps(T))
-
-# Default storage limit, in bytes, for the LSQR Cholesky preconditioner.
-# Tripping this switches to spanning-forest preconditioning, which has no fill
-# but needs more iterations for convergence.
-const LSQR_FILL_BUDGET = 1 << 30
-
-# Largest predicted numeric-factorization flop count per stored entry of the
-# support for which the LSQR Cholesky preconditioner is used. Above it,
-# repeated refactorization of the preconditioner costs more than the extra
-# LSQR iterations of spanning-forest preconditioning.
-const LSQR_FLOP_BUDGET = 8.0e3
 
 # The Newton steps of the multiplier iteration need only inexact solves while
 # the active pattern is still changing. A stage starts LSQR at tolerance
@@ -1425,9 +1437,8 @@ _dense_factor_type(::Type{T}) where {T} = LinearAlgebra.LU{T,Matrix{T},Vector{In
 # active-set method of `_polish_cover` or `_polish_symcover`.
 function _abslog2_auglag(sys::SupportSystem{T}, x0;
                                θ::Real, maxouter::Int, maxiter::Int, linsolve::Symbol, boost::Bool,
-                               fillbudget::Real=LSQR_FILL_BUDGET,
-                               flopbudget::Real=LSQR_FLOP_BUDGET, zeroslack::Bool=true,
-                               tol::Union{Real,Nothing}=nothing) where {T}
+                               fillbudget::Real, flopbudget::Real, zeroslack::Bool,
+                               tol::Union{Real,Nothing}) where {T}
     θ > 1 || throw(ArgumentError("θ must exceed 1; got $θ"))
     tol === nothing || (isfinite(tol) && tol >= 0) ||
         throw(ArgumentError("tol must be finite and nonnegative; got $tol"))
@@ -1840,7 +1851,7 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
     x = x0 === nothing ? solve_weighted(zeros(T, N), nothing) : x0
     # Absolute thresholds preserve covariance under rescaling because the
     # residuals are logarithmic.
-    vtol = tol === nothing ? 1000 * eps(T) : T(tol)
+    vtol = tol === nothing ? AL_TOL_EPS * eps(T) : T(tol)
     # Precision bounds the usable penalty: the cap is `1e6` (LSQR) or `1e8`
     # (exact solves) in `Float64` and grows as `1/sqrt(eps(T))`.
     θcap = T(use_lsqr ? 1e6 : 1e8) * sqrt(T(eps(Float64)) / eps(T))
@@ -1980,12 +1991,9 @@ end
 # `_polish_difference_qp` (`primal`, `ptol`, `dual`, `dtol`), and
 # `stats.converged == stats.polish.certified`. A certified finish replaces the
 # multiplier iterate, so `stats.kkt` then describes the iterate, not the result.
-function _symcover_min_abslog2(A::AbstractMatrix; θ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
-                               maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto, start=nothing,
-                               boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET,
-                               flopbudget::Real=LSQR_FLOP_BUDGET, polish::Bool=true,
-                               zeroslack::Bool=!polish, tol::Union{Real,Nothing}=nothing,
-                               fname=:symcover_min)
+function _symcover_min_abslog2(A::AbstractMatrix; start=nothing, boost::Bool=true, polish::Bool=true,
+                               zeroslack::Bool=!polish, fname=:symcover_min, kwargs...)
+    (; θ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol) = _auglag_options(; kwargs...)
     linsolve in (:auto, :dense, :lsqr, :woodbury) ||
         throw(ArgumentError("linsolve must be :auto, :dense, :lsqr, or :woodbury; got :$linsolve"))
     # Shared symmetry check for native symmetric minimal covers.
@@ -2112,13 +2120,11 @@ end
 # stops at its first stall at the penalty cap rather than zeroing slack
 # multipliers (`zeroslack`, which defaults to `!polish`). `stats` is as for
 # `_symcover_min_abslog2`.
-function _cover_min_abslog2(A::AbstractMatrix; θ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
-                            maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto, start=nothing,
-                            boost::Bool=true, fillbudget::Real=LSQR_FILL_BUDGET,
-                            flopbudget::Real=LSQR_FLOP_BUDGET,
+function _cover_min_abslog2(A::AbstractMatrix; start=nothing, boost::Bool=true,
                             transversal::Union{Nothing,Bool,AbstractVector{<:Integer}}=nothing,
-                            polish::Bool=true, zeroslack::Bool=!polish, tol::Union{Real,Nothing}=nothing,
-                            fname::Symbol=:cover_min)
+                            polish::Bool=true, zeroslack::Bool=!polish, fname::Symbol=:cover_min,
+                            kwargs...)
+    (; θ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol) = _auglag_options(; kwargs...)
     tt = transversal !== nothing && transversal !== false
     if tt
         linsolve in (:auto, :dense, :lsqr, :woodbury) ||
@@ -2417,10 +2423,11 @@ end
 
 # Soft `AbsLog{2}` covers are the unweighted initial solve with no feasibility
 # shift. Convexity makes the constrained iteration and multistart unnecessary.
+# They accept only the keywords of `_auglag_linsolve_options`.
 _soft_symcover_abslog2(A::AbstractMatrix; kwargs...) =
-    _symcover_min_abslog2(A; maxouter=0, boost=false, fname=:soft_symcover, kwargs...)
+    _symcover_min_abslog2(A; maxouter=0, boost=false, fname=:soft_symcover, _auglag_linsolve_options(; kwargs...)...)
 _soft_cover_abslog2(A::AbstractMatrix; kwargs...) =
-    _cover_min_abslog2(A; maxouter=0, boost=false, kwargs...)
+    _cover_min_abslog2(A; maxouter=0, boost=false, _auglag_linsolve_options(; kwargs...)...)
 
 # JuMP reference used to test the native symmetric solver.
 function symcover_min_jump end
