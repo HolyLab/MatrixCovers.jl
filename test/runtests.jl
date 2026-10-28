@@ -25,6 +25,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
     include("gram_covers.jl")       # gramcover/gramcover!: symmetric covers of A'*W*A
     include("soft_covers.jl")       # soft_symcover/soft_cover for AbsLog and AbsLinear
     include("powermean.jl")         # the PowerMean soft covers (the soft default)
+    include("noise_cover.jl")       # noise_cover: scalings from variance estimates
     include("initializers.jl")      # initialize_symcover/initialize_cover strategies
     include("sparse_cholesky.jl")   # the CHOLMOD driver and the multi-array eachindex helper
     include("tree_cholesky.jl")     # the fill-free forest factorization behind the LSQR preconditioner

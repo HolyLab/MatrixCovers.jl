@@ -201,22 +201,54 @@ const POWERMEAN_NEWTON_MAXPASSES = 400
 const POWERMEAN_MAXNEWTON = 100
 const POWERMEAN_MAXPOLISH = 100
 
-# Asymmetric solve on row- and column-grouped `log|A|`. Returns the statistics
-# the drivers report: convergence, the sweep and Newton-step counts, the passes
-# over the support made by Newton and the polish, the factorizations and linear
-# solver, the final imbalance, and the polish passes and last cluster shift.
+# Terms of the asymmetric balance conditions beyond those of the soft covers,
+# which `noise_cover` uses: a target for each row and column sum in place of its
+# number of stored entries, and, for `p = 1` only, an additive rank-one term
+# `κ * u * v'` that enters every row and column sum without being stored. Rows and
+# columns are stacked by position, rows first, as in the Newton unknowns. The
+# rank-one weights must vanish on rows and columns without stored entries, which
+# the solvers skip.
+struct PowerMeanTerms{T}
+    lt::Vector{T}   # log target of each row and column
+    lw::Vector{T}   # log rank-one weights, `log.(u)` then `log.(v)`; empty without the term
+    lκ::T           # log κ
+end
+
+# One half-sweep's view of `PowerMeanTerms`: the log targets `lt` and log rank-one
+# weights `lw` of the groups being updated and `lwp` of their partners, by position.
+struct PowerMeanSide{T,V<:AbstractVector{T}}
+    lt::V
+    lw::V
+    lwp::V
+    lκ::T
+end
+
+function _powermean_sides(terms::PowerMeanTerms, m::Int)
+    N = length(terms.lt)
+    lw = terms.lw
+    rw, cw = isempty(lw) ? (view(lw, 1:0), view(lw, 1:0)) : (view(lw, 1:m), view(lw, m+1:N))
+    return PowerMeanSide(view(terms.lt, 1:m), rw, cw, terms.lκ),
+           PowerMeanSide(view(terms.lt, m+1:N), cw, rw, terms.lκ)
+end
+_powermean_sides(::Nothing, ::Int) = nothing, nothing
+
+# Asymmetric solve on row- and column-grouped `log|A|`, with the additional
+# `terms` if given. Returns the statistics the drivers report: convergence, the
+# sweep and Newton-step counts, the passes over the support made by Newton and
+# the polish, the factorizations and linear solver, the final imbalance, and the
+# polish passes and last cluster shift.
 function _powermean_solve!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}, p::T, tol::T;
                            maxiter::Integer=POWERMEAN_MAXITER, newton::Bool=true,
                            maxnewton::Integer=POWERMEAN_MAXNEWTON, maxpolish::Integer=POWERMEAN_MAXPOLISH,
-                           linsolve::Symbol=:auto) where {T}
+                           linsolve::Symbol=:auto, terms::Union{Nothing,PowerMeanTerms{T}}=nothing) where {T}
     _check_powermean_linsolve(linsolve)
     nsw = newton ? min(maxiter, POWERMEAN_NEWTON_MAXPASSES ÷ 2) : maxiter
     budget = newton ? POWERMEAN_NEWTON_PASSES ÷ 2 : typemax(Int)
-    converged, nsweeps, imbalance = _powermean_sinkhorn!(α, β, R, C, p, nsw, tol, budget)
+    converged, nsweeps, imbalance = _powermean_sinkhorn!(α, β, R, C, p, nsw, tol, budget, terms)
     nt = (; converged, nsweeps, maxiter, newton=false, nnewton=0, maxnewton, maxpolish, npasses=0,
           nfactor=0, linsolve=:none, imbalance, tol, npolish=0, shift=zero(T), settle=tol / p)
     (converged || !newton) && return nt
-    sys = _powermean_system(R, eachindex(β))
+    sys = _powermean_system(R, eachindex(β), terms)
     x = _stack(α, β)
     converged, nnewton, npasses, nfactor, imbalance, ls, npolish, shift, settle =
         _powermean_refine!(x, sys, length(α), p, maxnewton, maxpolish, tol, linsolve)
@@ -304,20 +336,64 @@ function _powermean_target(S::GroupedSupport{T}, sl, y, p::T) where {T}
     return m + (log(t) - log(T(length(sl)))) / p
 end
 
+# The same with the log target `lt` in place of `log(length(sl))` and `le`, the log
+# of a term added to the group's sum `∑ exp(p (log|A| - y))` (`-Inf` for none).
+function _powermean_target(S::GroupedSupport{T}, sl, y, p::T, lt::T, le::T) where {T}
+    m = typemin(T)
+    for s in sl
+        m = max(m, S.val[s] - y[S.idx[s]])
+    end
+    pm = max(p * m, le)
+    t = exp(le - pm)
+    for s in sl
+        t += exp(p * (S.val[s] - y[S.idx[s]]) - pm)
+    end
+    return (pm + log(t) - lt) / p
+end
+
+# Target of group `g` (position `gp`), with `lr` the log of the rank-one term's
+# sum over the partners (see `_powermean_rankone_lr`).
+_powermean_group_target(S, sl, y, p, ::Nothing, gp, lr) = _powermean_target(S, sl, y, p)
+function _powermean_group_target(S, sl, y, p, side::PowerMeanSide, gp, lr)
+    le = isempty(side.lw) ? oftype(lr, -Inf) : lr + side.lw[gp]
+    return _powermean_target(S, sl, y, p, side.lt[gp], le)
+end
+
+# `log(κ ∑_k v[k] exp(-p y[k]))` over the partners `k` with weights `v`, which is
+# the rank-one term of a group with weight `u` divided by `u`; `-Inf` without it.
+_powermean_rankone_lr(::Nothing, y, p) = zero(p)
+function _powermean_rankone_lr(side::PowerMeanSide, y, p)
+    T = typeof(p)
+    isempty(side.lwp) && return T(-Inf)
+    m = T(-Inf)
+    for (k, j) in zip(eachindex(side.lwp), eachindex(y))
+        m = max(m, side.lwp[k] - p * y[j])
+    end
+    t = zero(T)
+    for (k, j) in zip(eachindex(side.lwp), eachindex(y))
+        t += exp(side.lwp[k] - p * y[j] - m)
+    end
+    return side.lκ + m + log(t)
+end
+
 # The objective restricted to one group scale `x`, with its partners fixed, is
-# `n * ρ(x - F) + const`, where `F` is the group's target and
-# `ρ(z) = (exp(-p z) - 1 + p z) / p`. This gives the exact change of the objective
-# under a relaxed step.
+# `n * ρ(x - F) + const`, where `F` is the group's target, `n` the group's target
+# sum, and `ρ(z) = (exp(-p z) - 1 + p z) / p`. This gives the exact change of the
+# objective under a relaxed step.
 _powermean_ρ(p, z) = (expm1(-p * z) + p * z) / p
 
 # Largest `|∑ R^p / n - 1|` over the groups of `S`, the scale-invariant imbalance
-# of the balance conditions `∑_j R[i,j]^p = n_i`.
-function _powermean_imbalance(x, y, S::GroupedSupport{T}, p::T) where {T}
+# of the balance conditions `∑_j R[i,j]^p = n_i` (with `n_i` and the sums those of
+# `side` when given).
+function _powermean_imbalance(x, y, S::GroupedSupport{T}, p::T, side=nothing) where {T}
     imb = zero(T)
+    lr = _powermean_rankone_lr(side, y, p)
+    off = first(S.ax) - 1
     for g in S.ax
         sl = _slots(S, g)
         isempty(sl) && continue
-        imb = max(imb, abs(expm1(p * (_powermean_target(S, sl, y, p) - x[g]))))
+        F = _powermean_group_target(S, sl, y, p, side, g - off, lr)
+        imb = max(imb, abs(expm1(p * (F - x[g]))))
     end
     return imb
 end
@@ -331,12 +407,14 @@ end
 # the exact block minimizer. Every half-sweep therefore decreases the objective by
 # at least a fixed fraction of what the exact block update would, which keeps the
 # iteration globally convergent for any `ω < 2`.
-function _powermean_halfsweep!(x, y, S::GroupedSupport{T}, p::T, ω::T) where {T}
+function _powermean_halfsweep!(x, y, S::GroupedSupport{T}, p::T, ω::T, side=nothing) where {T}
     imb = zero(T)
+    lr = _powermean_rankone_lr(side, y, p)
+    off = first(S.ax) - 1
     for g in S.ax
         sl = _slots(S, g)
         isempty(sl) && continue
-        F = _powermean_target(S, sl, y, p)
+        F = _powermean_group_target(S, sl, y, p, side, g - off, lr)
         δ = x[g] - F
         imb = max(imb, abs(expm1(-p * δ)))
         xg = F
@@ -393,12 +471,15 @@ end
 # plain estimate, at the rate of the relaxed iteration with the factor that
 # estimate implies (which the windows raise `ω` toward), and at the end of each
 # relaxed window, from that window's smallest imbalance at the observed rate.
+#
+# `terms`, if given, adds the targets and rank-one term of `PowerMeanTerms`.
 _powermean_sinkhorn!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}, p::T,
                      maxiter::Integer, tol::T) where {T} =
     _powermean_sinkhorn!(α, β, R, C, p, maxiter, tol, typemax(Int))
 
 function _powermean_sinkhorn!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}, p::T,
-                              maxiter::Integer, tol::T, budget::Integer) where {T}
+                              maxiter::Integer, tol::T, budget::Integer, terms=nothing) where {T}
+    rside, cside = _powermean_sides(terms, length(α))
     ωmax = T(POWERMEAN_OMEGA_MAX)
     ω = one(T)
     nplain = 0                  # consecutive plain sweeps in the current estimate
@@ -410,9 +491,9 @@ function _powermean_sinkhorn!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}
     k = 0
     while k < maxiter
         k += 1
-        r = max(_powermean_halfsweep!(α, β, R, p, ω), _powermean_halfsweep!(β, α, C, p, ω))
+        r = max(_powermean_halfsweep!(α, β, R, p, ω, rside), _powermean_halfsweep!(β, α, C, p, ω, cside))
         if r <= tol
-            imb = max(_powermean_imbalance(α, β, R, p), _powermean_imbalance(β, α, C, p))
+            imb = max(_powermean_imbalance(α, β, R, p, rside), _powermean_imbalance(β, α, C, p, cside))
             imb <= tol && return true, k, imb
         end
         if ω == 1
@@ -455,7 +536,7 @@ function _powermean_sinkhorn!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}
             λ < 1 && _powermean_nsweeps(rprev, tol, λ) > budget && break
         end
     end
-    imb = max(_powermean_imbalance(α, β, R, p), _powermean_imbalance(β, α, C, p))
+    imb = max(_powermean_imbalance(α, β, R, p, rside), _powermean_imbalance(β, α, C, p, cside))
     return imb <= tol, k, imb
 end
 
