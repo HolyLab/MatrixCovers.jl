@@ -101,7 +101,8 @@ The method used to minimize the objective depends on the penalty:
 - `PowerMean` (native) uses power-mean scaling iterations (damped simultaneous
   updates for the symmetric problem, overrelaxed alternating updates for the
   asymmetric one), followed by damped Newton steps when those iterations
-  converge slowly.
+  converge slowly, then a polish of weakly joined clusters (see
+  [`PowerMeanStats`](@ref MatrixCovers.PowerMeanStats)).
 - `AbsLog{2}` (native) is a single linear least-squares solve for soft covers;
   for hard covers, see [Objective-minimal covers](@ref).
 - `PowerMean{p}` with a target ratio, for [`cover_transversal`](@ref) (native),

@@ -202,29 +202,45 @@ Newton steps finish the solve. `converged`, `residual`, and `tolerance` return
 the fields of the same names (`residual` returns `imbalance`); `iterations`
 returns `nsweeps + nnewton`.
 
+Balancing rows and columns alone poorly determines the products of entries with
+small `r^p`. After the Newton steps converge, the solver polishes the cover: it
+balances every cluster of rows and columns joined to the rest of the support
+only by such entries, by exact shifts of the cluster's log scales over a
+hierarchy of weak joins, until the largest shift is below `tol/p` or
+`maxpolish` passes have run. The Newton test is then checked again. `shift` is
+the largest cluster shift of the last polish pass: when it is well above
+`tol/p`, the log products `log(a[i]*b[j])` across the weakest joins are
+determined only to about that accuracy.
+
 # Fields
 
 - `converged::Bool`: `imbalance <= tol`.
 - `tol::T`: the stopping tolerance.
 - `imbalance::T`: the largest imbalance of the returned cover.
+- `shift::T`: the largest cluster shift, in log scale, of the last polish pass;
+  zero when the polish did not run.
 - `nsweeps::Int`: power-mean updates. For the asymmetric solver each counts an
   update of all rows and then all columns (a sweep); for the symmetric solver,
   one simultaneous update of all scales.
 - `newton::Bool`: whether Newton steps ran.
 - `nnewton::Int`: Newton steps.
-- The remaining fields count the work of the Newton stage; their names and
-  meanings may change between releases: `npasses` (passes over the support),
-  `nfactor` (factorizations), and `linsolve` (the solver for the Newton
-  equations: `:dense`, `:cholesky`, or `:cg`, and `:none` when Newton did not
-  run).
+- The remaining fields count the work of the Newton steps and the polish; their
+  names and meanings may change between releases: `npolish` (polish passes,
+  each over every level of a cluster hierarchy), `npasses` (passes over the
+  support by the Newton steps and the polish, the polish's sweeps counted by
+  the entries they touch), `nfactor` (factorizations), and `linsolve` (the
+  solver for the Newton equations: `:dense`, `:cholesky`, or `:cg`, and `:none`
+  when Newton did not run).
 """
 struct PowerMeanStats{T} <: AbstractCoverStats
     converged::Bool
     tol::T
     imbalance::T
+    shift::T
     nsweeps::Int
     newton::Bool
     nnewton::Int
+    npolish::Int
     npasses::Int
     nfactor::Int
     linsolve::Symbol
@@ -238,8 +254,8 @@ tolerance(s::PowerMeanStats) = s.tol
 # Conversion from the statistics tuple of `_powermean_solve!` and
 # `_powermean_symsolve!`; `T` is their working type.
 PowerMeanStats{T}(nt::NamedTuple) where {T} =
-    PowerMeanStats{T}(nt.converged, nt.tol, nt.imbalance, nt.nsweeps, nt.newton, nt.nnewton,
-                      nt.npasses, nt.nfactor, nt.linsolve)
+    PowerMeanStats{T}(nt.converged, nt.tol, nt.imbalance, nt.shift, nt.nsweeps, nt.newton, nt.nnewton,
+                      nt.npolish, nt.npasses, nt.nfactor, nt.linsolve)
 
 """
     BalancedCoverStats{T} <: AbstractCoverStats

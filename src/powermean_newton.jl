@@ -372,3 +372,466 @@ const POWERMEAN_NEWTON_NBACKTRACK = 40
 const POWERMEAN_ARMIJO = 1e-4
 const POWERMEAN_NOISE = 64
 const POWERMEAN_MAXSTEP = 64
+
+# ============================================================
+# Polish of weakly joined clusters
+# ============================================================
+
+# After the Newton steps, the log products of entries whose weight `r^p` is small
+# relative to the rest of their row and column are poorly determined. A cluster
+# of rows and columns joined to the rest of the support only by entries of total
+# weight `w` can shift as a whole while changing the row and column sums by only
+# about `w` times the shift, so the Newton test fixes its shift only to about
+# `max(tol, eps)/w`. The polish computes such shifts from the joining entries.
+#
+# It works on log scales in difference form: entry `e` joins node `u[e]`, which
+# carries `+y`, to node `v[e]`, which carries `-y`, so with `L = log|A|` its log
+# ratio is `z = y[u] - y[v] - L` and its log weight is `-p z`. The asymmetric
+# problem has a row node per row and a column node per column, `y = [α; -β]`.
+# The symmetric problem uses its double cover: a row node and a column node per
+# index, `y = [α; -α]`, and one edge per stored orientation of each entry. The
+# double cover's objective is the symmetric objective, and `α = (y_row - y_col)/2`.
+#
+# Clusters are the connected components of the entries at or above thresholds
+# spaced `POWERMEAN_SWEEP_SPACING` apart in log weight, found by union-find over
+# the entries in decreasing order of weight (Kruskal order). The unknowns of a
+# level are the clusters of the next finer level (the nodes at the finest), and
+# its entries are those crossing them. Over the shift `c` of one unknown, the
+# objective is `(A exp(-p c) + B exp(p c) + p k c)/p` with `A` and `B` the weights
+# of its out and in entries and `k` their difference in number, so its exact
+# minimizer is a root of a quadratic in `exp(p c)`, computed from the log weights
+# at any scale. A pass sweeps these shifts Gauss-Seidel over each level, finest
+# first. Level-by-level sweeps converge slowly along directions that couple two
+# levels, i.e., those joined by entries near a threshold, so successive passes
+# alternate between two hierarchies whose thresholds are offset by half a level.
+
+const POWERMEAN_SWEEP_SPACING = log(10)   # `Δ`: threshold ratio `exp(Δ)` between levels
+const POWERMEAN_SHIFT_SWEEPS = 20         # Gauss-Seidel sweeps of one level per pass, at most
+const POWERMEAN_POLISH_ROUNDS = 4         # polishes, each followed by Newton steps, at most
+const POWERMEAN_SETTLE_NOISE = 4          # roundoff of a shift, in `eps` times the largest `|y|` or `|L|`
+
+struct PowerMeanGraph{T}
+    N::Int                  # nodes
+    u::Vector{Int}          # node carrying `+y` of each entry
+    v::Vector{Int}          # node carrying `-y`
+    L::Vector{T}            # `log|A|` of each entry
+end
+
+# Asymmetric graph of the Newton system, whose unknowns are the row nodes `1:m`
+# and the column nodes `m+1:m+n`, each entry joining its row and column node.
+_powermean_graph(sys::PowerMeanSystem{T}) where {T} =
+    PowerMeanGraph{T}(length(sys.count), sys.u, sys.v, sys.L)
+
+# Double cover of the symmetric Newton system: row node `i`, column node `n+i`,
+# both orientations of an off-diagonal pair (stored once, with multiplicity two),
+# and a diagonal entry once.
+function _powermean_symgraph(sys::PowerMeanSystem{T}) where {T}
+    n = length(sys.count)
+    ne = 0
+    for e in eachindex(sys.u, sys.v)
+        ne += sys.u[e] == sys.v[e] ? 1 : 2
+    end
+    u = Vector{Int}(undef, ne)
+    v = Vector{Int}(undef, ne)
+    L = Vector{T}(undef, ne)
+    k = 0
+    for e in eachindex(sys.u, sys.v, sys.L)
+        a, b, l = sys.u[e], sys.v[e], sys.L[e]
+        k += 1
+        u[k], v[k], L[k] = a, n + b, l
+        if a != b
+            k += 1
+            u[k], v[k], L[k] = b, n + a, l
+        end
+    end
+    return PowerMeanGraph{T}(2n, u, v, L)
+end
+
+# Conversion between the Newton unknowns `x` and the difference form `y`: for
+# the asymmetric problem with `m` rows, the column scales change sign (its own
+# inverse); for the symmetric problem (`m === nothing`), `y = [x; -x]` and
+# `x = (y_row - y_col)/2`.
+function _powermean_toy!(y, x, m::Int)
+    for q in eachindex(y, x)
+        y[q] = q <= m ? x[q] : -x[q]
+    end
+    return y
+end
+_powermean_tox!(x, y, m::Int) = _powermean_toy!(x, y, m)
+
+function _powermean_toy!(y, x, ::Nothing)
+    n = length(x)
+    for q in 1:n
+        y[q] = x[q]
+        y[n+q] = -x[q]
+    end
+    return y
+end
+
+function _powermean_tox!(x, y, ::Nothing)
+    n = length(x)
+    for q in 1:n
+        x[q] = (y[q] - y[n+q]) / 2
+    end
+    return x
+end
+
+_powermean_polish_graph(sys, ::Int) = _powermean_graph(sys)
+_powermean_polish_graph(sys, ::Nothing) = _powermean_symgraph(sys)
+
+# Threshold below which a cluster shift counts as settled: `tol/p`, but no less
+# than the roundoff of a shift computed from the log weights
+# `-p (y[u] - y[v] - L)`, a few `eps` times the largest `|y|` or `|L|`.
+function _powermean_settle(y::AbstractVector{T}, G::PowerMeanGraph, p, tol) where {T}
+    scale = max(maximum(abs, y; init=zero(T)), maximum(abs, G.L; init=zero(T)))
+    return max(tol / p, T(POWERMEAN_SETTLE_NOISE) * eps(T) * scale)
+end
+
+# Log weights `-p z` of every entry.
+function _powermean_logweights!(lw, y, G::PowerMeanGraph, p)
+    for e in eachindex(lw, G.u, G.v, G.L)
+        lw[e] = -p * (y[G.u[e]] - y[G.v[e]] - G.L[e])
+    end
+    return lw
+end
+
+# One level of a hierarchy, stored in a `PowerMeanWorkspace`: its unknowns at
+# positions `uoff+1:uoff+K` of the unknown arrays and its crossing entries at
+# positions `eoff+1:eoff+ne` of the entry arrays.
+struct PowerMeanLevel
+    K::Int
+    uoff::Int
+    ne::Int
+    eoff::Int
+end
+
+# Storage for the passes of one polish, allocated once and reused by every pass.
+# The levels of a hierarchy are stored back to back.
+struct PowerMeanWorkspace{T}
+    lw::Vector{T}           # log weights of the graph's entries
+    order::Vector{Int}      # entries by decreasing log weight
+    scratch::Vector{Int}    # scratch space of the sort
+    par::Vector{Int}        # union-find forest over a level's unknowns
+    lab::Vector{Int}        # labels of the clusters a level forms
+    levels::Vector{PowerMeanLevel}
+    eid::Vector{Int}        # crossing entries: graph entry,
+    u::Vector{Int}          # unknown carrying `+y`,
+    v::Vector{Int}          # unknown carrying `-y`
+    k::Vector{Int}          # unknowns: crossing entries out of minus into,
+    up::Vector{Int}         # unknown of the next level containing it (0 if none does),
+    c::Vector{T}            # shift
+    lwl::Vector{T}          # log weights of one level's entries
+    optr::Vector{Int}       # out entries of unknown `P` of one level: `olist[optr[P]:optr[P+1]-1]`
+    iptr::Vector{Int}       # in entries, likewise
+    olist::Vector{Int}
+    ilist::Vector{Int}
+    cursor::Vector{Int}
+end
+
+function PowerMeanWorkspace(G::PowerMeanGraph{T}) where {T}
+    N, ne = G.N, length(G.L)
+    vi() = Int[]
+    return PowerMeanWorkspace{T}(Vector{T}(undef, ne), Vector{Int}(undef, ne), Vector{Int}(undef, ne),
+                                 Vector{Int}(undef, N), Vector{Int}(undef, N), PowerMeanLevel[],
+                                 vi(), vi(), vi(), vi(), vi(), T[], Vector{T}(undef, ne),
+                                 Vector{Int}(undef, N + 1), Vector{Int}(undef, N + 1),
+                                 Vector{Int}(undef, ne), Vector{Int}(undef, ne), Vector{Int}(undef, N + 1))
+end
+
+# Root of `q` in the union-find forest `parent`, halving the path on the way.
+function _uf_root!(parent, q)
+    while parent[q] != q
+        parent[q] = parent[parent[q]]
+        q = parent[q]
+    end
+    return q
+end
+
+# Levels of the hierarchy with thresholds `-(ℓ - offset) Δ`, `ℓ = 1, 2, …`, on the
+# log weights `ws.lw`, from the finest; level `ℓ` joins the entries at or above
+# its threshold. A threshold that joins no entry would repeat the next level and
+# is skipped. The entries are sorted once; each level then takes time
+# proportional to its unknowns and crossing entries, and only crossing entries
+# pass on to the next level. An unknown none of whose entries still crosses
+# after the joins drops out (`up` is 0).
+function _powermean_hierarchy!(ws::PowerMeanWorkspace{T}, G::PowerMeanGraph, Δ, offset) where {T}
+    lw, order, par, lab = ws.lw, ws.order, ws.par, ws.lab
+    ne = length(lw)
+    empty!(ws.levels)
+    sortperm!(order, lw; rev=true, scratch=ws.scratch)
+    resize!(ws.eid, ne); resize!(ws.u, ne); resize!(ws.v, ne)
+    for q in 1:ne
+        e = order[q]
+        ws.eid[q], ws.u[q], ws.v[q] = e, G.u[e], G.v[e]
+    end
+    K, nk, eoff, uoff = G.N, ne, 0, 0
+    ℓ = 0
+    while nk > 0
+        # The first threshold at or below the heaviest crossing entry.
+        lw1 = lw[ws.eid[eoff+1]]
+        ℓ = max(ℓ + 1, floor(Int, offset - lw1 / Δ))
+        while lw1 < T(-(ℓ - offset) * Δ)
+            ℓ += 1
+        end
+        thresh = T(-(ℓ - offset) * Δ)
+        entries = eoff+1:eoff+nk
+        resize!(ws.k, uoff + K); resize!(ws.up, uoff + K)
+        for P in 1:K
+            ws.k[uoff+P] = 0
+            par[P] = P
+            lab[P] = 0
+        end
+        for q in entries
+            ws.k[uoff+ws.u[q]] += 1
+            ws.k[uoff+ws.v[q]] -= 1
+        end
+        q = eoff + 1
+        while q <= eoff + nk && lw[ws.eid[q]] >= thresh
+            a, b = _uf_root!(par, ws.u[q]), _uf_root!(par, ws.v[q])
+            a == b || (par[a] = b)
+            q += 1
+        end
+        # Label the clusters that some entry still crosses (marked -1 first), in
+        # the order of their unknowns.
+        nkeep = 0
+        for q in entries
+            a, b = _uf_root!(par, ws.u[q]), _uf_root!(par, ws.v[q])
+            if a != b
+                lab[a] = lab[b] = -1
+                nkeep += 1
+            end
+        end
+        Knext = 0
+        for P in 1:K
+            r = _uf_root!(par, P)
+            lab[r] == -1 && (lab[r] = Knext += 1)
+            ws.up[uoff+P] = max(lab[r], 0)
+        end
+        push!(ws.levels, PowerMeanLevel(K, uoff, nk, eoff))
+        # The next level's entries follow this level's.
+        j = eoff + nk
+        resize!(ws.eid, j + nkeep); resize!(ws.u, j + nkeep); resize!(ws.v, j + nkeep)
+        for q in entries
+            a, b = ws.up[uoff+ws.u[q]], ws.up[uoff+ws.v[q]]
+            if a != b
+                j += 1
+                ws.eid[j], ws.u[j], ws.v[j] = ws.eid[q], a, b
+            end
+        end
+        eoff, nk, uoff, K = eoff + nk, nkeep, uoff + K, Knext
+    end
+    resize!(ws.c, uoff)
+    return ws.levels
+end
+
+# Log of the sum of `exp` over the log weights at the positions `idx`.
+function _powermean_logsumexp(lw, idx)
+    T = eltype(lw)
+    m = typemin(T)
+    for q in idx
+        m = max(m, lw[q])
+    end
+    m == typemin(T) && return m
+    t = zero(T)
+    for q in idx
+        t += exp(lw[q] - m)
+    end
+    return m + log(t)
+end
+
+# `p c` at the minimizer of `A exp(-p c) + B exp(p c) + p k c` over the shift `c` of
+# one unknown, from `la = log A`, `lb = log B` (its out and in cut weights) and the
+# integer `k`: the root `exp(p c)` of `B u² + k u - A = 0`, in logs for any scale.
+function _powermean_shift(la::T, lb::T, k::Int) where {T}
+    k == 0 && return (la - lb) / 2
+    lk = log(T(abs(k)))
+    lq = la + lb + log(T(4)) - 2lk
+    # For large `lq`, `exp(lq)` overflows; `log1p(sqrt(1 + exp(lq))) → lq/2`.
+    t = lq > 700 ? log(T(2)) - lq / 2 : log(T(2)) - log1p(sqrt(1 + exp(lq)))
+    return k > 0 ? la - lk + t : -(lb - lk + t)
+end
+
+# Gauss-Seidel sweeps of exact shifts over the unknowns of level `lev`, with
+# their shifts in `ws.c` and the log weights of the level's entries in `ws.lwl`
+# updated in place. Stops when a sweep's largest shift is below `settle`, or
+# after `POWERMEAN_SHIFT_SWEEPS` sweeps. Returns the largest accumulated shift
+# and the number of sweeps.
+function _powermean_shift_sweeps!(ws::PowerMeanWorkspace{T}, lev::PowerMeanLevel, p, settle) where {T}
+    K, uoff, ne, eoff = lev.K, lev.uoff, lev.ne, lev.eoff
+    optr, iptr, olist, ilist, cursor, lwl, c = ws.optr, ws.iptr, ws.olist, ws.ilist, ws.cursor, ws.lwl, ws.c
+    fill!(view(optr, 1:K+1), 0)
+    fill!(view(iptr, 1:K+1), 0)
+    for e in 1:ne
+        optr[ws.u[eoff+e]+1] += 1
+        iptr[ws.v[eoff+e]+1] += 1
+    end
+    optr[1] = 1; iptr[1] = 1
+    for P in 1:K
+        optr[P+1] += optr[P]
+        iptr[P+1] += iptr[P]
+    end
+    copyto!(cursor, 1, optr, 1, K)
+    for e in 1:ne
+        a = ws.u[eoff+e]
+        olist[cursor[a]] = e
+        cursor[a] += 1
+    end
+    copyto!(cursor, 1, iptr, 1, K)
+    for e in 1:ne
+        b = ws.v[eoff+e]
+        ilist[cursor[b]] = e
+        cursor[b] += 1
+    end
+    nsweeps = 0
+    for _ in 1:POWERMEAN_SHIFT_SWEEPS
+        nsweeps += 1
+        maxc = zero(T)
+        for P in 1:K
+            os = view(olist, optr[P]:optr[P+1]-1)
+            is = view(ilist, iptr[P]:iptr[P+1]-1)
+            (isempty(os) && isempty(is)) && continue
+            pc = _powermean_shift(_powermean_logsumexp(lwl, os), _powermean_logsumexp(lwl, is), ws.k[uoff+P])
+            isfinite(pc) || throw(DomainError(pc, "non-finite cluster shift; the log weights of the support are out of range"))
+            cP = pc / p
+            c[uoff+P] += cP
+            for e in os
+                lwl[e] -= pc
+            end
+            for e in is
+                lwl[e] += pc
+            end
+            maxc = max(maxc, abs(cP))
+        end
+        maxc < settle && break
+    end
+    cmax = zero(T)
+    for P in 1:K
+        cmax = max(cmax, abs(c[uoff+P]))
+    end
+    return cmax, nsweeps
+end
+
+# One pass of exact shifts over every level of the hierarchy with the given
+# offset, from the finest. `ws.lw` holds the log weights at `y` and is updated
+# with it. Returns the largest cluster shift and the work, in entries traversed
+# by the hierarchy build and the sweeps.
+function _powermean_shift_pass!(y::AbstractVector{T}, ws::PowerMeanWorkspace{T}, G::PowerMeanGraph, p, offset, settle) where {T}
+    levels = _powermean_hierarchy!(ws, G, POWERMEAN_SWEEP_SPACING, offset)
+    lw, lwl, c = ws.lw, ws.lwl, ws.c
+    fill!(c, zero(T))
+    maxshift = zero(T)
+    work = length(lw)
+    for lev in levels
+        for e in 1:lev.ne
+            lwl[e] = lw[ws.eid[lev.eoff+e]]
+        end
+        cmax, nsweeps = _powermean_shift_sweeps!(ws, lev, p, settle)
+        maxshift = max(maxshift, cmax)
+        work += nsweeps * lev.ne
+        for e in 1:lev.ne
+            lw[ws.eid[lev.eoff+e]] = lwl[e]
+        end
+    end
+    # Each unknown also moves with the clusters that contain it at coarser levels.
+    for ℓ in length(levels)-1:-1:1
+        lev, next = levels[ℓ], levels[ℓ+1]
+        for P in 1:lev.K
+            up = ws.up[lev.uoff+P]
+            up == 0 || (c[lev.uoff+P] += c[next.uoff+up])
+        end
+    end
+    if !isempty(levels)     # the finest level's unknowns are the nodes
+        for i in 1:G.N
+            y[i] += c[i]
+        end
+    end
+    return maxshift, work
+end
+
+# Shift passes on `y`, alternating the hierarchies offset by 0 and 1/2 level, until
+# a pass's largest shift is below `settle` or after `maxpasses` passes. Returns
+# the number of passes, the largest shifts of the first and the last pass, and
+# the work in entries traversed.
+function _powermean_polish!(y::AbstractVector{T}, G::PowerMeanGraph{T}, p, settle, maxpasses::Integer) where {T}
+    ws = PowerMeanWorkspace(G)
+    npasses = work = 0
+    shift1 = shift = zero(T)
+    while npasses < maxpasses
+        # Each pass updates the log weights incrementally; starting it from the
+        # scales keeps that roundoff from accumulating.
+        _powermean_logweights!(ws.lw, y, G, p)
+        shift, w = _powermean_shift_pass!(y, ws, G, p, isodd(npasses) ? 0.5 : 0.0, settle)
+        work += w
+        npasses += 1
+        npasses == 1 && (shift1 = shift)
+        shift < settle && break
+    end
+    return npasses, shift1, shift, work
+end
+
+# ============================================================
+# Refinement: Newton steps and polish
+# ============================================================
+
+# Largest imbalance of the Newton test at `x`, by one pass over the support.
+function _powermean_system_imbalance(x::Vector{T}, sys::PowerMeanSystem{T}, p::T) where {T}
+    N, ne = length(x), length(sys.u)
+    W, s = zeros(T, ne), zeros(T, N)
+    _powermean_eval!(W, zeros(T, N), s, x, zeros(T, N), zero(T), W, sys, p)
+    return _powermean_newton_imbalance(s, sys.count)
+end
+
+# Newton steps from `x` on the objective of `sys`; once they converge, polish of
+# the weakly joined clusters on the difference form of `x` (`m` rows for the
+# asymmetric problem, `nothing` for the symmetric one; see `_powermean_toy!`).
+# The returned `imbalance` and `shift` are both measured on the returned `x`.
+#
+# Each round polishes `x`, starting from an iterate that passes the imbalance
+# test, and evaluates the imbalance. If the polish kept it within `tol`, the
+# polished `x` is returned. Otherwise Newton steps repair it and the next round
+# polishes again, for at most `POWERMEAN_POLISH_ROUNDS` repairs. When the rounds,
+# the Newton steps (`maxnewton`), or the polish passes (`maxpolish`, 0 skips the
+# polish) run out first, the last iterate that passed the test is returned, with
+# the first-pass shift of the discarded polish as its residual along the weak
+# joins. Newton steps after the first call use the linear solver it chose.
+#
+# Returns `(converged, nnewton, npasses, nfactor, imbalance, linsolve, npolish,
+# shift, settle)`: `npasses` counts the polish's work in passes over the
+# support, `npolish` the polish passes, `shift` the largest cluster shift of
+# the last pass (zero when no polish ran), and `settle` the shift threshold.
+function _powermean_refine!(x::Vector{T}, sys::PowerMeanSystem{T}, m::Union{Int,Nothing}, p::T,
+                            maxnewton::Integer, maxpolish::Integer, tol::T, linsolve::Symbol) where {T}
+    converged, nnewton, npasses, nfactor, imbalance, ls = _powermean_newton!(x, sys, p, maxnewton, tol, linsolve)
+    npolish = 0
+    shift = zero(T)
+    settle = tol / p
+    (converged && maxpolish > 0) || return converged, nnewton, npasses, nfactor, imbalance, ls, npolish, shift, settle
+    G = _powermean_polish_graph(sys, m)
+    y = Vector{T}(undef, G.N)
+    settle = _powermean_settle(_powermean_toy!(y, x, m), G, p, tol)
+    xsave, imbsave = copy(x), imbalance     # the last iterate that passed the test
+    work = 0
+    for r in 1:POWERMEAN_POLISH_ROUNDS+1
+        np, shift1, shift, w = _powermean_polish!(_powermean_toy!(y, x, m), G, p, settle, maxpolish - npolish)
+        npolish += np
+        work += w
+        _powermean_tox!(x, y, m)
+        imbalance = _powermean_system_imbalance(x, sys, p)
+        npasses += 1
+        imbalance <= tol && break
+        if r > POWERMEAN_POLISH_ROUNDS || nnewton >= maxnewton || npolish >= maxpolish
+            copyto!(x, xsave)
+            imbalance, shift = imbsave, shift1
+            break
+        end
+        converged, ns, np, nf, imbalance, ls = _powermean_newton!(x, sys, p, maxnewton - nnewton, tol, ls)
+        nnewton += ns
+        npasses += np
+        nfactor += nf
+        converged || break
+        copyto!(xsave, x)
+        imbsave = imbalance
+    end
+    npasses += work ÷ max(length(G.L), 1)
+    return converged, nnewton, npasses, nfactor, imbalance, ls, npolish, shift, settle
+end
