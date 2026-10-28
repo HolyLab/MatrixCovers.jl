@@ -252,21 +252,21 @@ The solver is an active-set Newton method on groups of rows joined by entries
 at zero slack. The *relative reduced gradient* of a group is the derivative of
 the objective with respect to its common log scale, divided by the sum of the
 magnitudes of the terms of that derivative; `gradnorm` is its largest value
-over the groups. The groups are stationary when `gradnorm <= tol`, or when
-roundoff keeps the Newton step from reducing the objective: the step changes no
-log slack `-log(r)` by more than `tol`, or the directional derivative of the
-objective along it is nonnegative but within the roundoff of the groups'
-derivatives. This happens when roundoff limits `gradnorm`, so `converged` can
-hold with `gradnorm > tol`. The solve stops at a stationary point where every
-group's multiplier test succeeds.
+over the groups. The groups are stationary when `gradnorm <= tol`, and the solve
+converges at a stationary point where every group's multiplier test succeeds.
+It stops unconverged (`stalled`) when roundoff keeps the Newton step from
+reducing the objective first: the step changes no log slack `-log(r)` by more
+than `tol`, or the directional derivative of the objective along it is
+nonnegative but within the roundoff of the groups' derivatives.
 `converged`, `residual`, and `tolerance` return `converged`, `gradnorm`, and
 `tol`; `iterations` returns `nnewton`.
 
 # Fields
 
-- `converged::Bool`: the stopping criterion holds.
-- `stalled::Bool`: the line search could not reduce the objective (and so
-  `converged` is `false`); otherwise an unconverged solve reached `maxiter`.
+- `converged::Bool`: `gradnorm <= tol` and every multiplier test succeeds.
+- `stalled::Bool`: roundoff kept the Newton steps from reducing the objective
+  (and so `converged` is `false`); otherwise an unconverged solve reached
+  `maxiter`.
 - `tol::T`, `gradnorm::T`: as above.
 - `step::T`: the largest change of a log slack in the last Newton step (`NaN`
   if none was computed).
