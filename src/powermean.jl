@@ -51,26 +51,30 @@ _powermean_type(Ts::Type...) = float(promote_type(Ts..., Float64))
 
 function soft_cover(ρ::PowerMean, A::AbstractMatrix; tol::Union{Real,Nothing}=nothing,
                     maxiter::Integer=POWERMEAN_MAXITER, newton::Bool=true,
-                    maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto)
-    return _soft_cover_powermean(ρ, A, :soft_cover; tol, maxiter, newton, maxnewton, linsolve)
+                    maxnewton::Integer=POWERMEAN_MAXNEWTON, maxpolish::Integer=POWERMEAN_MAXPOLISH,
+                    linsolve::Symbol=:auto)
+    return _soft_cover_powermean(ρ, A, :soft_cover; tol, maxiter, newton, maxnewton, maxpolish, linsolve)
 end
 
 function soft_cover!(ρ::PowerMean, a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
                      tol::Union{Real,Nothing}=nothing, maxiter::Integer=POWERMEAN_MAXITER,
-                     newton::Bool=true, maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto)
-    return _soft_cover_powermean!(ρ, a, b, A, :soft_cover!; tol, maxiter, newton, maxnewton, linsolve)
+                     newton::Bool=true, maxnewton::Integer=POWERMEAN_MAXNEWTON,
+                     maxpolish::Integer=POWERMEAN_MAXPOLISH, linsolve::Symbol=:auto)
+    return _soft_cover_powermean!(ρ, a, b, A, :soft_cover!; tol, maxiter, newton, maxnewton, maxpolish, linsolve)
 end
 
 function soft_symcover(ρ::PowerMean, A::AbstractMatrix; tol::Union{Real,Nothing}=nothing,
                        maxiter::Integer=POWERMEAN_MAXITER, newton::Bool=true,
-                       maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto)
-    return _soft_symcover_powermean(ρ, A, :soft_symcover; tol, maxiter, newton, maxnewton, linsolve)
+                       maxnewton::Integer=POWERMEAN_MAXNEWTON, maxpolish::Integer=POWERMEAN_MAXPOLISH,
+                       linsolve::Symbol=:auto)
+    return _soft_symcover_powermean(ρ, A, :soft_symcover; tol, maxiter, newton, maxnewton, maxpolish, linsolve)
 end
 
 function soft_symcover!(ρ::PowerMean, a::AbstractVector, A::AbstractMatrix;
                         tol::Union{Real,Nothing}=nothing, maxiter::Integer=POWERMEAN_MAXITER,
-                        newton::Bool=true, maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto)
-    return _soft_symcover_powermean!(ρ, a, A, :soft_symcover!; tol, maxiter, newton, maxnewton, linsolve)
+                        newton::Bool=true, maxnewton::Integer=POWERMEAN_MAXNEWTON,
+                        maxpolish::Integer=POWERMEAN_MAXPOLISH, linsolve::Symbol=:auto)
+    return _soft_symcover_powermean!(ρ, a, A, :soft_symcover!; tol, maxiter, newton, maxnewton, maxpolish, linsolve)
 end
 
 # ============================================================
@@ -97,15 +101,16 @@ end
 
 function _soft_cover_powermean!(::PowerMean{p}, a::AbstractVector, b::AbstractVector,
                                 A::AbstractMatrix, fname::Symbol;
-                                tol, maxiter, newton, maxnewton, linsolve) where p
+                                tol, maxiter, newton, maxnewton, maxpolish, linsolve) where p
     _prepare_soft_cover_start!(a, b, A, fname)
     T = _powermean_type(eltype(a), eltype(b), real(eltype(A)))
     rtol = _powermean_tol(T, tol)
     R, C = _log_support(_row_support(A, T)), _log_support(_col_support(A, T))
     α = map(x -> x > 0 ? log(T(x)) : zero(T), a)
     β = map(x -> x > 0 ? log(T(x)) : zero(T), b)
-    stats = _powermean_solve!(α, β, R, C, T(p), rtol; maxiter, newton, maxnewton, linsolve)
+    stats = _powermean_solve!(α, β, R, C, T(p), rtol; maxiter, newton, maxnewton, maxpolish, linsolve)
     _warn_powermean_unconverged(fname, stats, :sweeps)
+    _warn_powermean_unsettled(fname, stats)
     _check_representable(α, i -> !isempty(_slots(R, i)), β, j -> !isempty(_slots(C, j)), T, fname; gauge=true)
     for i in eachindex(a, α)
         a[i] = isempty(_slots(R, i)) ? zero(eltype(a)) : exp(α[i])
@@ -127,14 +132,15 @@ function _soft_symcover_powermean(ρ::PowerMean, A::AbstractMatrix, fname::Symbo
 end
 
 function _soft_symcover_powermean!(::PowerMean{p}, a::AbstractVector, A::AbstractMatrix, fname::Symbol;
-                                   tol, maxiter, newton, maxnewton, linsolve) where p
+                                   tol, maxiter, newton, maxnewton, maxpolish, linsolve) where p
     _prepare_soft_symcover_start!(a, A, fname)
     T = _powermean_type(eltype(a), real(eltype(A)))
     rtol = _powermean_tol(T, tol)
     S = _log_support(_sym_support(A, T))
     α = map(x -> x > 0 ? log(T(x)) : zero(T), a)
-    stats = _powermean_symsolve!(α, S, T(p), rtol; maxiter, newton, maxnewton, linsolve)
+    stats = _powermean_symsolve!(α, S, T(p), rtol; maxiter, newton, maxnewton, maxpolish, linsolve)
     _warn_powermean_unconverged(fname, stats, :updates)
+    _warn_powermean_unsettled(fname, stats)
     _balance_bipartite_sym!(α, S)
     _check_representable(α, i -> !isempty(_slots(S, i)), nothing, nothing, T, fname; gauge=false)
     for i in eachindex(a, α)
@@ -168,10 +174,17 @@ function _warn_powermean_unconverged(fname::Symbol, stats, unit::Symbol)
     stats.converged && return nothing
     (; nsweeps, maxiter, imbalance, tol) = stats
     if stats.newton
-        @warn "$fname: the power-mean iteration ended after $nsweeps $unit and $(stats.nnewton) of maxnewton=$(stats.maxnewton) Newton steps with imbalance $imbalance (tolerance $tol); the result may not minimize the objective. Increase `maxnewton`, or `tol` if the imbalance is at the roundoff level of the entries' logarithms."
+        @warn "$fname: the power-mean iteration ended after $nsweeps $unit and $(stats.nnewton) of maxnewton=$(stats.maxnewton) Newton steps with imbalance $imbalance (tolerance $tol); the result may not minimize the objective. Increase `maxnewton` if the steps ran out, or `tol` if the imbalance is at the roundoff level of the entries' logarithms."
     else
         @warn "$fname: the power-mean iteration ended after $nsweeps of maxiter=$maxiter $unit with imbalance $imbalance (tolerance $tol); the result may not minimize the objective. Increase `maxiter`, or `tol` if the imbalance is at the roundoff level of the entries' logarithms."
     end
+    return nothing
+end
+
+function _warn_powermean_unsettled(fname::Symbol, stats)
+    (; converged, npolish, maxpolish, shift, settle) = stats
+    (converged && shift > settle) || return nothing
+    @warn "$fname: the cluster polish ended after $npolish of maxpolish=$maxpolish passes with largest shift $shift (settle threshold $settle); the log products across the weakest joins of the support are determined only to about that accuracy. Increase `maxpolish`, or set it to 0 to skip the polish."
     return nothing
 end
 
@@ -186,51 +199,57 @@ end
 const POWERMEAN_NEWTON_PASSES = 200
 const POWERMEAN_NEWTON_MAXPASSES = 400
 const POWERMEAN_MAXNEWTON = 100
+const POWERMEAN_MAXPOLISH = 100
 
 # Asymmetric solve on row- and column-grouped `log|A|`. Returns the statistics
 # the drivers report: convergence, the sweep and Newton-step counts, the passes
-# over the support made by Newton, its factorizations and linear solver, and the
-# final imbalance.
+# over the support made by Newton and the polish, the factorizations and linear
+# solver, the final imbalance, and the polish passes and last cluster shift.
 function _powermean_solve!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}, p::T, tol::T;
                            maxiter::Integer=POWERMEAN_MAXITER, newton::Bool=true,
-                           maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto) where {T}
+                           maxnewton::Integer=POWERMEAN_MAXNEWTON, maxpolish::Integer=POWERMEAN_MAXPOLISH,
+                           linsolve::Symbol=:auto) where {T}
     _check_powermean_linsolve(linsolve)
     nsw = newton ? min(maxiter, POWERMEAN_NEWTON_MAXPASSES ÷ 2) : maxiter
     budget = newton ? POWERMEAN_NEWTON_PASSES ÷ 2 : typemax(Int)
     converged, nsweeps, imbalance = _powermean_sinkhorn!(α, β, R, C, p, nsw, tol, budget)
-    nt = (; converged, nsweeps, maxiter, newton=false, nnewton=0, maxnewton, npasses=0,
-          nfactor=0, linsolve=:none, imbalance, tol)
+    nt = (; converged, nsweeps, maxiter, newton=false, nnewton=0, maxnewton, maxpolish, npasses=0,
+          nfactor=0, linsolve=:none, imbalance, tol, npolish=0, shift=zero(T), settle=tol / p)
     (converged || !newton) && return nt
     sys = _powermean_system(R, eachindex(β))
     x = _stack(α, β)
-    converged, nnewton, npasses, nfactor, imbalance, ls = _powermean_newton!(x, sys, p, maxnewton, tol, linsolve)
+    converged, nnewton, npasses, nfactor, imbalance, ls, npolish, shift, settle =
+        _powermean_refine!(x, sys, length(α), p, maxnewton, maxpolish, tol, linsolve)
     _unstack!(α, β, x)
-    return (; nt..., converged, newton=true, nnewton, npasses, nfactor, linsolve=ls, imbalance)
+    return (; nt..., converged, newton=true, nnewton, npasses, nfactor, linsolve=ls, imbalance, npolish, shift, settle)
 end
 
 # Symmetric solve on the symmetric row-grouped `log|A|`; statistics as above,
 # with `nsweeps` counting updates.
 function _powermean_symsolve!(α, S::GroupedSupport{T}, p::T, tol::T;
                               maxiter::Integer=POWERMEAN_MAXITER, newton::Bool=true,
-                              maxnewton::Integer=POWERMEAN_MAXNEWTON, linsolve::Symbol=:auto) where {T}
+                              maxnewton::Integer=POWERMEAN_MAXNEWTON, maxpolish::Integer=POWERMEAN_MAXPOLISH,
+                           linsolve::Symbol=:auto) where {T}
     _check_powermean_linsolve(linsolve)
     nup = newton ? min(maxiter, POWERMEAN_NEWTON_MAXPASSES) : maxiter
     budget = newton ? POWERMEAN_NEWTON_PASSES : typemax(Int)
     converged, nsweeps, imbalance = _powermean_jacobi!(α, similar(α), S, p, nup, tol, budget)
-    nt = (; converged, nsweeps, maxiter, newton=false, nnewton=0, maxnewton, npasses=0,
-          nfactor=0, linsolve=:none, imbalance, tol)
+    nt = (; converged, nsweeps, maxiter, newton=false, nnewton=0, maxnewton, maxpolish, npasses=0,
+          nfactor=0, linsolve=:none, imbalance, tol, npolish=0, shift=zero(T), settle=tol / p)
     (converged || !newton) && return nt
     sys = _powermean_symsystem(S)
+    n = length(S.ax)
     off = first(S.ax) - 1
-    x = Vector{T}(undef, length(S.ax))
+    x = Vector{T}(undef, n)
     for g in S.ax
         x[g-off] = α[g]
     end
-    converged, nnewton, npasses, nfactor, imbalance, ls = _powermean_newton!(x, sys, p, maxnewton, tol, linsolve)
+    converged, nnewton, npasses, nfactor, imbalance, ls, npolish, shift, settle =
+        _powermean_refine!(x, sys, nothing, p, maxnewton, maxpolish, tol, linsolve)
     for g in S.ax
         α[g] = x[g-off]
     end
-    return (; nt..., converged, newton=true, nnewton, npasses, nfactor, linsolve=ls, imbalance)
+    return (; nt..., converged, newton=true, nnewton, npasses, nfactor, linsolve=ls, imbalance, npolish, shift, settle)
 end
 
 _check_powermean_linsolve(linsolve::Symbol) =

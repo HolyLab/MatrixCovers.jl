@@ -475,4 +475,136 @@ end
         @inferred soft_symcover!(ones(2), S)
         @inferred soft_symcover(big.(S))
     end
+
+    @testset "weak links are resolved" begin
+        # Two blocks joined by one small entry in each direction: at the minimizer
+        # the two joining entries have equal `r^p`, which balancing rows and
+        # columns alone determines only to about `tol / r^p`.
+        A = [1.0 2 1e-6 0; 3 1 0 0; 0 0 1 2; 0 1e-5 1 1]
+        a, b, st = @test_logs soft_cover(PowerMean{2}(), A)
+        @test st.converged && st.npolish >= 1 && st.shift < st.tol
+        @test (A[1, 3] / (a[1] * b[3]))^2 ≈ (A[4, 2] / (a[4] * b[2]))^2 rtol=1e-12
+        for p in (1, 2, 3, 8)
+            a, b, st = @test_logs soft_cover(PowerMean{p}(), A)
+            @test st.converged
+            @test (A[1, 3] / (a[1] * b[3]))^p ≈ (A[4, 2] / (a[4] * b[2]))^p rtol=1e-11
+            # Bipartite symmetric blocks {1,2} and {3,4}, joined by (1,3) and (2,4).
+            S = [0 1 1e-6 0; 1 0 0 1e-5; 1e-6 0 0 2; 0 1e-5 2 0]
+            a, st = @test_logs soft_symcover(PowerMean{p}(), S)
+            @test st.converged
+            @test (S[1, 3] / (a[1] * a[3]))^p ≈ (S[2, 4] / (a[2] * a[4]))^p rtol=1e-11
+        end
+        # Rescaling by powers of two leaves the log products across a weak join
+        # unchanged.
+        A = [1.0 2 1e-8 0; 3 1 0 0; 0 0 1 2; 0 1e-5 1 1]
+        d1, d2 = [4.0, 0.25, 32.0, 1/8], [1/16, 2.0, 1024.0, 0.5]
+        supp = findall(!iszero, A)
+        a, b, st = @test_logs soft_cover(PowerMean{2}(), A)
+        aD, bD, stD = @test_logs soft_cover(PowerMean{2}(), d1 .* A .* d2')
+        @test st.converged && stD.converged
+        @test log.((aD .* bD')[supp]) ≈ log.((d1 .* (a .* b') .* d2')[supp]) atol=1e-10
+        # Without Newton steps there is no polish.
+        a, b, st = @test_logs soft_cover(PowerMean{2}(), ones(3, 3))
+        @test st.converged && !st.newton && st.npolish == 0 && st.shift == 0
+        a, st = @test_logs soft_symcover(PowerMean{2}(), ones(3, 3))
+        @test st.converged && !st.newton && st.npolish == 0 && st.shift == 0
+        # `maxpolish = 0` skips the polish.
+        a, b, st = @test_logs soft_cover(PowerMean{2}(), A; maxpolish=0)
+        @test st.converged && st.newton && st.npolish == 0 && st.shift == 0
+        a, st = @test_logs soft_symcover(PowerMean{2}(), A + A'; maxpolish=0)
+        @test st.converged && st.npolish == 0 && st.shift == 0
+        # Chains of blocks joined by ever smaller entries: every log product is
+        # covariant to roundoff, including those on entries with tiny ratios.
+        rng = StableRNG(11)
+        nb, bs = 6, 5
+        n = nb * bs
+        A = zeros(n, n)
+        for k in 1:nb
+            r = (k - 1) * bs + 1:k * bs
+            A[r, r] .= exp.(randn(rng, bs, bs))
+            k < nb && (A[r[end], r[end] + 1] = 10.0^(-2k); A[r[end] + 1, r[1]] = 10.0^(-2k - 1))
+        end
+        d1 = 2.0 .^ rand(rng, -8:8, n); d2 = 2.0 .^ rand(rng, -8:8, n)
+        supp = findall(!iszero, A)
+        for p in (1, 2, 4, 8), M in (A, sparse(A))
+            a, b, st = @test_logs soft_cover(PowerMean{p}(), M)
+            @test st.converged
+            aD, bD, stD = @test_logs soft_cover(PowerMean{p}(), d1 .* M .* d2')
+            @test stD.converged
+            @test log.((aD .* bD')[supp]) ≈ log.((d1 .* (a .* b') .* d2')[supp]) atol=1e-10
+        end
+        S = A + A'
+        suppS = findall(!iszero, S)
+        for p in (1, 2, 4), M in (S, sparse(S))
+            a, st = @test_logs soft_symcover(PowerMean{p}(), M)
+            @test st.converged
+            aD, stD = @test_logs soft_symcover(PowerMean{p}(), d1 .* M .* d1')
+            @test stD.converged
+            @test log.((aD .* aD')[suppS]) ≈ log.((d1 .* (a .* a') .* d1')[suppS]) atol=1e-10
+        end
+        # A chain of equally weak joins. The sweeps over the joining level act on
+        # a path, along which Gauss-Seidel needs about (number of blocks)^2 sweeps.
+        function weakchain(rng, nb, bs)
+            n = nb * bs
+            A = spzeros(n, n)
+            for k in 1:nb
+                r = (k - 1) * bs + 1:k * bs
+                A[r, r] .= exp.(randn(rng, bs, bs))
+                k < nb && (A[r[end], r[end] + 1] = 1e-6; A[r[end] + 1, r[1]] = 1e-7)
+            end
+            return A
+        end
+        A = weakchain(rng, 25, 4)
+        n = size(A, 1)
+        d1 = 2.0 .^ rand(rng, -8:8, n); d2 = 2.0 .^ rand(rng, -8:8, n)
+        supp = findall(!iszero, A)
+        S = A + A'
+        suppS = findall(!iszero, S)
+        for linsolve in (:cholesky, :cg)
+            a, b, st = @test_logs soft_cover(A; linsolve)
+            @test st.converged && st.linsolve === linsolve
+            aD, bD, stD = @test_logs soft_cover(d1 .* A .* d2'; linsolve)
+            @test stD.converged
+            @test log.((aD .* bD')[supp]) ≈ log.((d1 .* (a .* b') .* d2')[supp]) atol=1e-10
+            a, st = @test_logs soft_symcover(S; linsolve)
+            @test st.converged && st.linsolve === linsolve
+            aD, stD = @test_logs soft_symcover(d1 .* S .* d1'; linsolve)
+            @test stD.converged
+            @test log.((aD .* aD')[suppS]) ≈ log.((d1 .* (a .* a') .* d1')[suppS]) atol=1e-10
+        end
+        # On a long chain the polish budget runs out first, with a warning.
+        A = weakchain(rng, 250, 4)
+        a, b, st = @test_logs (:warn, r"^soft_cover: the cluster polish ended after 100 of maxpolish=100 passes .*Increase `maxpolish`") soft_cover(A; linsolve=:cholesky)
+        @test st.converged && st.npolish == 100 && isfinite(st.shift) && st.shift > st.tol / 2
+        a, b, st = @test_logs (:warn, r"cluster polish ended after 3 of maxpolish=3") soft_cover(A; linsolve=:cholesky, maxpolish=3)
+        @test st.converged && st.npolish == 3
+        a, st = @test_logs soft_symcover(A + A')
+        @test st.converged && isfinite(st.shift)
+    end
+
+    @testset "cluster shift at extreme weights" begin
+        # Log weights whose sum overflows `exp`: compare with the closed form in
+        # extended precision.
+        la, lb = 400.0, 410.0
+        for k in (1, -3)
+            lk = log(big(abs(k)))
+            t = log(big(2)) - log1p(sqrt(1 + exp(big(la) + big(lb) + log(big(4)) - 2lk)))
+            ref = k > 0 ? big(la) - lk + t : -(big(lb) - lk + t)
+            pc = MatrixCovers._powermean_shift(la, lb, k)
+            @test isfinite(pc)
+            @test pc ≈ Float64(ref) rtol=1e-14
+        end
+    end
+
+    @testset ":auto on a random sparse problem" begin
+        # Cholesky fill exceeds the budget on random patterns, so `:auto` picks `:cg`.
+        rng = StableRNG(3)
+        n = 2000
+        B = sprand(rng, n, n, 0.005) + I
+        nonzeros(B) .= exp.(3 .* randn(rng, nnz(B)))
+        a, b, st = @test_logs soft_cover(B)
+        @test st.converged && st.nnewton <= 20 && st.npolish <= 3
+        a, st = @test_logs soft_symcover(B + B')
+        @test st.converged && st.nnewton <= 20 && st.npolish <= 3
+    end
 end

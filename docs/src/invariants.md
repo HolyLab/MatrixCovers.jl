@@ -75,6 +75,15 @@ julia> covariance_spread(4; start=:geomean)
 (1.0, 1.0)
 ```
 
+The [`PowerMean`](@ref) soft covers are covariant in exact arithmetic, since the
+objective depends only on the ratios `|A[i,j]|/(a[i]*b[j])`. In floating point,
+the hard part is the log products `log(a[i]*b[j])` across clusters of rows and
+columns joined to the rest of the support only by entries with tiny `r^p`. The
+solvers' polish resolves these to about the `shift` reported in
+[`PowerMeanStats`](@ref MatrixCovers.PowerMeanStats), typically within a few
+digits of `tol/p` at `p = 2`; larger residuals are possible for large `p` or for
+long chains of equally weak joins.
+
 ## Uniqueness
 
 An asymmetric cover is determined only up to a scalar factor: `a → γ*a`,

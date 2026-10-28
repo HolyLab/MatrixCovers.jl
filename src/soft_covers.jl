@@ -21,11 +21,13 @@ Supported penalties and their keywords are:
   to Newton steps with backtracking on the objective when the updates are slow.
   Every update decreases the objective. The iteration stops when, in every
   nonzero row, the mean of `r^p` over the ratios `r = |A[k,j]|/(a[k]*a[j])` of
-  the nonzero entries is within `tol` of one. The computation uses at least
-  `Float64` precision; `tol` defaults to `4096*eps` of the working type, and a
-  warning is issued if the iteration ends without reaching it. The keywords
-  `maxiter`, `newton`, `maxnewton`, and `linsolve` are described in the
-  extended help.
+  the nonzero entries is within `tol` of one. Converged Newton steps are
+  followed by a polish of weakly joined clusters of rows (see
+  [`PowerMeanStats`](@ref MatrixCovers.PowerMeanStats)). The computation uses
+  at least `Float64` precision; `tol` defaults to `4096*eps` of the working
+  type, and a warning is issued if the iteration ends without reaching it. The
+  keywords `maxiter`, `newton`, `maxnewton`, `maxpolish`, and `linsolve` are
+  described in the extended help.
 - `AbsLog{2}()`: the convex minimum, computed by one linear solve; `linsolve`
   has the same meaning as in [`symcover_min`](@ref).
 - `AbsLog{1}()`: the convex minimum, computed as a linear program; requires JuMP
@@ -87,6 +89,12 @@ julia> round.(first(soft_symcover([0 1; 1 0])); digits=4)
   convergence or `maxiter`.
 - `maxnewton` (default `100`): the largest number of Newton steps. Each step
   solves the Newton equations and backtracks on the objective.
+- `maxpolish` (default `100`): the largest number of passes of the cluster
+  polish that follows the Newton steps, over all its rounds; `0` skips the
+  polish. Each pass shifts every weakly joined cluster of rows and columns to
+  its exact minimizer. When the passes run out before the largest shift falls
+  below `tol/p`, a warning is issued, and `shift` in
+  [`PowerMeanStats`](@ref MatrixCovers.PowerMeanStats) reports the residual.
 - `linsolve` (default `:auto`): the solver for the Newton equations. `:dense`
   factorizes the dense Hessian; `:cholesky` factorizes the sparse Hessian with
   CHOLMOD (`Float64` only); `:cg` uses conjugate gradients with a diagonal
@@ -165,14 +173,17 @@ Supported penalties and their keywords are:
   objective when these sweeps are slow. The sweeps amount to Sinkhorn scaling
   of `abs.(A).^p` to row sums `n_i` and column sums `m_j`, the nonzero counts.
   The iteration stops when, in every nonzero row and column, the mean of `r^p`
-  over the ratios `r` of the nonzero entries is within `tol` of one. The
+  over the ratios `r` of the nonzero entries is within `tol` of one. Converged
+  Newton steps are followed by a polish of weakly joined clusters of rows and
+  columns (see [`PowerMeanStats`](@ref MatrixCovers.PowerMeanStats)). The
   computation uses at least `Float64` precision; `tol` defaults to `4096*eps`
   of the working type, and a warning is issued if the iteration ends without
   reaching it. `maxiter` (default `10_000`) bounds the number of sweeps, each an
   update of all rows and then all columns. The sweeps hand over to Newton when
   their rate of progress predicts more than 100 further sweeps, and after at
-  most `min(maxiter, 200)` sweeps. `newton`, `maxnewton`, and `linsolve` have
-  the meanings given in the extended help of [`soft_symcover`](@ref).
+  most `min(maxiter, 200)` sweeps. `newton`, `maxnewton`, `maxpolish`, and
+  `linsolve` have the meanings given in the extended help of
+  [`soft_symcover`](@ref).
 - `AbsLog{2}()`: the convex minimum, computed by one linear solve; `linsolve` has
   the same meaning as in [`cover_min`](@ref).
 - `AbsLog{1}()`: the convex minimum, computed as a linear program; requires JuMP

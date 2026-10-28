@@ -92,6 +92,12 @@ equals one: `∑_j r[i,j]^p = n_i` and `∑_i r[i,j]^p = m_j`, where `n_i` and `
 count the nonzeros of row `i` and column `j`. Consequently no ratio exceeds
 `min(n_i, m_j)^(1/p)`.
 
+Each entry enters these conditions with weight `r^p`, so balancing rows and
+columns alone poorly determines the products of entries with small `r^p`. The
+solvers polish such weakly joined clusters of rows and columns after the Newton
+steps; the `shift` field of [`PowerMeanStats`](@ref MatrixCovers.PowerMeanStats)
+reports what remains unresolved.
+
 See also: [`soft_cover`](@ref), [`soft_symcover`](@ref).
 """
 struct PowerMean{p} <: AbstractCoverPenalty
