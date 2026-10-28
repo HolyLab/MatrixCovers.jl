@@ -896,6 +896,15 @@ end
 
     # The initial θ must define a penalty.
     @test_throws "θ must exceed 1" MatrixCovers._symcover_min_abslog2(A; θ=1.0)
+
+    # Keywords outside the documented set throw, including those of the internal
+    # workers, and before the start is modified.
+    @test_throws MethodError symcover_min(A; maxiters=3)
+    @test_throws MethodError cover_min(A; polish=false)
+    a0 = 2 .* symcover(A)
+    a1 = copy(a0)
+    @test_throws MethodError symcover_min!(a0, A; start=a0)
+    @test a0 == a1
 end
 
 @testset "MMC drains multipliers of entries with small slack" begin

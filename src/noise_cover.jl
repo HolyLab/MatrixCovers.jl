@@ -51,6 +51,8 @@ julia> round.(sum(Y ./ (a .* b').^2; dims=2); digits=8)
 ```
 """
 function noise_cover(V::AbstractMatrix; shrink::Real=0, tol::Union{Real,Nothing}=nothing, kwargs...)
+    # The solver keywords pass through to `_powermean_options`, which holds their defaults.
+    opts = _powermean_options(; kwargs...)
     _check_noise_variance(V)
     (isfinite(shrink) && shrink >= 0) ||
         throw(ArgumentError("noise_cover: `shrink` must be finite and nonnegative, got $shrink"))
@@ -97,8 +99,7 @@ function noise_cover(V::AbstractMatrix; shrink::Real=0, tol::Union{Real,Nothing}
     for (j, cj) in zip(eachindex(β), c)
         β[j] = cj > 0 ? log(cj) - ls2 : zero(T)
     end
-    # The solver keywords pass through to `_powermean_solve!`, which holds their defaults.
-    stats = _powermean_solve!(α, β, R, C, one(T), rtol; kwargs..., terms)
+    stats = _powermean_solve!(α, β, R, C, one(T), rtol; opts..., terms)
     _warn_powermean_unconverged(:noise_cover, stats, :sweeps)
     _warn_powermean_unsettled(:noise_cover, stats)
 

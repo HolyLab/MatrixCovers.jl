@@ -1,5 +1,10 @@
 # Soft covers: public entry points and the `AbsLinear` multistart driver.
 
+# Default multistart seed. Pass an explicit RNG for cross-version reproducibility.
+const _MULTISTART_SEED = 0
+# Default spread `σ` of the log-normal perturbed starts.
+const MULTISTART_SIGMA = 2.0
+
 # ============================================================
 # Public interface
 # ============================================================
@@ -24,7 +29,7 @@ Supported penalties and their keywords are:
   the nonzero entries is within `tol` of one. Converged Newton steps are
   followed by a polish of weakly joined clusters of rows (see
   [`PowerMeanStats`](@ref MatrixCovers.PowerMeanStats)). The computation uses
-  at least `Float64` precision; `tol` defaults to `4096*eps` of the working
+  at least `Float64` precision; `tol` defaults to `$(POWERMEAN_TOL_EPS)*eps` of the working
   type, and a warning is issued if the iteration ends without reaching it. The
   keywords `maxiter`, `newton`, `maxnewton`, `maxpolish`, and `linsolve` are
   described in the extended help.
@@ -38,8 +43,8 @@ Supported penalties and their keywords are:
   result with the least objective is returned. `starts` (default 5) is the
   number of starts: a few deterministic starts, then
   log-normal perturbations of the first deterministic start with spread `σ`
-  (default 2.0; `sigma` is an alias), drawn from `rng` (default
-  `MersenneTwister(0)`). A perturbed start whose refinement throws a
+  (default $(MULTISTART_SIGMA); `sigma` is an alias), drawn from `rng` (default
+  `MersenneTwister($(_MULTISTART_SEED))`). A perturbed start whose refinement throws a
   [`SolverFailure`](@ref) is left out of the selection; a failing
   deterministic start throws.
 
@@ -81,15 +86,15 @@ julia> round.(first(soft_symcover([0 1; 1 0])); digits=4)
 
 ## `PowerMean` keywords
 
-- `maxiter` (default `10_000`): the largest number of power-mean updates.
+- `maxiter` (default `$(POWERMEAN_MAXITER)`): the largest number of power-mean updates.
 - `newton` (default `true`): whether Newton steps finish the solve. The updates
   hand over to Newton when the rate of decrease of the imbalance over recent
-  updates predicts more than 200 further updates, and after at most
-  `min(maxiter, 400)` updates. With `newton=false` the updates continue until
+  updates predicts more than $(POWERMEAN_NEWTON_PASSES) further updates, and after at most
+  `min(maxiter, $(POWERMEAN_NEWTON_MAXPASSES))` updates. With `newton=false` the updates continue until
   convergence or `maxiter`.
-- `maxnewton` (default `100`): the largest number of Newton steps. Each step
+- `maxnewton` (default `$(POWERMEAN_MAXNEWTON)`): the largest number of Newton steps. Each step
   solves the Newton equations and backtracks on the objective.
-- `maxpolish` (default `100`): the largest number of passes of the cluster
+- `maxpolish` (default `$(POWERMEAN_MAXPOLISH)`): the largest number of passes of the cluster
   polish that follows the Newton steps, over all its rounds; `0` skips the
   polish. Each pass shifts every weakly joined cluster of rows and columns to
   its exact minimizer. When the passes run out before the largest shift falls
@@ -101,17 +106,17 @@ julia> round.(first(soft_symcover([0 1; 1 0])); digits=4)
   preconditioner, at one pass over the support per iteration, for problems too
   large to factor. `:auto` chooses `:dense` for support that fills at least a
   quarter of the grid and otherwise `:cholesky`, each when its predicted flop
-  count is at most `8e3` per stored entry (and, for `:cholesky`, its predicted
-  storage at most `2^30` bytes), and `:cg` when neither fits. Poorly
+  count is at most `$(LSQR_FLOP_BUDGET)` per stored entry (and, for `:cholesky`, its predicted
+  storage at most `$(LSQR_FILL_BUDGET)` bytes), and `:cg` when neither fits. Poorly
   conditioned problems can need many conjugate-gradient iterations.
 """
 soft_symcover(A::AbstractMatrix; kwargs...) = soft_symcover(PowerMean{2}(), A; kwargs...)
 
-function soft_symcover(::AbsLog{2}, A::AbstractMatrix; linsolve::Symbol=:auto,
-                       fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET)
+# The solver keywords pass through to `_auglag_linsolve_options`, which holds their defaults.
+function soft_symcover(::AbsLog{2}, A::AbstractMatrix; kwargs...)
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("soft_symcover requires a square matrix"))
-    a, nt = _soft_symcover_abslog2(A; linsolve, fillbudget, flopbudget)
+    a, nt = _soft_symcover_abslog2(A; kwargs...)
     return a, LeastSquaresStats(nt)
 end
 
@@ -122,7 +127,7 @@ function soft_symcover(ρ::AbsLinear, A::AbstractMatrix; starts::Int=5,
     ax = axes(A, 1)
     axes(A, 2) == ax || throw(ArgumentError("soft_symcover requires a square matrix"))
     require_abs_symmetric(A, :soft_symcover)
-    return _soft_symcover_abslinear(ρ, A, starts, _resolve_alias(σ, sigma, 2.0, :σ, :sigma), rng)
+    return _soft_symcover_abslinear(ρ, A, starts, _resolve_alias(σ, sigma, MULTISTART_SIGMA, :σ, :sigma), rng)
 end
 
 """
@@ -176,12 +181,12 @@ Supported penalties and their keywords are:
   over the ratios `r` of the nonzero entries is within `tol` of one. Converged
   Newton steps are followed by a polish of weakly joined clusters of rows and
   columns (see [`PowerMeanStats`](@ref MatrixCovers.PowerMeanStats)). The
-  computation uses at least `Float64` precision; `tol` defaults to `4096*eps`
+  computation uses at least `Float64` precision; `tol` defaults to `$(POWERMEAN_TOL_EPS)*eps`
   of the working type, and a warning is issued if the iteration ends without
-  reaching it. `maxiter` (default `10_000`) bounds the number of sweeps, each an
+  reaching it. `maxiter` (default `$(POWERMEAN_MAXITER)`) bounds the number of sweeps, each an
   update of all rows and then all columns. The sweeps hand over to Newton when
-  their rate of progress predicts more than 100 further sweeps, and after at
-  most `min(maxiter, 200)` sweeps. `newton`, `maxnewton`, `maxpolish`, and
+  their rate of progress predicts more than $(POWERMEAN_NEWTON_PASSES ÷ 2) further sweeps, and after at
+  most `min(maxiter, $(POWERMEAN_NEWTON_MAXPASSES ÷ 2))` sweeps. `newton`, `maxnewton`, `maxpolish`, and
   `linsolve` have the meanings given in the extended help of
   [`soft_symcover`](@ref).
 - `AbsLog{2}()`: the convex minimum, computed by one linear solve; `linsolve` has
@@ -194,8 +199,8 @@ Supported penalties and their keywords are:
   result with the least objective is returned. `starts` (default 4) is the
   number of starts: the boosted unconstrained start of [`cover`](@ref) and the hard cover
   tightened from it, then log-normal perturbations of the first with spread `σ`
-  (default 2.0; `sigma` is an alias), drawn from `rng` (default
-  `MersenneTwister(0)`). A perturbed start whose refinement throws a
+  (default $(MULTISTART_SIGMA); `sigma` is an alias), drawn from `rng` (default
+  `MersenneTwister($(_MULTISTART_SEED))`). A perturbed start whose refinement throws a
   [`SolverFailure`](@ref) is left out of the selection; a failing deterministic
   start throws.
 
@@ -225,9 +230,9 @@ julia> a * b'
 """
 soft_cover(A::AbstractMatrix; kwargs...) = soft_cover(PowerMean{2}(), A; kwargs...)
 
-function soft_cover(::AbsLog{2}, A::AbstractMatrix; linsolve::Symbol=:auto,
-                    fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET)
-    a, b, nt = _soft_cover_abslog2(A; linsolve, fillbudget, flopbudget)
+# The solver keywords pass through to `_auglag_linsolve_options`, which holds their defaults.
+function soft_cover(::AbsLog{2}, A::AbstractMatrix; kwargs...)
+    a, b, nt = _soft_cover_abslog2(A; kwargs...)
     return a, b, LeastSquaresStats(nt)
 end
 
@@ -235,7 +240,7 @@ end
 function soft_cover(ρ::AbsLinear, A::AbstractMatrix; starts::Int=4,
                     σ::Union{Real,Nothing}=nothing, sigma::Union{Real,Nothing}=nothing,
                     rng::AbstractRNG=MersenneTwister(_MULTISTART_SEED))
-    return _soft_cover_abslinear(ρ, A, starts, _resolve_alias(σ, sigma, 2.0, :σ, :sigma), rng)
+    return _soft_cover_abslinear(ρ, A, starts, _resolve_alias(σ, sigma, MULTISTART_SIGMA, :σ, :sigma), rng)
 end
 
 """
@@ -322,9 +327,6 @@ end
 # ============================================================
 # AbsLinear multistart
 # ============================================================
-
-# Default multistart seed. Pass an explicit RNG for cross-version reproducibility.
-const _MULTISTART_SEED = 0
 
 # Resolve Unicode and ASCII keyword aliases; reject conflicting values.
 function _resolve_alias(primary, alias, default, primary_name::Symbol, alias_name::Symbol)

@@ -59,12 +59,10 @@ pushes the coverage ratios of the entries off the transversal toward `target`.
 
 See also: [`cover_transversal!`](@ref), [`cover_min`](@ref).
 """
-function cover_transversal(A::AbstractMatrix; θ::Real=AL_PENALTY, maxouter::Int=AL_MAXOUTER,
-                           maxiter::Int=AL_MAXITER, linsolve::Symbol=:auto,
-                           fillbudget::Real=LSQR_FILL_BUDGET, flopbudget::Real=LSQR_FLOP_BUDGET,
-                           tol::Union{Real,Nothing}=nothing)
+function cover_transversal(A::AbstractMatrix; kwargs...)
+    # The solver keywords pass through to `_auglag_options`, which holds their defaults.
     a, b, nt = _cover_min_abslog2(A; transversal=true, fname=:cover_transversal,
-                                  θ, maxouter, maxiter, linsolve, fillbudget, flopbudget, tol)
+                                  _auglag_options(; kwargs...)...)
     return a, b, AugmentedLagrangianStats(A, nt)
 end
 

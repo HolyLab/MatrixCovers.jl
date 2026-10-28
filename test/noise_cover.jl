@@ -151,6 +151,8 @@
         @test_throws "has an entry Inf" noise_cover(sparse([1.0 Inf; 1 1]))
         @test_throws "`shrink` must be finite and nonnegative" noise_cover([1.0 1; 1 1]; shrink=-1)
         @test_throws "`shrink` must be finite and nonnegative" noise_cover([1.0 1; 1 1]; shrink=Inf)
+        @test_throws MethodError noise_cover([1.0 1; 1 1]; maxiters=3)
+        @test_throws MethodError noise_cover(zeros(2, 2); terms=nothing)
     end
 
     @testset "non-convergence warns" begin
