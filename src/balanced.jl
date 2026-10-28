@@ -7,7 +7,7 @@ const BALANCED_TOL = 1e-9
 const BALANCED_ARMIJO = 1e-4
 const BALANCED_NBACKTRACK = 100
 # A first trial step changes no slack by more than this many units of `1/p`, so
-# that `exp(-p d)` stays in range.
+# that the weights `exp(ℓ - p d)` stay in range.
 const BALANCED_MAXSTEP = 64
 # Roundoff allowance, in units of `eps`, for a change in the objective too small
 # to resolve.
@@ -147,10 +147,11 @@ one scale per block.
 
 `tol` (default `1e-9`) is the stopping tolerance: the groups are stationary when
 the derivative of the objective with respect to each group's scale is at most
-`tol` times the sum of the magnitudes of its terms, or when roundoff keeps the
-Newton step from reducing the objective: the step changes no log slack by more
-than `tol`, or the directional derivative of the objective along it is
-nonnegative but within the roundoff of the groups' derivatives. `maxiter`
+`tol` times the sum of the magnitudes of its terms. The solve stops unconverged
+when roundoff keeps the Newton step from reducing the objective before then:
+the step changes no log slack by more than `tol`, or the directional derivative
+of the objective along it is nonnegative but within the roundoff of the groups'
+derivatives. `maxiter`
 (default `100 + 10n` for `n×n` `A`) bounds the Newton steps plus the changes of
 the active set.
 `fillbudget` and `flopbudget` are as for [`cover_min`](@ref): a Newton system
@@ -217,8 +218,6 @@ function _cover_transversal_balanced(A::AbstractMatrix, p::Real, target::Real; m
         return a, b, nt
     end
     pT = T(p)
-    tp = T(target)^pT
-    tp > 0 || throw(ArgumentError("$fname: target^p = $target^$p underflows in $T"))
     axr, axc = axes(A, 1), axes(A, 2)
     or, oc = first(axr) - 1, first(axc) - 1
     nzrow = zeros(Int, length(axr))
@@ -227,6 +226,11 @@ function _cover_transversal_balanced(A::AbstractMatrix, p::Real, target::Real; m
         nzrow[i-or] += 1
         nzcol[j-oc] += 1
     end
+    # The solver works with the objective divided by `target^p`, whose terms and
+    # their sums are at most about `p * nnz(A) * exp(ℓ)`.
+    ℓ = -pT * log(T(target))
+    ℓ + log(pT * max(sum(nzrow), 1)) < log(floatmax(T)) ||
+        throw(ArgumentError("$fname: target^p = $target^$p is too small to evaluate the objective in $T; use a larger target or a smaller p"))
     G = _row_support(A, T)
     ts = _transversal_system(G, axc, T, fname, transversal)
     sys = _contract_system(ts.dsupp, ts.comp, ts.offs)
@@ -241,11 +245,11 @@ function _cover_transversal_balanced(A::AbstractMatrix, p::Real, target::Real; m
         # the entries between blocks.
         yb = _maxbalance_components(sys, ts.y0, scc, nblocks)
         bsys = _contract_system(sys, scc, yb)
-        Y, nt = _balanced_newton!(_feasible_component_scales(bsys, nblocks), bsys, pT, tp;
+        Y, nt = _balanced_newton!(_feasible_component_scales(bsys, nblocks), bsys, pT, ℓ;
                                   tol=T(tol), maxiter=maxit, fillbudget, flopbudget)
         y = Y[scc] .+ yb
     else
-        y, nt = _balanced_newton!(copy(ts.y0), sys, pT, tp; tol=T(tol), maxiter=maxit, fillbudget, flopbudget)
+        y, nt = _balanced_newton!(copy(ts.y0), sys, pT, ℓ; tol=T(tol), maxiter=maxit, fillbudget, flopbudget)
     end
     nt = (; nt..., maxbalanced=maxbalance, nblocks)
     _warn_balanced_unconverged(fname, nt, maxit)
@@ -264,34 +268,37 @@ end
 function _warn_balanced_unconverged(fname::Symbol, nt::NamedTuple, maxiter::Int)
     nt.converged && return nothing
     reason = nt.stalled ?
-             "the line search could not reduce the objective; a larger `target` or smaller `p` improves the conditioning of the Newton systems" :
+             "roundoff kept the Newton steps from reducing the objective; a larger `target` or smaller `p` improves the conditioning of the Newton systems" :
              "it reached maxiter=$maxiter; increase `maxiter`"
     @warn "$fname: the active-set Newton iteration stopped after $(nt.nnewton) Newton steps with relative reduced gradient $(nt.gradnorm) (tolerance $(nt.tol)) because $reason. The result covers `A` and is tight on a maximum-product transversal, but may not minimize the objective."
     return nothing
 end
 
-# The objective sums, over the entries off the transversal, `f` of the log slack `d`:
+# The objective sums, over the entries off the transversal, `f` of the log slack
+# `d`. The solver works with the objective divided by `target^p`,
 #
-#     f(d) = (exp(-p d) - 1)/p + tp*d,   f'(d) = tp - exp(-p d),   f''(d) = p exp(-p d),
+#     f(d) = (exp(ℓ - p d) - exp(ℓ))/p + d,   f'(d) = 1 - exp(ℓ - p d),   f''(d) = p exp(ℓ - p d),
 #
-# with `tp = target^p`; `f` is least at `d = -log(target)`.
+# with `ℓ = -log(target^p)`; `f` is least at `d = -log(target)`. The weight
+# `w = exp(ℓ - p d) = (r/target)^p` is near one for the entries near the target,
+# which keeps it in range when `r^p` itself would underflow.
 
 # Gradient `g[k]` of the objective with respect to a common shift of the scales
 # of the rows `v` with `label[v] == k`, over the entries that join different
 # labels when `between` is true and over all entries otherwise; the entries
-# `e` with both rows labeled `k` cancel in the former. `f'` is `tp - w` with
-# `w = exp(-p d)`, so `g[k] = tp * cnt[k] - (sum of ±w)`, where `cnt[k]` counts
-# the entries leaving `k` minus those entering it. Summing the two parts
-# separately avoids cancellation between them; `s[k] = tp * |cnt[k]| + (sum of
-# w)` bounds the magnitudes summed and so scales the roundoff in `g[k]`.
-function _balanced_gradient!(g, s, cnt, d, label, P, Q, p::T, tp::T, between::Bool) where {T}
+# `e` with both rows labeled `k` cancel in the former. `f'` is `1 - w`, so
+# `g[k] = cnt[k] - (sum of ±w)`, where `cnt[k]` counts the entries leaving `k`
+# minus those entering it. Summing the two parts separately avoids cancellation
+# between them; `s[k] = |cnt[k]| + (sum of w)` bounds the magnitudes summed and
+# so scales the roundoff in `g[k]`.
+function _balanced_gradient!(g, s, cnt, d, label, P, Q, p::T, ℓ::T, between::Bool) where {T}
     fill!(g, zero(T))
     fill!(s, zero(T))
     fill!(cnt, 0)
     for e in eachindex(d)
         G, H = label[P[e]], label[Q[e]]
         between && G == H && continue
-        w = exp(-p * d[e])
+        w = exp(ℓ - p * d[e])
         g[G] -= w
         g[H] += w
         s[G] += w
@@ -300,8 +307,8 @@ function _balanced_gradient!(g, s, cnt, d, label, P, Q, p::T, tp::T, between::Bo
         cnt[H] -= 1
     end
     for k in eachindex(g, s, cnt)
-        g[k] += tp * cnt[k]
-        s[k] += tp * abs(cnt[k])
+        g[k] += cnt[k]
+        s[k] += abs(cnt[k])
     end
     return g
 end
@@ -440,13 +447,13 @@ end
 # multipliers `μ >= 0` on the active entries of each group with divergence equal
 # to the gradient `g[v]` of the objective at each of its rows. `g[v]` sums `f'`
 # over every entry at row `v`: the inactive ones, including those within the
-# group, and the active ones, where `f'(0) = tp - 1`. `_flow_deficit` decides
+# group, and the active ones, where `f'(0) = 1 - exp(ℓ)`. `_flow_deficit` decides
 # whether the multipliers exist. If they do not, its set
 # `S` has no active entry leaving it and `sum(g[S]) > 0`, so lowering the scales
 # of `S` decreases the objective; the active entries entering `S` are released.
 #
 # Returns `(y, nt)`, with `nt` the fields of `BalancedCoverStats`.
-function _balanced_newton!(y::Vector{T}, sys::EdgeList{T}, p::T, tp::T; tol::T, maxiter::Int,
+function _balanced_newton!(y::Vector{T}, sys::EdgeList{T}, p::T, ℓ::T; tol::T, maxiter::Int,
                            fillbudget::Real=LSQR_FILL_BUDGET,
                            flopbudget::Real=LSQR_FLOP_BUDGET) where {T}
     nc = length(y)
@@ -496,7 +503,7 @@ function _balanced_newton!(y::Vector{T}, sys::EdgeList{T}, p::T, tp::T; tol::T, 
             d[e] = y[P[e]] - y[Q[e]] - C[e]
         end
         # Reduced gradient: the entries between groups.
-        _balanced_gradient!(gG, sG, cnt, d, gid, P, Q, p, tp, true)
+        _balanced_gradient!(gG, sG, cnt, d, gid, P, Q, p, ℓ, true)
         if repin
             # Pin, in each weak component, the group whose gradient has the
             # largest terms; the others are the unknowns of the Newton systems.
@@ -538,9 +545,12 @@ function _balanced_newton!(y::Vector{T}, sys::EdgeList{T}, p::T, tp::T; tol::T, 
                 regroup = true
                 continue
             end
-            inS = _balanced_release_set!(gv, sv, d, active, gid, ng, P, Q, p, tp, tol)
+            inS = _balanced_release_set!(gv, sv, d, active, gid, ng, P, Q, p, ℓ, tol)
             if inS === nothing
-                converged = true
+                # After a Newton step at the resolution of the arithmetic,
+                # `gnorm > tol` means that roundoff in the groups' gradients
+                # hides a descent direction, not that the point is stationary.
+                gnorm <= tol ? (converged = true) : (stalled = true)
                 break
             end
             (iters += 1) > maxiter && break
@@ -552,13 +562,13 @@ function _balanced_newton!(y::Vector{T}, sys::EdgeList{T}, p::T, tp::T; tol::T, 
             for v in 1:nc
                 δv[v] = inS[v] ? -one(T) : zero(T)
             end
-            status = _balanced_step!(y, δv, d, Δd, active, 1:nc, P, Q, C, p, tp, nothing)
+            status = _balanced_step!(y, δv, d, Δd, active, 1:nc, P, Q, C, p, ℓ, nothing)
             (status === :stalled || status === :floor) && (stalled = true; break)
             status isa Int && (nactivations += status)
             continue
         end
         (iters += 1) > maxiter && break
-        linsolve = _balanced_direction!(δv, cache, d, gid, uidx, nu, gG, P, Q, p, tp,
+        linsolve = _balanced_direction!(δv, cache, d, gid, uidx, nu, gG, P, Q, p, ℓ,
                                         fillbudget, flopbudget)
         nnewton += 1
         nfactor += 1
@@ -566,12 +576,12 @@ function _balanced_newton!(y::Vector{T}, sys::EdgeList{T}, p::T, tp::T; tol::T, 
         for e in 1:ne
             step = max(step, abs(δv[P[e]] - δv[Q[e]]))
         end
-        status = _balanced_step!(y, δv, d, Δd, active, gid, P, Q, C, p, tp, one(T))
+        status = _balanced_step!(y, δv, d, Δd, active, gid, P, Q, C, p, ℓ, one(T))
         if status === :floor || status === :stalled
             # A Newton step whose slope is zero to roundoff, or that changes no
             # slack by more than `tol` but does not reduce the objective, is at
-            # the resolution of the arithmetic: the reduced gradient is zero to
-            # roundoff.
+            # the resolution of the arithmetic. Entries at zero slack may still
+            # be activated or released; otherwise the solve stops.
             status === :floor || step <= tol || (stalled = true; break)
             atfloor = true
         elseif status isa Int
@@ -586,9 +596,9 @@ end
 # The multiplier test at a point where every group's reduced gradient vanishes.
 # Returns `nothing` when multipliers exist for every group, and otherwise the
 # union of the sets `S` of `_flow_deficit` over the groups that lack them.
-function _balanced_release_set!(gv, sv, d, active, gid, ng, P, Q, p::T, tp::T, tol::T) where {T}
+function _balanced_release_set!(gv, sv, d, active, gid, ng, P, Q, p::T, ℓ::T, tol::T) where {T}
     nc = length(gv)
-    _balanced_gradient!(gv, sv, zeros(Int, nc), d, 1:nc, P, Q, p, tp, false)
+    _balanced_gradient!(gv, sv, zeros(Int, nc), d, 1:nc, P, Q, p, ℓ, false)
     # Rows and active entries of each group, in compressed form.
     vptr = zeros(Int, ng + 1)
     for v in 1:nc
@@ -640,7 +650,7 @@ end
 
 # Newton direction on the group scales, scattered to the rows in `δv`. Returns
 # the kind of linear solve.
-function _balanced_direction!(δv, cache, d, gid, uidx, nu, gG, P, Q, p::T, tp::T,
+function _balanced_direction!(δv, cache, d, gid, uidx, nu, gG, P, Q, p::T, ℓ::T,
                               fillbudget, flopbudget) where {T}
     rhs = zeros(T, nu)
     for G in eachindex(uidx)
@@ -650,7 +660,12 @@ function _balanced_direction!(δv, cache, d, gid, uidx, nu, gG, P, Q, p::T, tp::
     for e in eachindex(d)
         gid[P[e]] == gid[Q[e]] || (nb += 1)
     end
-    weight(e) = p * exp(-p * d[e])
+    weight(e) = p * exp(ℓ - p * d[e])
+    # Raising a group's curvature to `cfloor` keeps its pivot out of the
+    # subnormal range, where it loses precision and the step can overflow.
+    # Only groups whose weights nearly underflow are affected; their steps are
+    # huge either way, and `BALANCED_MAXSTEP` limits them.
+    cfloor = floatmin(T) / eps(T)
     x = zeros(T, nu)
     kind = :none
     if nu == 0
@@ -664,8 +679,11 @@ function _balanced_direction!(δv, cache, d, gid, uidx, nu, gG, P, Q, p::T, tp::
             K > 0 && (H[K, K] += w)
             G > 0 && K > 0 && (H[min(G, K), max(G, K)] -= w)
         end
+        for k in 1:nu
+            H[k, k] = max(H[k, k], cfloor)
+        end
         dmax = maximum(diag(H))
-        dfloor = eps(T) * (dmax > 0 ? dmax : one(T))
+        dfloor = eps(T) * max(dmax, p)
         ridge = zero(T)
         for _ in 0:BALANCED_NRIDGE
             Hr = copy(H)
@@ -696,8 +714,9 @@ function _balanced_direction!(δv, cache, d, gid, uidx, nu, gG, P, Q, p::T, tp::
                 push!(I, min(G, K)); push!(J, max(G, K)); push!(V, -w)
             end
         end
+        dg .= max.(dg, cfloor)
         dmax = maximum(dg)
-        dfloor = eps(T) * (dmax > 0 ? dmax : one(T))
+        dfloor = eps(T) * max(dmax, p)
         ridge = zero(T)
         for _ in 0:BALANCED_NRIDGE
             L = sparse([I; 1:nu], [J; 1:nu], [V; dg .+ ridge .* max.(dg, dfloor)], nu, nu)
@@ -760,9 +779,9 @@ _balanced_factor!(cache, L::SparseMatrixCSC, fillbudget, flopbudget) = _laplacia
 # `:stalled` when no step decreases the objective. Inactive entries at zero
 # slack that `δv` would make negative are made active without moving. `δv` is
 # constant on the sets of rows with equal `label`.
-function _balanced_step!(y, δv, d, Δd, active, label, P, Q, C, p::T, tp::T, α0) where {T}
-    # `f'` and `f(d + h) - f(d)` split into the parts in `tp` and in `exp(-p d)`,
-    # summed separately: the first is `tp` times the sum `sΔ` of the slack
+function _balanced_step!(y, δv, d, Δd, active, label, P, Q, C, p::T, ℓ::T, α0) where {T}
+    # `f'` and `f(d + h) - f(d)` split into the linear part and the part in
+    # `w = exp(ℓ - p d)`, summed separately: the first is the sum `sΔ` of the slack
     # changes. As in `_balanced_gradient!`, `sΔ` sums `δv` on each label times
     # the count of inactive entries leaving it minus those entering it, so that
     # the changes of a label with as many entries leaving as entering cancel
@@ -786,11 +805,11 @@ function _balanced_step!(y, δv, d, Δd, active, label, P, Q, C, p::T, tp::T, α
             continue
         end
         Δ = Δd[e]
-        w = exp(-p * d[e])
+        w = exp(ℓ - p * d[e])
         cnt[label[P[e]]] += 1
         cnt[label[Q[e]]] -= 1
         sw += w * Δ
-        label[P[e]] == label[Q[e]] || (gscale += (tp + w) * (abs(δv[P[e]]) + abs(δv[Q[e]])))
+        label[P[e]] == label[Q[e]] || (gscale += (1 + w) * (abs(δv[P[e]]) + abs(δv[Q[e]])))
         curv += p * w * Δ^2
         Δmax = max(Δmax, abs(Δ))
         if Δ < 0
@@ -815,7 +834,7 @@ function _balanced_step!(y, δv, d, Δd, active, label, P, Q, C, p::T, tp::T, α
         sΔ += cnt[k] * δl[k]
         sΔabs += abs(cnt[k] * δl[k])
     end
-    slope = tp * sΔ - sw
+    slope = sΔ - sw
     if slope >= 0
         # The slope sums the gradient of each label times its change, and that
         # gradient is known only to within the roundoff of its terms; a slope
@@ -831,15 +850,15 @@ function _balanced_step!(y, δv, d, Δd, active, label, P, Q, C, p::T, tp::T, α
             active[e] && continue
             h = α * Δd[e]
             iszero(h) && continue
-            w = exp(-p * d[e])
+            w = exp(ℓ - p * d[e])
             q = w * expm1(-p * h) / p
             ΔF += q
             scale += abs(q)
             sw1 += w * exp(-p * h) * Δd[e]
         end
-        ΔF += tp * α * sΔ
-        scale += tp * α * sΔabs
-        slope1 = tp * sΔ - sw1
+        ΔF += α * sΔ
+        scale += α * sΔabs
+        slope1 = sΔ - sw1
         accepted = ΔF <= BALANCED_ARMIJO * α * slope ||
                    # The objective cannot resolve this step: accept it if the
                    # directional derivative shrinks.

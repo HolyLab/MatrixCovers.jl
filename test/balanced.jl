@@ -113,34 +113,34 @@ end
     # the slack of the first entry, which is far below the resolution of the
     # change `δ` of row 2: summed by entry, `ε` is lost and the slope is
     # positive.
-    p, tp = 2.0, 1e-4
+    p, ℓ = 2.0, -log(1e-4)
     ε, δ = -1e-17, 0.25
     P, Q = [4, 1, 2], [3, 2, 3]
     d = [30.0, -log(2e-21) / p, -log(1e-21) / p]
     y, C = zeros(4), -d
     δv = [0, δ, 0, ε]
-    status = _balanced_step!(y, δv, d, zeros(3), falses(3), 1:4, P, Q, C, p, tp, 1.0)
+    status = _balanced_step!(y, δv, d, zeros(3), falses(3), 1:4, P, Q, C, p, ℓ, 1.0)
     @test status == 0
     @test y == δv
     @test_throws "not constant on a label" _balanced_step!(zeros(4), δv, d, zeros(3), falses(3), [1, 1, 2, 3],
-                                                          P, Q, C, p, tp, 1.0)
+                                                          P, Q, C, p, ℓ, 1.0)
 end
 
 @testset "line search at the resolution of the arithmetic" begin
     # Moving row 2, which has one entry entering and one leaving, is stationary
     # to first order when their slacks are equal, and uphill when the entering
     # one has the smaller slack.
-    p, tp = 2.0, 1e-4
+    p, ℓ = 2.0, -log(1e-4)
     P, Q = [1, 2], [2, 3]
     for (d, expected) in (([5.0, 5.0], :floor), ([1.0, 2.0], :stalled))
         y = zeros(3)
-        @test _balanced_step!(y, [0, 0.5, 0], d, zeros(2), falses(2), 1:3, P, Q, -d, p, tp, 1.0) === expected
+        @test _balanced_step!(y, [0, 0.5, 0], d, zeros(2), falses(2), 1:3, P, Q, -d, p, ℓ, 1.0) === expected
         @test iszero(y)
     end
     # An inactive entry at zero slack that the step would make negative is
     # made active, and the scales do not move.
     y, active = zeros(3), falses(2)
-    @test _balanced_step!(y, [0, 0.5, 0], [0.0, 1.0], zeros(2), active, 1:3, P, Q, [0.0, -1.0], p, tp, 1.0) == 1
+    @test _balanced_step!(y, [0, 0.5, 0], [0.0, 1.0], zeros(2), active, 1:3, P, Q, [0.0, -1.0], p, ℓ, 1.0) == 1
     @test active == [true, false] && iszero(y)
 end
 
@@ -426,6 +426,26 @@ end
     @test check_balanced_cover(a, b, M)
     @test isbalanced(a, b, M)
 
+    # Large `p`: `r^p` underflows for the ratios 1e-4 of the start, but the
+    # minimizer is found, with the same ratios for every `p`.
+    B2 = [1.0 0.5 1e-4 0; 0.5 1.0 0 0; 1e-4 0 1.0 1e-4; 1e-4 0 1e-4 1.0]
+    for p in (64, 128)
+        a, b, st = cover_transversal(PowerMean{p}(), B2)
+        @test MatrixCovers.converged(st)
+        @test B2[4, 1] / (a[4] * b[1]) ≈ 0.01
+        @test B2[3, 1] / (a[3] * b[1]) ≈ 0.001
+    end
+
+    # The entries within the block of rows 2 and 3 have weights `(r/target)^p`
+    # near 1e22, whose roundoff in the gradients of rows 2 and 3 hides the
+    # descent of the block's common scale. The solve stalls with a warning
+    # rather than reporting convergence.
+    F = [1.3 1.3 0 0.6; 0 6.3 0.4 0; 0 0.94 1 0; 0 0 0 1]
+    a, b, st = @test_logs (:warn, r"roundoff kept the Newton steps") cover_transversal(PowerMean{16}(), F)
+    @test !MatrixCovers.converged(st) && st.stalled
+    @test st.gradnorm > st.tol
+    @test check_balanced_cover(a, b, F)
+
     # Errors.
     @test_throws "requires a square matrix" cover_transversal(PowerMean{2}(), [1.0 2.0 3.0; 4.0 5.0 6.0])
     @test_throws "structurally nonsingular" cover_transversal(PowerMean{2}(), [1.0 1 1; 1 0 0; 1 0 0])
@@ -434,7 +454,7 @@ end
     @test_throws "target must satisfy 0 < target <= 1, got 0" cover_transversal(PowerMean{2}(), A; target=0)
     @test_throws "target must satisfy 0 < target <= 1, got 1.5" cover_transversal(PowerMean{2}(), A; target=1.5)
     @test_throws "requires a finite exponent" cover_transversal(PowerMean{Inf}(), A)
-    @test_throws "underflows" cover_transversal(PowerMean{2}(), A; target=1e-200)
+    @test_throws "too small to evaluate the objective" cover_transversal(PowerMean{2}(), A; target=1e-200)
     @test_throws "tol must be positive" cover_transversal(PowerMean{2}(), A; tol=0)
     @test_throws "maxiter must be nonnegative" cover_transversal(PowerMean{2}(), A; maxiter=-1)
 end
