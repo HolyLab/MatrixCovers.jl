@@ -23,6 +23,7 @@ makedocs(;
         "Cover objectives" => "objectives.md",
         "Solver invariants" => "invariants.md",
         "Starting points and convergence" => "solvers.md",
+        "Noise covers and biwhitening" => "noise.md",
         "Reference" => "reference.md",
     ],
 )

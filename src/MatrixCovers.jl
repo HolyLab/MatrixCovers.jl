@@ -15,6 +15,7 @@ export soft_symcover, soft_symcover!, soft_cover, soft_cover!
 export initialize_cover, initialize_cover!, initialize_symcover, initialize_symcover!
 export symcover_min, symcover_min!, cover_min, cover_min!
 export cover_transversal, cover_transversal!
+export noise_cover
 
 # `public` is parsed as a keyword only from Julia 1.11; this package supports 1.10.
 @static if VERSION >= v"1.11"
@@ -41,6 +42,7 @@ include("balanced.jl")         # transversal-tight covers pushed toward a target
 include("maxbalance.jl")       # max-balancing within the fully indecomposable blocks
 include("transversal_heuristic.jl") # the transversal-tight start of `cover`
 include("powermean_newton.jl") # Newton refinement of the PowerMean soft covers
+include("noise_cover.jl")      # scalings that equalize average noise variance, from variance estimates
 include("sparse_support.jl")  # sparse traversal and the sparse solver defaults
 
 

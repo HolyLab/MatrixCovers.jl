@@ -2444,8 +2444,11 @@ succeed. The `AbsLinear` multistarts of `soft_cover` and `soft_symcover` leave
 out perturbed starts that throw this and record them in
 [`MultistartStats`](@ref MatrixCovers.MultistartStats).
 
-The native solvers do not throw this: one that stops before meeting its
-stopping criterion warns and returns a result whose statistics report
+[`noise_cover`](@ref) throws this when the zero pattern of its variance
+estimates admits no scaling to the required row and column sums.
+
+The native solvers do not otherwise throw this: one that stops before meeting
+its stopping criterion warns and returns a result whose statistics report
 `converged(stats) == false`.
 """
 struct SolverFailure <: Exception

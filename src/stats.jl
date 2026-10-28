@@ -193,10 +193,11 @@ LeastSquaresStats(nt::NamedTuple) =
 
 Statistics of the `PowerMean` soft covers ([`soft_symcover`](@ref),
 [`soft_cover`](@ref), and their mutating forms with a `PowerMean` penalty or no
-penalty).
+penalty) and of [`noise_cover`](@ref).
 
 The imbalance of a nonzero row (or column) is `|mean(r^p) - 1|`, the mean taken
-over the ratios `r` of its nonzero entries. The solve stops when the largest
+over the ratios `r` of its nonzero entries; for `noise_cover`, `p = 1` and the
+mean is taken over every entry of the nonzero rows and columns. The solve stops when the largest
 imbalance is at most `tol`. Power-mean updates run first; when they are slow,
 Newton steps finish the solve. `converged`, `residual`, and `tolerance` return
 the fields of the same names (`residual` returns `imbalance`); `iterations`
@@ -207,7 +208,9 @@ small `r^p`. After the Newton steps converge, the solver polishes the cover: it
 balances every cluster of rows and columns joined to the rest of the support
 only by such entries, by exact shifts of the cluster's log scales over a
 hierarchy of weak joins, until the largest shift is below `tol/p` or
-`maxpolish` passes have run. The Newton test is then checked again. `shift` is
+`maxpolish` passes have run. The Newton test is then checked again. With
+`shrink > 0`, `noise_cover` joins every row to every column and skips the
+polish. `shift` is
 the largest cluster shift of the last polish pass: when it is well above
 `tol/p`, the log products `log(a[i]*b[j])` across the weakest joins are
 determined only to about that accuracy.

@@ -23,6 +23,18 @@
 # grounded: one unknown's step is fixed at zero and its equation dropped, which
 # leaves the rest of the system positive definite and consistent. The gauge of the
 # result is fixed afterwards by the drivers' balance conventions.
+#
+# The asymmetric problem can carry the terms of `PowerMeanTerms`. Targets `t` in
+# place of the counts `n` add `∑_q (t[q] - n[q]) x[q]` to `E`, which changes the
+# gradient to `t - W e` but not the Hessian; the gradient stays orthogonal to the
+# null vectors when the targets of each component's rows and columns have equal
+# sums, as they do whenever the balance conditions have a solution. For `p = 1`, a
+# rank-one term adds `κ (∑_i u[i] exp(-x[i])) (∑_j v[j] exp(-x[m+j]))`: with the
+# weights `A[i] = u[i] exp(-x[i])` and `B[j] = v[j] exp(-x[m+j])` and their sums
+# `SA` and `SB`, it adds `κ A SB` and `κ B SA` to the row and column sums and the
+# diagonal of the Hessian, and `κ A Bᵀ` to its off-diagonal block. That block is
+# dense, so it joins every row to every column: the whole problem is then one
+# component, grounded at a single unknown.
 
 struct PowerMeanSystem{T}
     u::Vector{Int}
@@ -31,9 +43,29 @@ struct PowerMeanSystem{T}
     mult::Vector{T}
     count::Vector{Int}      # stored entries in each unknown's row or column
     grid::Int               # number of cells of the full grid
+    nrow::Int               # rows of the asymmetric problem (all unknowns for the symmetric one)
+    target::Vector{T}       # target of each unknown's sum; empty when it is `count`
+    lw::Vector{T}           # log rank-one weights; empty without the rank-one term
+    lκ::T
 end
 
-# System of the asymmetric problem, from row-grouped `log|A|` and the column axis.
+PowerMeanSystem{T}(u, v, L, mult, count, grid, nrow) where {T} =
+    PowerMeanSystem{T}(u, v, L, mult, count, grid, nrow, T[], T[], zero(T))
+
+_powermean_hasterms(sys::PowerMeanSystem) = !(isempty(sys.target) && isempty(sys.lw))
+
+# System of the asymmetric problem, from row-grouped `log|A|` and the column axis,
+# with the additional `terms` if given.
+function _powermean_system(R::GroupedSupport{T}, colax::AbstractUnitRange, ::Nothing) where {T}
+    return _powermean_system(R, colax)
+end
+
+function _powermean_system(R::GroupedSupport{T}, colax::AbstractUnitRange, terms::PowerMeanTerms{T}) where {T}
+    sys = _powermean_system(R, colax)
+    return PowerMeanSystem{T}(sys.u, sys.v, sys.L, sys.mult, sys.count, sys.grid, sys.nrow,
+                              exp.(terms.lt), terms.lw, terms.lκ)
+end
+
 function _powermean_system(R::GroupedSupport{T}, colax::AbstractUnitRange) where {T}
     m, n = length(R.ax), length(colax)
     oc = first(colax) - 1
@@ -52,7 +84,7 @@ function _powermean_system(R::GroupedSupport{T}, colax::AbstractUnitRange) where
             count[jp] += 1
         end
     end
-    return PowerMeanSystem{T}(u, v, L, ones(T, ne), count, m * n)
+    return PowerMeanSystem{T}(u, v, L, ones(T, ne), count, m * n, m)
 end
 
 # System of the symmetric problem, from the symmetric row-grouped `log|A|`.
@@ -70,12 +102,18 @@ function _powermean_symsystem(S::GroupedSupport{T}) where {T}
             push!(u, gp); push!(v, hp); push!(L, S.val[s]); push!(mult, hp == gp ? 1 : 2)
         end
     end
-    return PowerMeanSystem{T}(u, v, L, mult, count, n * n)
+    return PowerMeanSystem{T}(u, v, L, mult, count, n * n, n)
 end
 
 # Unknowns whose step is fixed at zero: those without support, and one unknown (of
-# largest count) in each component that is bipartite with no diagonal entry.
+# largest count) in each component that is bipartite with no diagonal entry. With
+# the rank-one term, the supported unknowns form a single such component.
 function _powermean_pinned(sys::PowerMeanSystem)
+    if !isempty(sys.lw)
+        pinned = sys.count .== 0
+        pinned[argmax(sys.count)] = true
+        return pinned
+    end
     N = length(sys.count)
     ptr = zeros(Int, N + 1)
     for e in eachindex(sys.u, sys.v)
@@ -123,7 +161,10 @@ end
 # Returns the change and the sum of the magnitudes of its terms, the scale of its
 # roundoff. Each term is `mult * (W0 * expm1(-p δ) + p δ)/p` with `δ = t*(d[u] + d[v])`,
 # exact for the difference and free of the cancellation of subtracting two objectives.
-function _powermean_eval!(W, g, s, xt, d, t::T, W0, sys::PowerMeanSystem{T}, p::T) where {T}
+#
+# `Wr` and `Wr0` hold the rank-one weights `A` and `B` (see the header) at `xt` and
+# `x`; they are unused without the rank-one term.
+function _powermean_eval!(W, Wr, g, s, xt, d, t::T, W0, Wr0, sys::PowerMeanSystem{T}, p::T) where {T}
     fill!(g, zero(T))
     fill!(s, zero(T))
     ΔE = scale = zero(T)
@@ -140,7 +181,49 @@ function _powermean_eval!(W, g, s, xt, d, t::T, W0, sys::PowerMeanSystem{T}, p::
         s[a] += We
         a == b || (s[b] += We)
     end
+    _powermean_hasterms(sys) && ((ΔE, scale) = _powermean_eval_terms!(Wr, g, s, xt, d, t, Wr0, sys, p, ΔE, scale))
     return ΔE / p, scale / p
+end
+
+# The targets' linear term and the rank-one term (see the header) for
+# `_powermean_eval!`: added to its gradient `g`, sums `s`, and the change `ΔE` of
+# `p` times the objective and its roundoff scale, which are returned.
+function _powermean_eval_terms!(Wr, g, s, xt, d, t::T, Wr0, sys::PowerMeanSystem{T}, p::T, ΔE::T, scale::T) where {T}
+    if !isempty(sys.target)
+        for q in eachindex(g, d, sys.target, sys.count)
+            sys.count[q] == 0 && continue
+            c = sys.target[q] - sys.count[q]
+            g[q] += c
+            δ = p * c * t * d[q]
+            ΔE += δ
+            scale += abs(δ)
+        end
+    end
+    isempty(sys.lw) && return ΔE, scale
+    # The rank-one term exists only for `p = 1`.
+    m = sys.nrow
+    κ = exp(sys.lκ)
+    SA = SB = SA0 = SB0 = ΔA = ΔB = zero(T)
+    for q in eachindex(Wr, Wr0, xt, d, sys.lw)
+        w0 = Wr0[q]
+        w = exp(sys.lw[q] - xt[q])
+        Wr[q] = w
+        Δ = w0 * expm1(-t * d[q])
+        if q <= m
+            SA += w; SA0 += w0; ΔA += Δ
+        else
+            SB += w; SB0 += w0; ΔB += Δ
+        end
+    end
+    for q in eachindex(Wr, g, s)
+        h = κ * Wr[q] * (q <= m ? SB : SA)
+        s[q] += h
+        g[q] -= h
+    end
+    # `SA*SB - SA0*SB0` without cancellation.
+    ΔE += κ * (ΔA * SB0 + SA0 * ΔB + ΔA * ΔB)
+    scale += κ * (abs(ΔA) * SB0 + SA0 * abs(ΔB) + abs(ΔA * ΔB))
+    return ΔE, scale
 end
 
 # Largest `|s/count - 1|`: the imbalance of the sweeps.
@@ -148,6 +231,16 @@ function _powermean_newton_imbalance(s, count)
     imb = zero(eltype(s))
     for q in eachindex(s, count)
         count[q] > 0 && (imb = max(imb, abs(s[q] / count[q] - 1)))
+    end
+    return imb
+end
+
+# The same with the targets of `sys`, if it has them, in place of the counts.
+function _powermean_newton_imbalance(s, sys::PowerMeanSystem)
+    isempty(sys.target) && return _powermean_newton_imbalance(s, sys.count)
+    imb = zero(eltype(s))
+    for q in eachindex(s, sys.count, sys.target)
+        sys.count[q] > 0 && (imb = max(imb, abs(s[q] / sys.target[q] - 1)))
     end
     return imb
 end
@@ -182,6 +275,11 @@ function _powermean_linsolve(sys::PowerMeanSystem{T}, linsolve::Symbol) where {T
     nstored = sum(sys.mult; init=zero(T))
     dense_ok = N^3 / 3 <= LSQR_FLOP_BUDGET * nstored
     kind = linsolve
+    # The rank-one term's dense off-diagonal block has no sparse factorization;
+    # conjugate gradients apply it as a product instead.
+    if !isempty(sys.lw) && kind !== :dense
+        kind = kind === :auto && dense_ok ? :dense : :cg
+    end
     M = spzeros(Float64, 0, 0)
     F = nothing
     if kind === :cholesky || (kind === :auto && T === Float64 && nstored < AUTO_LSQR_MAX_DENSITY * sys.grid)
@@ -225,9 +323,19 @@ function _powermean_pattern(sys::PowerMeanSystem)
     return sparse(I, J, ones(Float64, length(I)), N, N)
 end
 
-# Solve `H d = -g` with the pinned unknowns' steps fixed at zero. Returns the
-# number of passes over the support and of factorizations.
-function _powermean_direction!(d, ls::PowerMeanLinsolve{T}, sys::PowerMeanSystem{T}, W, g,
+# Sums of the row and column rank-one weights `A` and `B`.
+function _powermean_rankone_sums(Wr::AbstractVector{T}, m::Int) where {T}
+    SA = SB = zero(T)
+    for q in eachindex(Wr)
+        q <= m ? (SA += Wr[q]) : (SB += Wr[q])
+    end
+    return SA, SB
+end
+
+# Solve `H d = -g` with the pinned unknowns' steps fixed at zero, `Wr` holding the
+# rank-one weights if `sys` has the rank-one term. Returns the number of passes
+# over the support and of factorizations.
+function _powermean_direction!(d, ls::PowerMeanLinsolve{T}, sys::PowerMeanSystem{T}, W, Wr, g,
                                pinned, imb::T, p::T) where {T}
     N = length(d)
     f, dg = ls.f, ls.dg
@@ -241,6 +349,17 @@ function _powermean_direction!(d, ls::PowerMeanLinsolve{T}, sys::PowerMeanSystem
         dg[a] += h
         dg[b] += h
         a == b && (dg[a] += 2h)
+    end
+    # The rank-one term (`p = 1`): diagonal `κ A SB` and `κ B SA`, off-diagonal `κ A Bᵀ`.
+    rank1 = !isempty(sys.lw)
+    m = sys.nrow
+    κ = rank1 ? exp(sys.lκ) : zero(T)
+    # Assigned once, so that the CG product below captures them unboxed.
+    SA, SB = rank1 ? _powermean_rankone_sums(Wr, m) : (zero(T), zero(T))
+    if rank1
+        for q in eachindex(dg, Wr)
+            dg[q] += κ * Wr[q] * (q <= m ? SB : SA)
+        end
     end
     # A scale-relative ridge keeps the factorizations definite should weights underflow.
     dmax = maximum(dg; init=zero(T))
@@ -257,6 +376,14 @@ function _powermean_direction!(d, ls::PowerMeanLinsolve{T}, sys::PowerMeanSystem
             h = p * sys.mult[e] * W[e]
             H[a, b] += h
             H[b, a] += h
+        end
+        if rank1
+            for j in m+1:N, i in 1:m
+                (pinned[i] || pinned[j]) && continue
+                h = κ * Wr[i] * Wr[j]
+                H[i, j] += h
+                H[j, i] += h
+            end
         end
         for q in 1:N
             H[q, q] = pinned[q] ? one(T) : dg[q] + ridge
@@ -294,6 +421,15 @@ function _powermean_direction!(d, ls::PowerMeanLinsolve{T}, sys::PowerMeanSystem
             y[a] += δ
             y[b] += δ
         end
+        if rank1
+            DA = DB = zero(T)
+            for q in eachindex(Wr, xx)
+                q <= m ? (DA += Wr[q] * xx[q]) : (DB += Wr[q] * xx[q])
+            end
+            for q in eachindex(y, Wr, xx)
+                y[q] += κ * Wr[q] * (q <= m ? SB * xx[q] + DB : SA * xx[q] + DA)
+            end
+        end
         for q in eachindex(y, pinned)
             pinned[q] && (y[q] = xx[q])
         end
@@ -322,15 +458,17 @@ function _powermean_newton!(x0::Vector{T}, sys::PowerMeanSystem{T}, p::T, maxite
     pinned = _powermean_pinned(sys)
     ls = _powermean_linsolve(sys, linsolve)
     W, Wt = zeros(T, ne), zeros(T, ne)
+    nr = isempty(sys.lw) ? 0 : N
+    Wr, Wrt = zeros(T, nr), zeros(T, nr)
     g, gt, s, st = zeros(T, N), zeros(T, N), zeros(T, N), zeros(T, N)
     d, xt = zeros(T, N), similar(x)
-    _powermean_eval!(W, g, s, x, d, zero(T), W, sys, p)
+    _powermean_eval!(W, Wr, g, s, x, d, zero(T), W, Wr, sys, p)
     npasses, nfactor = 1, 0
-    imb = _powermean_newton_imbalance(s, sys.count)
+    imb = _powermean_newton_imbalance(s, sys)
     k = 0
     while imb > tol && k < maxiter
         k += 1
-        np, nf = _powermean_direction!(d, ls, sys, W, g, pinned, imb, p)
+        np, nf = _powermean_direction!(d, ls, sys, W, Wr, g, pinned, imb, p)
         npasses += np
         nfactor += nf
         gd = dot(g, d)
@@ -342,9 +480,9 @@ function _powermean_newton!(x0::Vector{T}, sys::PowerMeanSystem{T}, p::T, maxite
         accepted = false
         for _ in 1:POWERMEAN_NEWTON_NBACKTRACK
             @. xt = x + t * d
-            ΔE, scale = _powermean_eval!(Wt, gt, st, xt, d, t, W, sys, p)
+            ΔE, scale = _powermean_eval!(Wt, Wrt, gt, st, xt, d, t, W, Wr, sys, p)
             npasses += 1
-            imbt = _powermean_newton_imbalance(st, sys.count)
+            imbt = _powermean_newton_imbalance(st, sys)
             if ΔE <= POWERMEAN_ARMIJO * t * gd
                 accepted = true
             elseif isfinite(scale) && abs(ΔE) <= POWERMEAN_NOISE * eps(T) * scale
@@ -361,6 +499,7 @@ function _powermean_newton!(x0::Vector{T}, sys::PowerMeanSystem{T}, p::T, maxite
         accepted || break
         x, xt = xt, x
         W, Wt = Wt, W
+        Wr, Wrt = Wrt, Wr
         g, gt = gt, g
         s, st = st, s
     end
@@ -398,7 +537,8 @@ const POWERMEAN_MAXSTEP = 64
 # level are the clusters of the next finer level (the nodes at the finest), and
 # its entries are those crossing them. Over the shift `c` of one unknown, the
 # objective is `(A exp(-p c) + B exp(p c) + p k c)/p` with `A` and `B` the weights
-# of its out and in entries and `k` their difference in number, so its exact
+# of its out and in entries and `k` their difference in number (with targets, the
+# sum of its members' row targets minus their column targets), so its exact
 # minimizer is a root of a quadratic in `exp(p c)`, computed from the log weights
 # at any scale. A pass sweeps these shifts Gauss-Seidel over each level, finest
 # first. Level-by-level sweeps converge slowly along directions that couple two
@@ -415,12 +555,20 @@ struct PowerMeanGraph{T}
     u::Vector{Int}          # node carrying `+y` of each entry
     v::Vector{Int}          # node carrying `-y`
     L::Vector{T}            # `log|A|` of each entry
+    k0::Vector{T}           # each node's `k` (see below); empty when it is out minus in entries
 end
+
+PowerMeanGraph{T}(N, u, v, L) where {T} = PowerMeanGraph{T}(N, u, v, L, T[])
 
 # Asymmetric graph of the Newton system, whose unknowns are the row nodes `1:m`
 # and the column nodes `m+1:m+n`, each entry joining its row and column node.
-_powermean_graph(sys::PowerMeanSystem{T}) where {T} =
-    PowerMeanGraph{T}(length(sys.count), sys.u, sys.v, sys.L)
+# With targets `t`, the linear term of a shift is `t` for a row node and `-t` for a
+# column node.
+function _powermean_graph(sys::PowerMeanSystem{T}) where {T}
+    m = sys.nrow
+    k0 = T[q <= m ? t : -t for (q, t) in pairs(sys.target)]
+    return PowerMeanGraph{T}(length(sys.count), sys.u, sys.v, sys.L, k0)
+end
 
 # Double cover of the symmetric Newton system: row node `i`, column node `n+i`,
 # both orientations of an off-diagonal pair (stored once, with multiplicity two),
@@ -517,7 +665,7 @@ struct PowerMeanWorkspace{T}
     eid::Vector{Int}        # crossing entries: graph entry,
     u::Vector{Int}          # unknown carrying `+y`,
     v::Vector{Int}          # unknown carrying `-y`
-    k::Vector{Int}          # unknowns: crossing entries out of minus into,
+    k::Vector{T}            # unknowns: linear coefficient of the shift (out minus in entries without targets),
     up::Vector{Int}         # unknown of the next level containing it (0 if none does),
     c::Vector{T}            # shift
     lwl::Vector{T}          # log weights of one level's entries
@@ -533,7 +681,7 @@ function PowerMeanWorkspace(G::PowerMeanGraph{T}) where {T}
     vi() = Int[]
     return PowerMeanWorkspace{T}(Vector{T}(undef, ne), Vector{Int}(undef, ne), Vector{Int}(undef, ne),
                                  Vector{Int}(undef, N), Vector{Int}(undef, N), PowerMeanLevel[],
-                                 vi(), vi(), vi(), vi(), vi(), T[], Vector{T}(undef, ne),
+                                 vi(), vi(), vi(), T[], vi(), T[], Vector{T}(undef, ne),
                                  Vector{Int}(undef, N + 1), Vector{Int}(undef, N + 1),
                                  Vector{Int}(undef, ne), Vector{Int}(undef, ne), Vector{Int}(undef, N + 1))
 end
@@ -581,9 +729,20 @@ function _powermean_hierarchy!(ws::PowerMeanWorkspace{T}, G::PowerMeanGraph, Δ,
             par[P] = P
             lab[P] = 0
         end
-        for q in entries
-            ws.k[uoff+ws.u[q]] += 1
-            ws.k[uoff+ws.v[q]] -= 1
+        if isempty(G.k0)
+            for q in entries
+                ws.k[uoff+ws.u[q]] += 1
+                ws.k[uoff+ws.v[q]] -= 1
+            end
+        elseif uoff == 0
+            copyto!(ws.k, 1, G.k0, 1, K)
+        else
+            # A cluster's coefficient is the sum of its members'.
+            prev = ws.levels[end]
+            for P in 1:prev.K
+                up = ws.up[prev.uoff+P]
+                up == 0 || (ws.k[uoff+up] += ws.k[prev.uoff+P])
+            end
         end
         q = eoff + 1
         while q <= eoff + nk && lw[ws.eid[q]] >= thresh
@@ -640,9 +799,9 @@ function _powermean_logsumexp(lw, idx)
 end
 
 # `p c` at the minimizer of `A exp(-p c) + B exp(p c) + p k c` over the shift `c` of
-# one unknown, from `la = log A`, `lb = log B` (its out and in cut weights) and the
-# integer `k`: the root `exp(p c)` of `B u² + k u - A = 0`, in logs for any scale.
-function _powermean_shift(la::T, lb::T, k::Int) where {T}
+# one unknown, from `la = log A`, `lb = log B` (its out and in cut weights) and
+# `k`: the root `exp(p c)` of `B u² + k u - A = 0`, in logs for any scale.
+function _powermean_shift(la::T, lb::T, k::Real) where {T}
     k == 0 && return (la - lb) / 2
     lk = log(T(abs(k)))
     lq = la + lb + log(T(4)) - 2lk
@@ -777,8 +936,9 @@ end
 function _powermean_system_imbalance(x::Vector{T}, sys::PowerMeanSystem{T}, p::T) where {T}
     N, ne = length(x), length(sys.u)
     W, s = zeros(T, ne), zeros(T, N)
-    _powermean_eval!(W, zeros(T, N), s, x, zeros(T, N), zero(T), W, sys, p)
-    return _powermean_newton_imbalance(s, sys.count)
+    Wr = zeros(T, isempty(sys.lw) ? 0 : N)
+    _powermean_eval!(W, Wr, zeros(T, N), s, x, zeros(T, N), zero(T), W, Wr, sys, p)
+    return _powermean_newton_imbalance(s, sys)
 end
 
 # Newton steps from `x` on the objective of `sys`; once they converge, polish of
@@ -805,7 +965,10 @@ function _powermean_refine!(x::Vector{T}, sys::PowerMeanSystem{T}, m::Union{Int,
     npolish = 0
     shift = zero(T)
     settle = tol / p
-    (converged && maxpolish > 0) || return converged, nnewton, npasses, nfactor, imbalance, ls, npolish, shift, settle
+    # The rank-one term joins every row to every column, so no cluster is joined
+    # only by small entries and the polish does not apply.
+    (converged && maxpolish > 0 && isempty(sys.lw)) ||
+        return converged, nnewton, npasses, nfactor, imbalance, ls, npolish, shift, settle
     G = _powermean_polish_graph(sys, m)
     y = Vector{T}(undef, G.N)
     settle = _powermean_settle(_powermean_toy!(y, x, m), G, p, tol)
