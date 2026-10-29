@@ -627,12 +627,13 @@ end
 _powermean_polish_graph(sys, ::Int) = _powermean_graph(sys)
 _powermean_polish_graph(sys, ::Nothing) = _powermean_symgraph(sys)
 
-# Threshold below which a cluster shift counts as settled: `tol/p`, but no less
-# than the roundoff of a shift computed from the log weights
-# `-p (y[u] - y[v] - L)`, a few `eps` times the largest `|y|` or `|L|`.
+# Threshold below which a cluster shift counts as settled:
+# `POWERMEAN_SETTLE_FACTOR * tol/p`, but no less than the roundoff of a shift
+# computed from the log weights `-p (y[u] - y[v] - L)`, a few `eps` times the
+# largest `|y|` or `|L|`.
 function _powermean_settle(y::AbstractVector{T}, G::PowerMeanGraph, p, tol) where {T}
     scale = max(maximum(abs, y; init=zero(T)), maximum(abs, G.L; init=zero(T)))
-    return max(tol / p, T(POWERMEAN_SETTLE_NOISE) * eps(T) * scale)
+    return max(POWERMEAN_SETTLE_FACTOR * tol / p, T(POWERMEAN_SETTLE_NOISE) * eps(T) * scale)
 end
 
 # Log weights `-p z` of every entry.
@@ -657,8 +658,8 @@ end
 # The levels of a hierarchy are stored back to back.
 struct PowerMeanWorkspace{T}
     lw::Vector{T}           # log weights of the graph's entries
-    order::Vector{Int}      # entries by decreasing log weight
-    scratch::Vector{Int}    # scratch space of the sort
+    order::Vector{Int}      # entries by increasing band (see `_powermean_bands!`)
+    band::Vector{Int}       # band of each entry
     par::Vector{Int}        # union-find forest over a level's unknowns
     lab::Vector{Int}        # labels of the clusters a level forms
     levels::Vector{PowerMeanLevel}
@@ -695,33 +696,57 @@ function _uf_root!(parent, q)
     return q
 end
 
+# Band of each entry: the first level `ℓ ≥ 1` whose threshold `-(ℓ - offset) Δ`
+# is at or below its log weight. Fills `order` with the entries by increasing
+# band. A level joins every entry of its band at once, so the order within a band
+# does not matter, and a counting sort suffices unless the bands span far more
+# values than there are entries.
+function _powermean_bands!(order, band, lw, Δ, offset)
+    isempty(lw) && return order
+    bmax = 1
+    for e in eachindex(band, lw)
+        b = max(1, ceil(Int, offset - lw[e] / Δ))
+        band[e] = b
+        bmax = max(bmax, b)
+    end
+    bmax > 4 * length(lw) && return sortperm!(order, band)
+    next = zeros(Int, bmax + 1)
+    for b in band
+        next[b+1] += 1
+    end
+    next[1] = 1
+    for b in 1:bmax
+        next[b+1] += next[b]
+    end
+    for e in eachindex(band)
+        b = band[e]
+        order[next[b]] = e
+        next[b] += 1
+    end
+    return order
+end
+
 # Levels of the hierarchy with thresholds `-(ℓ - offset) Δ`, `ℓ = 1, 2, …`, on the
-# log weights `ws.lw`, from the finest; level `ℓ` joins the entries at or above
-# its threshold. A threshold that joins no entry would repeat the next level and
-# is skipped. The entries are sorted once; each level then takes time
+# log weights `ws.lw`, from the finest; level `ℓ` joins the entries of bands up
+# to `ℓ`. A threshold that joins no entry would repeat the next level and is
+# skipped. The entries are ordered by band once; each level then takes time
 # proportional to its unknowns and crossing entries, and only crossing entries
-# pass on to the next level. An unknown none of whose entries still crosses
-# after the joins drops out (`up` is 0).
-function _powermean_hierarchy!(ws::PowerMeanWorkspace{T}, G::PowerMeanGraph, Δ, offset) where {T}
-    lw, order, par, lab = ws.lw, ws.order, ws.par, ws.lab
+# pass on to the next level, still in order of band. An unknown none of whose
+# entries still crosses after the joins drops out (`up` is 0).
+function _powermean_hierarchy!(ws::PowerMeanWorkspace, G::PowerMeanGraph, Δ, offset)
+    lw, order, band, par, lab = ws.lw, ws.order, ws.band, ws.par, ws.lab
     ne = length(lw)
     empty!(ws.levels)
-    sortperm!(order, lw; rev=true, scratch=ws.scratch)
+    _powermean_bands!(order, band, lw, Δ, offset)
     resize!(ws.eid, ne); resize!(ws.u, ne); resize!(ws.v, ne)
     for q in 1:ne
         e = order[q]
         ws.eid[q], ws.u[q], ws.v[q] = e, G.u[e], G.v[e]
     end
     K, nk, eoff, uoff = G.N, ne, 0, 0
-    ℓ = 0
     while nk > 0
-        # The first threshold at or below the heaviest crossing entry.
-        lw1 = lw[ws.eid[eoff+1]]
-        ℓ = max(ℓ + 1, floor(Int, offset - lw1 / Δ))
-        while lw1 < T(-(ℓ - offset) * Δ)
-            ℓ += 1
-        end
-        thresh = T(-(ℓ - offset) * Δ)
+        # The crossing entries begin with the lowest band that is not yet joined.
+        ℓ = band[ws.eid[eoff+1]]
         entries = eoff+1:eoff+nk
         resize!(ws.k, uoff + K); resize!(ws.up, uoff + K)
         for P in 1:K
@@ -745,7 +770,7 @@ function _powermean_hierarchy!(ws::PowerMeanWorkspace{T}, G::PowerMeanGraph, Δ,
             end
         end
         q = eoff + 1
-        while q <= eoff + nk && lw[ws.eid[q]] >= thresh
+        while q <= eoff + nk && band[ws.eid[q]] <= ℓ
             a, b = _uf_root!(par, ws.u[q]), _uf_root!(par, ws.v[q])
             a == b || (par[a] = b)
             q += 1
@@ -964,7 +989,7 @@ function _powermean_refine!(x::Vector{T}, sys::PowerMeanSystem{T}, m::Union{Int,
     converged, nnewton, npasses, nfactor, imbalance, ls = _powermean_newton!(x, sys, p, maxnewton, tol, linsolve)
     npolish = 0
     shift = zero(T)
-    settle = tol / p
+    settle = POWERMEAN_SETTLE_FACTOR * tol / p
     # The rank-one term joins every row to every column, so no cluster is joined
     # only by small entries and the polish does not apply.
     (converged && maxpolish > 0 && isempty(sys.lw)) ||

@@ -98,7 +98,7 @@ julia> round.(first(soft_symcover([0 1; 1 0])); digits=4)
   polish that follows the Newton steps, over all its rounds; `0` skips the
   polish. Each pass shifts every weakly joined cluster of rows and columns to
   its exact minimizer. When the passes run out before the largest shift falls
-  below `tol/p`, a warning is issued, and `shift` in
+  below `$(POWERMEAN_SETTLE_FACTOR)*tol/p`, a warning is issued, and `shift` in
   [`PowerMeanStats`](@ref MatrixCovers.PowerMeanStats) reports the residual.
 - `linsolve` (default `:auto`): the solver for the Newton equations. `:dense`
   factorizes the dense Hessian; `:cholesky` factorizes the sparse Hessian with
