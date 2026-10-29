@@ -604,6 +604,26 @@ end
         end
     end
 
+    @testset "entries ordered by band" begin
+        Δ = MatrixCovers.POWERMEAN_SWEEP_SPACING
+        rng = StableRNG(5)
+        # Narrow range (counting sort), and one light entry far below the rest
+        # (more bands than entries, so the comparison sort).
+        for lw in (5 .* randn(rng, 200), [randn(rng, 20); -1e4])
+            for offset in (0.0, 0.5)
+                order, band = similar(lw, Int), similar(lw, Int)
+                MatrixCovers._powermean_bands!(order, band, lw, Δ, offset)
+                @test sort(order) == eachindex(lw)
+                @test issorted(band[order])
+                for e in eachindex(lw)
+                    ℓ = band[e]
+                    @test ℓ >= 1 && lw[e] >= -(ℓ - offset) * Δ
+                    @test ℓ == 1 || lw[e] < -(ℓ - 1 - offset) * Δ
+                end
+            end
+        end
+    end
+
     @testset ":auto on a random sparse problem" begin
         # Cholesky fill exceeds the budget on random patterns, so `:auto` picks `:cg`.
         rng = StableRNG(3)

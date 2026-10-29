@@ -189,6 +189,11 @@ const POWERMEAN_NEWTON_PASSES = 200
 const POWERMEAN_NEWTON_MAXPASSES = 400
 const POWERMEAN_MAXNEWTON = 100
 const POWERMEAN_MAXPOLISH = 100
+# The polish stops when a pass shifts no cluster by more than this multiple of
+# `tol/p`. On well-connected supports the Newton steps leave the log scales
+# accurate only to a few `tol/p`, so smaller shifts are below the accuracy of the
+# rest of the cover.
+const POWERMEAN_SETTLE_FACTOR = 10
 
 # The solver keywords of the `PowerMean` soft covers and `noise_cover`, with their
 # defaults. Callers pass user keywords through this function before solving, so
@@ -241,7 +246,7 @@ function _powermean_solve!(α, β, R::GroupedSupport{T}, C::GroupedSupport{T}, p
     budget = newton ? POWERMEAN_NEWTON_PASSES ÷ 2 : typemax(Int)
     converged, nsweeps, imbalance = _powermean_sinkhorn!(α, β, R, C, p, nsw, tol, budget, terms)
     nt = (; converged, nsweeps, maxiter, newton=false, nnewton=0, maxnewton, maxpolish, npasses=0,
-          nfactor=0, linsolve=:none, imbalance, tol, npolish=0, shift=zero(T), settle=tol / p)
+          nfactor=0, linsolve=:none, imbalance, tol, npolish=0, shift=zero(T), settle=POWERMEAN_SETTLE_FACTOR * tol / p)
     (converged || !newton) && return nt
     sys = _powermean_system(R, eachindex(β), terms)
     x = _stack(α, β)
@@ -261,7 +266,7 @@ function _powermean_symsolve!(α, S::GroupedSupport{T}, p::T, tol::T;
     budget = newton ? POWERMEAN_NEWTON_PASSES : typemax(Int)
     converged, nsweeps, imbalance = _powermean_jacobi!(α, similar(α), S, p, nup, tol, budget)
     nt = (; converged, nsweeps, maxiter, newton=false, nnewton=0, maxnewton, maxpolish, npasses=0,
-          nfactor=0, linsolve=:none, imbalance, tol, npolish=0, shift=zero(T), settle=tol / p)
+          nfactor=0, linsolve=:none, imbalance, tol, npolish=0, shift=zero(T), settle=POWERMEAN_SETTLE_FACTOR * tol / p)
     (converged || !newton) && return nt
     sys = _powermean_symsystem(S)
     n = length(S.ax)

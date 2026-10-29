@@ -207,12 +207,12 @@ Balancing rows and columns alone poorly determines the products of entries with
 small `r^p`. After the Newton steps converge, the solver polishes the cover: it
 balances every cluster of rows and columns joined to the rest of the support
 only by such entries, by exact shifts of the cluster's log scales over a
-hierarchy of weak joins, until the largest shift is below `tol/p` or
-`maxpolish` passes have run. The Newton test is then checked again. With
+hierarchy of weak joins, until the largest shift is below a small multiple of
+`tol/p` or `maxpolish` passes have run. The Newton test is then checked again. With
 `shrink > 0`, `noise_cover` joins every row to every column and skips the
 polish. `shift` is
-the largest cluster shift of the last polish pass: when it is well above
-`tol/p`, the log products `log(a[i]*b[j])` across the weakest joins are
+the largest cluster shift of the last polish pass: when it is well above that
+threshold, the log products `log(a[i]*b[j])` across the weakest joins are
 determined only to about that accuracy.
 
 # Fields
