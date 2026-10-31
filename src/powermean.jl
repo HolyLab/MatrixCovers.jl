@@ -115,7 +115,7 @@ function _soft_symcover_powermean(ρ::PowerMean, A::AbstractMatrix, fname::Symbo
     axes(A, 2) == ax || throw(ArgumentError("$fname requires a square matrix"))
     # Symmetry is checked by `_soft_symcover_powermean!`; the start is only read there.
     a = similar(Array{float(real(eltype(A)))}, ax)
-    _initialize_symcover!(a, A, :geomean, :none)
+    _initialize_symcover!(a, A, :diagonal, :none)
     return _soft_symcover_powermean!(ρ, a, A, fname; kwargs...)
 end
 

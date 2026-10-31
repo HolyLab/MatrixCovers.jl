@@ -1,4 +1,4 @@
-# Fast O(mn) hard-cover heuristics `symcover` and `cover`, together with the
+# Fast hard-cover heuristics `symcover` and `cover`, together with the
 # tightening and initialization routines they (and the soft covers) build on.
 
 # ============================================================
@@ -16,8 +16,10 @@ fast heuristic; for the cover that minimizes a penalty `ρ`, use
 
 The heuristic starts from the per-row geometric means of the diagonally
 normalized entries `abs(A[i, j]) / sqrt(abs(A[i, i] * A[j, j]))`, rescaled by
-`sqrt(abs(A[i, i]))`. It then raises the scales until every entry is covered
-and applies `maxiter` tightening iterations.
+`sqrt(abs(A[i, i]))` (the `:diagonal` start of [`initialize_symcover`](@ref)).
+It then raises the scales until every entry is covered and applies `maxiter`
+tightening iterations. The cost is proportional to the number of stored
+entries of `A`.
 
 `ρ` is accepted for API compatibility but is ignored.
 
@@ -105,7 +107,9 @@ minimizes a penalty `ρ`, use [`cover_min`](@ref).
 
 The heuristic refines a starting point with up to `cgiter` conjugate-gradient
 iterations (`cgiter=0` disables refinement), raises the scales until every
-entry is covered, and then applies `maxiter` improvement passes.
+entry is covered, and then applies `maxiter` improvement passes. Each of these
+steps costs time proportional to the number of stored entries of `A`; the
+`:transversal` start also searches for a maximum-product transversal.
 
 `start` selects the kind of cover and the point the refinement begins from:
 
@@ -143,10 +147,10 @@ julia> a * b'
 
 # Extended help
 
-For square `A`, every hard cover has `prod(a) * prod(b) >= π*`, where `π*` is
+For square `A`, every hard cover has `prod(a) * prod(b) >= P*`, where `P*` is
 the largest product `∏ᵢ |A[i,π(i)]|` over permutations `π`. Equality holds
 exactly when the cover is tight on every entry of every transversal attaining
-`π*`, and these covers maximize `|det(A ./ (a .* b'))|`. A cover that leaves
+`P*`, and these covers maximize `|det(A ./ (a .* b'))|`. A cover that leaves
 such a transversal loose can make the scaled matrix far more ill-conditioned
 than necessary. The `:transversal` start prevents this; the `:unconstrained` start
 does not.
@@ -163,10 +167,15 @@ search typically dominates the cost.
 With `start=:unconstrained`, initialization and refinement approximate the
 least-squares fit of `log(a[i]) + log(b[j])` to `log(abs(A[i, j]))` over
 nonzero entries; coverage is then restored by boosting and `maxiter`
-tightening passes. The initialization alone gives the exact least-squares fit
-when each connected component of the support is a tree or is complete
-bipartite, so complete support needs no refinement. Each refinement iteration
-makes one pass over the support. The `:unconstrained` and `:geomean` starts
+tightening passes. The initialization roots each connected component of the
+bipartite support graph at a row or column with the most nonzeros (on ties, the
+first row, or the first column if no row ties) and works outward from it one
+layer at a time, setting each row or column from its neighbors in the
+preceding layer. When the root is not unique, the result can depend on the
+order of the rows and columns. The initialization alone gives the exact
+least-squares fit when each connected component of the support is a tree or is
+complete bipartite, so complete support needs no refinement. Each refinement
+iteration makes one pass over the support. The `:unconstrained` and `:geomean` starts
 coincide on complete support, where the geometric mean already solves the
 least-squares problem.
 

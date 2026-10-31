@@ -543,7 +543,7 @@ end
 
 @testset "cover: transversal start" begin
     # Largest product over transversals, and whether the cover is tight on every
-    # entry of a maximum-product transversal (`∑ log a + ∑ log b == log π*`).
+    # entry of a maximum-product transversal (`∑ log a + ∑ log b == log P*`).
     function logπ(A)
         Af = float.(abs.(A))
         _, _, _, lπ = MatrixCovers._max_product_transversal(MatrixCovers._row_support(Af, Float64), axes(Af, 2), :test)

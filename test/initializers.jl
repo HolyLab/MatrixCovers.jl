@@ -1,4 +1,4 @@
-# The named starting covers: the :hardcover / :geomean / :leaveout / :diagfeasible
+# The named starting covers: the :hardcover / :diagonal / :leaveout / :diagfeasible
 # menu, and the `feasible` keyword that pushes any of them onto the coverage boundary.
 
 @testset "cover initializers" begin
@@ -7,14 +7,14 @@
     rowsupport(A) = [any(!iszero, view(A, i, :)) for i in axes(A, 1)]
     colsupport(A) = [any(!iszero, view(A, :, j)) for j in axes(A, 2)]
 
-    SYM_STRATEGIES = (:hardcover, :geomean, :leaveout, :diagfeasible)
+    SYM_STRATEGIES = (:hardcover, :diagonal, :leaveout, :diagfeasible)
     ASYM_STRATEGIES = (:hardcover, :geomean, :unconstrained)
 
     # Every strategy must be available on each of these: :leaveout needs a support entry it can
     # drop without emptying a row, so every supported row carries at least two.
     rng = StableRNG(7)
     Asyms = ([2.0 1.0; 1.0 3.0],
-             [1.0 10.0; 10.0 1.0],                                  # geomean falls short here
+             [1.0 10.0; 10.0 1.0],                                  # the diagonal start falls short here
              [1.0 0.5 0.0; 0.5 2.0 0.0; 0.0 0.0 0.0],               # unsupported row/column
              Matrix(Symmetric(randn(rng, 5, 5))))
     Aasyms = ([1.0 2.0 3.0; 4.0 5.0 6.0], [1.0 0.0 3.0; 4.0 0.0 6.0])
@@ -50,9 +50,9 @@
         # The geometric mean is the soft AbsLog{2} optimum, not a cover: for this matrix it
         # falls short on the off-diagonal, and either route lifts it onto the boundary.
         A = [1.0 10.0; 10.0 1.0]
-        @test !iscover(initialize_symcover(A; strategy=:geomean, feasible=:none), A)
-        @test iscover(initialize_symcover(A; strategy=:geomean, feasible=:inflate), A; rtol=8eps())
-        @test iscover(initialize_symcover(A; strategy=:geomean, feasible=:boost), A; rtol=8eps())
+        @test !iscover(initialize_symcover(A; strategy=:diagonal, feasible=:none), A)
+        @test iscover(initialize_symcover(A; strategy=:diagonal, feasible=:inflate), A; rtol=8eps())
+        @test iscover(initialize_symcover(A; strategy=:diagonal, feasible=:boost), A; rtol=8eps())
     end
 
     @testset "the two feasible routes are distinct points" begin
@@ -60,8 +60,8 @@
         # already slack; `:boost` raises only the rows touching a violated entry. Rows 1-2 are
         # the violated block here and row 3 is slack, so only the inflation disturbs row 3.
         A = [1.0 0.1 0.0; 0.1 1.0 0.0; 0.0 0.0 100.0]
-        ai = initialize_symcover(A; strategy=:geomean, feasible=:inflate)
-        ab = initialize_symcover(A; strategy=:geomean, feasible=:boost)
+        ai = initialize_symcover(A; strategy=:diagonal, feasible=:inflate)
+        ab = initialize_symcover(A; strategy=:diagonal, feasible=:boost)
         @test ai != ab
         @test ab[3] < ai[3]
 
@@ -80,14 +80,14 @@
         # :hardcover changes only violated rows; inflation also changes slack rows.
         A = [1.0 0.1 0.0; 0.1 1.0 0.0; 0.0 0.0 100.0]
         ah = initialize_symcover(A; strategy=:hardcover)
-        ag = initialize_symcover(A; strategy=:geomean)
+        ag = initialize_symcover(A; strategy=:diagonal)
         @test ah != ag
         @test ah[3] < ag[3]
     end
 
-    @testset ":leaveout is :geomean on the reduced support" begin
+    @testset ":leaveout is :diagonal on the reduced support" begin
         # Dropping an entry removes it from the row means and from the diagonal
-        # reference alike, so the start equals the :geomean start of the matrix
+        # reference alike, so the start equals the :diagonal start of the matrix
         # with that entry zeroed. The most-underweighted entry is the one scaled
         # by 1e-8, whether off-diagonal or diagonal.
         rng = StableRNG(11)
@@ -98,7 +98,7 @@
             Z = copy(A)
             Z[i, j] = Z[j, i] = 0.0
             @test initialize_symcover(A; strategy=:leaveout, feasible=:none) ==
-                  initialize_symcover(Z; strategy=:geomean, feasible=:none)
+                  initialize_symcover(Z; strategy=:diagonal, feasible=:none)
         end
     end
 
@@ -207,7 +207,7 @@
         @test_throws "strategy=:leaveout has no asymmetric formulation" initialize_cover(B; strategy=:leaveout)
         @test_throws "strategy=:diagfeasible has no asymmetric formulation" initialize_cover(B; strategy=:diagfeasible)
         # A strategy with no tunables of its own rejects keywords rather than dropping them.
-        @test_throws "strategy=:geomean accepts no further keyword arguments" initialize_symcover(A; strategy=:geomean, maxiter=3)
+        @test_throws "strategy=:diagonal accepts no further keyword arguments" initialize_symcover(A; strategy=:diagonal, maxiter=3)
         @test_throws "strategy=:geomean accepts no further keyword arguments" initialize_cover(B; strategy=:geomean, maxiter=3)
         @test_throws "strategy=:unconstrained accepts no further keyword arguments" initialize_cover(B; strategy=:unconstrained, maxiter=3)
         # :leaveout needs an entry it can drop without emptying a row.

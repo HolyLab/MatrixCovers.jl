@@ -1,7 +1,7 @@
 # Starting covers shared by the soft-cover multistarts and `*_min` solvers.
 
 # Default starts for nonconvex `AbsLinear` solvers.
-const SYMCOVER_MIN_STRATEGIES = (:hardcover, :geomean, :leaveout)
+const SYMCOVER_MIN_STRATEGIES = (:hardcover, :diagonal, :leaveout)
 const COVER_MIN_STRATEGIES = (:hardcover, :unconstrained)
 
 # ============================================================
@@ -16,10 +16,12 @@ Build a symmetric starting point for [`symcover_min`](@ref) or
 
 `strategy` selects the point:
 
-- `:geomean` — the unconstrained `AbsLog{2}` start of [`symcover`](@ref):
-  geometric means of the diagonally normalized entries in each row.
-- `:leaveout` — the geometric mean recomputed with one support entry omitted:
-  the entry that the `:geomean` scales overestimate the most, i.e., the one with
+- `:diagonal` — the start of [`symcover`](@ref): geometric means of the
+  diagonally normalized entries `abs(A[i, j]) / sqrt(abs(A[i, i] * A[j, j]))`
+  in each row, rescaled by `sqrt(abs(A[i, i]))`. A row with a zero diagonal
+  entry takes its reference scale from its neighbors.
+- `:leaveout` — the `:diagonal` start recomputed with one support entry omitted:
+  the entry that the `:diagonal` scales overestimate the most, i.e., the one with
   the smallest ratio `abs(A[i, j]) / (a[i] * a[j])`. It throws an
   `ArgumentError` if removing that entry empties a row.
 - `:diagfeasible` — a cover grown from the diagonal by nearest-neighbor
@@ -77,7 +79,8 @@ Build an asymmetric starting point for [`cover_min`](@ref) or
 
 `strategy` names the point:
 
-- `:geomean` — geometric means of the nonzero entries in each row and column.
+- `:geomean` — geometric means of the nonzero entries in each row and column,
+  which are not scale-covariant unless the support is rank one.
 - `:unconstrained` — the scale-covariant start of [`cover`](@ref) that
   approximates the unconstrained least-squares fit, without
   conjugate-gradient refinement. It agrees with `:geomean` on complete support.
@@ -119,7 +122,7 @@ function initialize_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatr
     elseif strategy === :unconstrained
         _reject_kwargs(strategy, kwargs)
         covariant_start!(a, b, flat_support(A, float(promote_type(eltype(a), eltype(b)))); fname=:initialize_cover)
-    elseif strategy === :leaveout || strategy === :diagfeasible
+    elseif strategy === :diagonal || strategy === :leaveout || strategy === :diagfeasible
         throw(ArgumentError("strategy=:$strategy has no asymmetric formulation; expected one of :hardcover, :geomean, :unconstrained"))
     else
         throw(ArgumentError("unknown strategy :$strategy; expected one of :hardcover, :geomean, :unconstrained"))
@@ -138,7 +141,7 @@ function _initialize_symcover!(a::AbstractVector, A::AbstractMatrix, strategy::S
                                feasible::Symbol; kwargs...)
     if strategy === :hardcover
         symcover!(a, A; kwargs...)
-    elseif strategy === :geomean
+    elseif strategy === :diagonal
         _reject_kwargs(strategy, kwargs)
         unconstrained_min!(AbsLog{2}(), a, A)
     elseif strategy === :leaveout
@@ -148,7 +151,7 @@ function _initialize_symcover!(a::AbstractVector, A::AbstractMatrix, strategy::S
         _reject_kwargs(strategy, kwargs)
         init_feasible_diag!(a, A)
     else
-        throw(ArgumentError("unknown strategy :$strategy; expected one of :hardcover, :geomean, :leaveout, :diagfeasible"))
+        throw(ArgumentError("unknown strategy :$strategy; expected one of :hardcover, :diagonal, :leaveout, :diagfeasible"))
     end
     _make_feasible!(feasible, a, A)
     return true

@@ -167,7 +167,7 @@ end
 
     # `AbsLog{2}` tie-breaking makes the `AbsLog{1}` result start-independent.
     a_cold, _ = symcover_min(AbsLog{1}(), A)
-    for strategy in (:hardcover, :geomean, :diagfeasible)
+    for strategy in (:hardcover, :diagonal, :diagfeasible)
         @test first(symcover_min!(AbsLog{1}(), initialize_symcover(A; strategy), A)) ≈ a_cold
     end
     ab_cold, bb_cold = cover_min(AbsLog{1}(), Aasym)
@@ -183,7 +183,7 @@ end
               0.0181293142917846 0.0279078887878805 26.5775238859338 42.6650094474717]
     ρ = AbsLinear{2}()
     a_hard, _ = symcover_min!(ρ, initialize_symcover(Abasin; strategy=:hardcover), Abasin)
-    a_geo, _ = symcover_min!(ρ, initialize_symcover(Abasin; strategy=:geomean), Abasin)
+    a_geo, _ = symcover_min!(ρ, initialize_symcover(Abasin; strategy=:diagonal), Abasin)
     @test iscover(a_hard, Abasin; rtol=1e-6)
     @test iscover(a_geo, Abasin; rtol=1e-6)
     @test cover_objective(ρ, a_geo, Abasin) < cover_objective(ρ, a_hard, Abasin) - 0.5
@@ -198,7 +198,7 @@ end
 @testset "soft_symcover multistart and refiner (Ipopt)" begin
     # Soft refiners accept non-covering starts.
     A = [4.0 2.0 1.0; 2.0 3.0 2.0; 1.0 2.0 5.0]
-    a0 = initialize_symcover(A; strategy=:geomean, feasible=:none)
+    a0 = initialize_symcover(A; strategy=:diagonal, feasible=:none)
     @test !iscover(a0, A)
     @test_throws "requires a start that covers `A`" symcover_min!(AbsLinear{2}(), copy(a0), A)
     @test first(soft_symcover!(AbsLinear{2}(), copy(a0), A)) isa AbstractVector
@@ -210,7 +210,7 @@ end
     # No start on the menu beats the driver.
     for ρ in (AbsLinear{1}(), AbsLinear{2}())
         a, _ = soft_symcover(ρ, A)
-        for strategy in (:hardcover, :geomean, :leaveout)
+        for strategy in (:hardcover, :diagonal, :leaveout)
             single, _ = soft_symcover!(ρ, initialize_symcover(A; strategy, feasible=:none), A)
             @test cover_objective(ρ, a, A) <= cover_objective(ρ, single, A) * (1 + 1e-6) + 1e-8
         end
@@ -302,7 +302,7 @@ end
         end
 
         # Start-independent in the *result*, not merely in the objective value.
-        for strategy in (:hardcover, :geomean, :diagfeasible)
+        for strategy in (:hardcover, :diagonal, :diagfeasible)
             @test first(symcover_min!(ρ1, initialize_symcover(A; strategy), A)) ≈ a
         end
 
@@ -326,7 +326,7 @@ end
 end
 
 @testset "AbsLinear multistart drivers (Ipopt)" begin
-    # `:geomean` reaches the better `AbsLinear{2}` basin here.
+    # `:diagonal` reaches the better `AbsLinear{2}` basin here.
     Abasin = [81.892035218799 1.06622031288736 29.4700945830419 0.0181293142917846;
               1.06622031288736 0.243512973596586 38.0236584552296 0.0279078887878805;
               29.4700945830419 38.0236584552296 8.96405068596511 26.5775238859338;
@@ -337,7 +337,7 @@ end
         a, _ = symcover_min(ρ, Abasin)
         @test iscover(a, Abasin; rtol=1e-6)
         # No start on the menu beats the driver.
-        for strategy in (:hardcover, :geomean, :leaveout)
+        for strategy in (:hardcover, :diagonal, :leaveout)
             single, _ = symcover_min!(ρ, initialize_symcover(Abasin; strategy), Abasin)
             @test cover_objective(ρ, a, Abasin) <=
                   cover_objective(ρ, single, Abasin) * (1 + 1e-6) + 1e-8
@@ -604,8 +604,8 @@ end
     ρ = AbsLinear{2}()
     a, ms = @inferred symcover_min(ρ, Abasin)
     @test ms isa MatrixCovers.MultistartStats{ESS,Float64}
-    @test ms.labels == [:hardcover, :geomean, :leaveout]
-    @test ms.labels[ms.selected] === :geomean
+    @test ms.labels == [:hardcover, :diagonal, :leaveout]
+    @test ms.labels[ms.selected] === :diagonal
     @test isempty(ms.failed)
     @test all(s -> s.solver === :Ipopt, ms.stats)
     @test ms.objectives[ms.selected] == cover_objective(ρ, a, Abasin)
@@ -617,7 +617,7 @@ end
     @test_throws MethodError MatrixCovers.iterations(ms)
     # A strategy that yields no start for `A` is not recorded.
     _, ms = symcover_min(ρ, [4.0 0.0; 0.0 9.0])
-    @test ms.labels == [:hardcover, :geomean]
+    @test ms.labels == [:hardcover, :diagonal]
     a, b, ms = @inferred cover_min(AbsLinear{1}(), Aasym)
     @test ms.labels == [:hardcover, :unconstrained]
     @test ms.objectives[ms.selected] == cover_objective(AbsLinear{1}(), a, b, Aasym)
@@ -632,7 +632,7 @@ end
     @test ms.objectives[ms.selected] == cover_objective(ρ, a, b, ones(3, 3))
     a, ms = @inferred soft_symcover(ρ, Float32.(A))
     @test ms isa MatrixCovers.MultistartStats{ESS,Float32}
-    @test ms.labels[1:2] == [:geomean, :hardcover]
+    @test ms.labels[1:2] == [:diagonal, :hardcover]
 
     # The constructor checks that its records line up.
     @test_throws DimensionMismatch MatrixCovers.MultistartStats{ESS,Float64}([:a, :b], [stats], [1.0], 1, Symbol[])

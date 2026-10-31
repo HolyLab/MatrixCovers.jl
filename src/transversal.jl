@@ -3,20 +3,21 @@
 """
     a, b, stats = cover_transversal(A; kwargs...)
 
-Return the minimal hard cover of the square matrix `A` among those that are
-tight on its maximum-product transversals.
+Return the *transversal-tight minimal cover* of the square matrix `A`: the
+`AbsLog{2}`-minimal hard cover among those that are tight on its
+maximum-product transversals.
 
 A *transversal* of `A` is a set of entries `A[i,π(i)]`, one in each row and
 each column, for a permutation `π`. Let
 
-    π* = max over permutations π of ∏ᵢ |A[i,π(i)]|.
+    P* = max over permutations π of ∏ᵢ |A[i,π(i)]|.
 
-Every hard cover has `prod(a) * prod(b) >= π*`, with equality exactly when it
+Every hard cover has `prod(a) * prod(b) >= P*`, with equality exactly when it
 is tight (`a[i]*b[j] == |A[i,j]|`) on every entry of every transversal whose
-product is `π*`. Among hard covers, these maximize `|det(A ./ (a .* b'))|`,
+product is `P*`. Among hard covers, these maximize `|det(A ./ (a .* b'))|`,
 whereas a cover that leaves such a transversal loose can make the scaled matrix
 far more ill-conditioned than necessary. `cover_transversal` returns the hard
-cover with `prod(a) * prod(b) == π*` that minimizes the `AbsLog{2}` objective
+cover with `prod(a) * prod(b) == P*` that minimizes the `AbsLog{2}` objective
 `∑ log(a[i]*b[j]/|A[i,j]|)^2` over the support of `A`.
 
 The products `a[i]*b[j]` are unique on the support, they do not depend on which

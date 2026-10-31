@@ -86,8 +86,8 @@ long chains of equally weak joins.
 
 ## Uniqueness
 
-An asymmetric cover is determined only up to a scalar factor: `a → γ*a`,
-`b → b/γ` leaves `a*b'` unchanged. The package chooses a unique representative,
+An asymmetric cover is determined only up to a scalar factor: `a → λ*a`,
+`b → b/λ` leaves `a*b'` unchanged. The package chooses a unique representative,
 or *gauge*, by requiring `∑ n_i log a[i] = ∑ m_j log b[j]`, where `n_i` and
 `m_j` are the nonzero counts of row `i` and column `j`. This balancing
 condition is applied separately to each connected component of the bipartite

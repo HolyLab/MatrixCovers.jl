@@ -220,7 +220,7 @@ end
     ar, br = soft_cover!(AbsLog{1}(), 3 .* a0, b0, Ac)
     ae, be = soft_cover(AbsLog{1}(), Ac)
     @test ar .* br' ≈ ae .* be' rtol=1e-8
-    s0 = initialize_symcover(S; strategy=:geomean, feasible=:none)
+    s0 = initialize_symcover(S; strategy=:diagonal, feasible=:none)
     @test first(soft_symcover!(AbsLog{1}(), 2 .* s0, S)) ≈ first(soft_symcover(AbsLog{1}(), S)) rtol=1e-8
 end
 
@@ -432,13 +432,13 @@ end
     end
 
     # Sparse support distinguishes the exact minimum from the geometric mean.
-    @test cover_objective(AbsLog{2}(), initialize_symcover(sym_dense; strategy=:geomean, feasible=:none), sym_dense) ≈
+    @test cover_objective(AbsLog{2}(), initialize_symcover(sym_dense; strategy=:diagonal, feasible=:none), sym_dense) ≈
           cover_objective(AbsLog{2}(), first(soft_symcover(AbsLog{2}(), sym_dense)), sym_dense) rtol=1e-8
-    @test cover_objective(AbsLog{2}(), initialize_symcover(sym_zeros; strategy=:geomean, feasible=:none), sym_zeros) >
+    @test cover_objective(AbsLog{2}(), initialize_symcover(sym_zeros; strategy=:diagonal, feasible=:none), sym_zeros) >
           cover_objective(AbsLog{2}(), first(soft_symcover(AbsLog{2}(), sym_zeros)), sym_zeros) * (1 + 1e-6)
 
     # Convex with one minimizer, so a refiner cannot be steered by its start.
-    for strategy in (:geomean, :leaveout, :diagfeasible, :hardcover)
+    for strategy in (:diagonal, :leaveout, :diagfeasible, :hardcover)
         a0 = initialize_symcover(sym_zeros; strategy, feasible=:none)
         @test first(soft_symcover!(AbsLog{2}(), a0, sym_zeros)) ≈ first(soft_symcover(AbsLog{2}(), sym_zeros))
     end
@@ -494,13 +494,13 @@ end
     Agen = [1.0 2.0 0.5; 0.25 3.0 1.0]
 
     @testset "refining the multistart's own start reproduces it: $ρ" for ρ in SOFT_PENALTIES
-        a = initialize_symcover(Asym; strategy=:geomean, feasible=:none)
+        a = initialize_symcover(Asym; strategy=:diagonal, feasible=:none)
         soft_symcover!(ρ, a, Asym)
         @test cover_objective(ρ, a, Asym) ≈ cover_objective(ρ, first(soft_symcover(ρ, Asym)), Asym) rtol=1e-6
     end
 
     @testset "no-ρ form defaults to PowerMean{2}" begin
-        a1, a2 = initialize_symcover(Asym; strategy=:geomean, feasible=:none), initialize_symcover(Asym; strategy=:geomean, feasible=:none)
+        a1, a2 = initialize_symcover(Asym; strategy=:diagonal, feasible=:none), initialize_symcover(Asym; strategy=:diagonal, feasible=:none)
         @test first(soft_symcover!(a1, Asym)) == first(soft_symcover!(PowerMean{2}(), a2, Asym))
         b1, c1 = initialize_cover(Agen; strategy=:geomean, feasible=:none)
         b2, c2 = initialize_cover(Agen; strategy=:geomean, feasible=:none)
@@ -511,7 +511,7 @@ end
     @testset "start-dependence" begin
         Abasins = [0.021778451276962405 1.5690256886348526
                    1.5690256886348526  0.20473123461805692]
-        starts() = (initialize_symcover(Abasins; strategy=:geomean, feasible=:none), ones(2))
+        starts() = (initialize_symcover(Abasins; strategy=:diagonal, feasible=:none), ones(2))
         o(ρ, a) = cover_objective(ρ, a, Abasins)
 
         s1, s2 = starts()
@@ -548,7 +548,7 @@ end
     # cover in the package.
     @testset "unsupported rows are zeroed: $ρ" for ρ in SOFT_PENALTIES
         Az = [1.0 0.0 2.0; 0.0 0.0 0.0; 2.0 0.0 3.0]
-        a = initialize_symcover(Az; strategy=:geomean, feasible=:none)
+        a = initialize_symcover(Az; strategy=:diagonal, feasible=:none)
         @test first(soft_symcover!(ρ, a, Az))[2] == 0
     end
 
@@ -562,10 +562,10 @@ end
 
     @testset "offset axes propagate: $ρ" for ρ in SOFT_PENALTIES
         Ao = OffsetArray(Asym, -1:1, -1:1)
-        ao = initialize_symcover(Ao; strategy=:geomean, feasible=:none)
+        ao = initialize_symcover(Ao; strategy=:diagonal, feasible=:none)
         soft_symcover!(ρ, ao, Ao)
         @test axes(ao, 1) == axes(Ao, 1)
-        aref = initialize_symcover(Asym; strategy=:geomean, feasible=:none)
+        aref = initialize_symcover(Asym; strategy=:diagonal, feasible=:none)
         soft_symcover!(ρ, aref, Asym)
         @test collect(ao) ≈ aref rtol=1e-6
     end
@@ -607,7 +607,7 @@ MatrixCovers.require_abs_symmetric(::HookOnlyMatrix, fname) = nothing
 
     # `:diagfeasible` runs `init_feasible_diag!` and `boost_feasible_seq!`;
     # `:leaveout` runs `_leaveout_logmean_init!`.
-    for strategy in (:geomean, :hardcover, :leaveout, :diagfeasible)
+    for strategy in (:diagonal, :hardcover, :leaveout, :diagfeasible)
         for feasible in (:none, :boost, :inflate)
             @test initialize_symcover(M; strategy, feasible) ≈
                   initialize_symcover(dense; strategy, feasible) rtol=1e-10

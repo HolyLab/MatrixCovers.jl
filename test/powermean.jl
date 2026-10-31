@@ -99,7 +99,7 @@ end
         rng = StableRNG(2)
         X = pm_testmatrix(rng, 30, 30; σ=3.0, z=0.4)
         A = X + X'
-        a0 = initialize_symcover(A; strategy=:geomean, feasible=:none)
+        a0 = initialize_symcover(A; strategy=:diagonal, feasible=:none)
         E = Float64[]
         for k in 0:12
             ak, _ = @test_logs (:warn, r"soft_symcover!: the power-mean iteration ended after") match_mode=:any soft_symcover!(PowerMean{2}(), copy(a0), A; maxiter=k, newton=false)
@@ -295,7 +295,7 @@ end
         # The sweeps alone are slow on some of these.
         nslow = count(hard_sym) do S
             Slog = MatrixCovers._log_support(MatrixCovers._sym_support(S, Float64))
-            a0 = initialize_symcover(S; strategy=:geomean, feasible=:none)
+            a0 = initialize_symcover(S; strategy=:diagonal, feasible=:none)
             !MatrixCovers._powermean_jacobi!(log.(a0), similar(a0), Slog, 2.0, 1000, 1e-10)[1]
         end
         @test nslow > 0
@@ -404,7 +404,7 @@ end
             @test a == b
             @test pm_imbalance(2, a, b, M) < 1e-11
         end
-        a0 = initialize_symcover(T; strategy=:geomean, feasible=:none)
+        a0 = initialize_symcover(T; strategy=:diagonal, feasible=:none)
         Slog = MatrixCovers._log_support(MatrixCovers._sym_support(T, Float64))
         nupd = MatrixCovers._powermean_jacobi!(log.(a0), similar(a0), Slog, 2.0, 10_000, 4096 * eps())[2]
         @test nupd < 50

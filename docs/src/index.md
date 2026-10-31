@@ -5,16 +5,16 @@ CurrentModule = MatrixCovers
 # MatrixCovers
 
 MatrixCovers computes rank-one bounds on the magnitudes of the entries of a
-matrix. Given a matrix `A`, a *hard cover* is `C = a * b'`, where `a` and `b`
-are nonnegative vectors satisfying
+matrix. Given a matrix `A`, a *hard cover* is `Abar = a * b'`, where `a` and
+`b` are nonnegative vectors satisfying
 
 ```math
-C_{ij} \;\geq\; |A_{ij}| \quad \text{for all } i, j.
+\bar A_{ij} = a_i b_j \;\geq\; |A_{ij}| \quad \text{for all } i, j.
 ```
 
 For symmetric `A`, a single vector suffices (`b = a`). A matrix has many hard
 covers; a *minimal cover* is the one that minimizes a chosen penalty on the log
-slack `log C[i,j] - log|A[i,j]|` of each nonzero entry. A *soft cover* penalizes violations of the inequality
+slack `log Abar[i,j] - log|A[i,j]|` of each nonzero entry. A *soft cover* penalizes violations of the inequality
 instead of enforcing it.
 
 ## Installation
@@ -269,17 +269,19 @@ true
 ## Which function to use
 
 For most uses, [`symcover`](@ref) (symmetric matrices) and [`cover`](@ref)
-(general matrices) suffice: they cost ``O(mn)`` and are covariant under
-rescaling. [`symcover_min`](@ref) and [`cover_min`](@ref) compute covers that
-minimize a chosen penalty, at greater cost (see
-[Objective-minimal covers](@ref)). A minimal cover is not necessarily better
+(general matrices) suffice: their cost is proportional to the number of stored
+entries of `A`, and they are covariant under rescaling. [`symcover_min`](@ref)
+and [`cover_min`](@ref) compute covers that minimize a chosen penalty, at
+greater cost (see [Objective-minimal covers](@ref)). A minimal cover is not necessarily better
 for conditioning: on the matrix of
 [Conditioning and the error in `A \ y`](@ref), [`cover_min`](@ref) leaves
 `cond(Ahat)` near `3e8`, because it is not tight on the transversal.
-[`cover_transversal`](@ref) minimizes the penalty among the covers that are;
-`cover_transversal(PowerMean{2}(), A; target)` instead pushes the ratios of the
-entries off the transversal toward `target`, which separates the blocks of a
-partly decomposable `A`.
+[`cover_transversal`](@ref) minimizes the penalty among the covers that are.
+For a partly decomposable `A`, the *max-balanced cover*
+`cover_transversal(PowerMean{2}(), A; target=1e-2, maxbalance=true)`, also
+tight on the transversal, max-balances the ratios within each diagonal block
+and pushes the ratios of the entries between blocks toward `target` (see
+[Functions and their objectives](@ref)).
 
 For applications that standardize data rather than precondition a solver,
 consider [`soft_cover`](@ref) and [`soft_symcover`](@ref). A soft cover need not
@@ -287,3 +289,33 @@ satisfy every inequality `|A[i,j]| ≤ a[i] * b[j]`; with the default
 `PowerMean{2}` penalty, the ratios `|A[i,j]| / (a[i] * b[j])` over the nonzero
 entries of each row and column have root-mean-square equal to one (see
 [Penalty functions](@ref)).
+
+## Terms used in the manuscript
+
+The manuscript *Matrix Covers for Scale-Invariant Numerical Analysis* (T. E.
+Holy) develops the theory behind this package. Its terms correspond to the
+package as follows.
+
+| Manuscript | Package |
+|---|---|
+| cover `Ā = a bᵀ` | `Abar = a * b'` |
+| normalized matrix `Â` | `Ahat = A ./ (a .* b')` |
+| coverage ratio `R_ij` | `r = abs(A[i,j]) / (a[i] * b[j])` |
+| log slack `z_ij` | `z = -log(r)` |
+| `ℓ_p` penalty `abs(z)^p` | [`AbsLog{p}`](@ref AbsLog) |
+| penalty `abs(1 - R)^p` | [`AbsLinear{p}`](@ref AbsLinear) |
+| power-mean penalty `ρ_p` | [`PowerMean{p}`](@ref PowerMean) |
+| `ℓ_2`-minimal cover | [`symcover_min(A)`](@ref symcover_min), [`cover_min(A)`](@ref cover_min) |
+| power-mean soft cover | [`soft_symcover(A)`](@ref soft_symcover), [`soft_cover(A)`](@ref soft_cover) |
+| heuristic, symmetric | [`symcover(A)`](@ref symcover) |
+| heuristic, unconstrained start | [`cover(A; start=:unconstrained)`](@ref cover) |
+| heuristic, transversal-tight start | [`cover(A; start=:transversal)`](@ref cover), the default for a square, structurally nonsingular `A` |
+| transversal-tight minimal cover | [`cover_transversal(A)`](@ref cover_transversal) |
+| max-balanced cover with target `r̄` | [`cover_transversal(PowerMean{2}(), A; target=r̄, maxbalance=true)`](@ref cover_transversal) |
+| diagonal start | [`initialize_symcover(A; strategy=:diagonal, feasible=:none)`](@ref initialize_symcover) |
+| layer-average start, followed by one sweep | [`initialize_cover(A; strategy=:unconstrained, feasible=:none)`](@ref initialize_cover) |
+| row and column geometric means (not covariant) | [`initialize_cover(A; strategy=:geomean)`](@ref initialize_cover), [`cover(A; start=:geomean)`](@ref cover) |
+| gauge convention | the balance convention of [`cover_min`](@ref) |
+| cover of a Gram matrix `JᵀWJ` | [`gramcover(J, W)`](@ref gramcover) |
+| level and dispersion | [`level_dispersion`](@ref) |
+| `P*`, the largest transversal product | `P*` in [`cover_transversal`](@ref) |

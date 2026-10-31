@@ -30,7 +30,7 @@ supplied start. The exceptions are [`symcover!`](@ref), [`cover!`](@ref), and
 result in place.
 
 The three calls below (the default multistart solver, the solver restricted to
-the `:geomean` start, and an explicit initialization followed by refinement)
+the `:diagonal` start, and an explicit initialization followed by refinement)
 reach the same cover for this matrix:
 
 ```jldoctest manualstart
@@ -46,7 +46,7 @@ julia> round.(a; digits=6)
  1.0
  5.0
 
-julia> a, stats = symcover_min(AbsLinear{2}(), S; strategies=(:geomean,));
+julia> a, stats = symcover_min(AbsLinear{2}(), S; strategies=(:diagonal,));
 
 julia> round.(a; digits=6)
 3-element Vector{Float64}:
@@ -54,7 +54,7 @@ julia> round.(a; digits=6)
  1.0
  5.0
 
-julia> a0 = initialize_symcover(S; strategy=:geomean);
+julia> a0 = initialize_symcover(S; strategy=:diagonal);
 
 julia> symcover_min!(AbsLinear{2}(), a0, S);
 
@@ -101,3 +101,11 @@ A native solver that stops before meeting its criterion issues a warning and
 returns its result; a hard cover returned this way still covers `A`. To reject
 such results, test `MatrixCovers.converged(stats)`. The JuMP-backed solvers
 throw a [`SolverFailure`](@ref MatrixCovers.SolverFailure) instead.
+
+## Solver settings
+
+Each solver's keywords, their defaults, and its choice among linear solvers are
+described in the extended help of its docstring (type `??symcover_min` at the
+REPL, for example). Internal rules that the keywords do not control, such as
+stall detection and line-search limits, are described in comments in the
+source code.

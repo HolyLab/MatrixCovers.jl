@@ -16,9 +16,12 @@ for all `i` and `j`, this simple construct finds applications that range from
 of data to the design of well-behaved numerical algorithms (thanks, e.g., 
 to [bounds on $`\hat A`$'s eigenvalues](https://en.wikipedia.org/wiki/Gershgorin_circle_theorem)).
 
-The package provides O(mn) heuristics (`symcover`, `cover`), *soft* covers that
-penalize violations (`soft_symcover`, `soft_cover`), and objective-minimal hard
-covers (`symcover_min`, `cover_min`). Penalties are functions of the log slack
+The package provides heuristics (`symcover`, `cover`) whose cost is proportional
+to the number of stored entries, *soft* covers that penalize violations
+(`soft_symcover`, `soft_cover`), objective-minimal hard covers (`symcover_min`,
+`cover_min`), and covers tight on a maximum-product transversal for scaling
+square matrices (`cover_transversal`), among them the transversal-tight
+minimal cover and the max-balanced cover. Penalties are functions of the log slack
 `z = log(a[i]*b[j]) - log|A[i,j]|` of each nonzero entry. The defaults, the ℓ₂
 penalty `AbsLog{2}` (`z^2`) for hard covers and the power-mean penalty
 `PowerMean{2}` for soft covers, use built-in solvers; other penalties use JuMP
