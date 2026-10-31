@@ -122,17 +122,17 @@ end
 Compare the product `a*b'` with the reference product `aref*bref'` on the
 nonzero entries of `A`, and return the named tuple `(; level, dispersion)`. With
 
-    ℓ[i,j] = log((a[i]*b[j]) / (aref[i]*bref[j]))
+    ω[i,j] = log((a[i]*b[j]) / (aref[i]*bref[j]))
 
-`level` is the mean of `ℓ` over the nonzero entries of `A`, and `dispersion` is its
+`level` is the mean of `ω` over the nonzero entries of `A`, and `dispersion` is its
 standard deviation, normalized by the number of nonzero entries. The
 three-argument form compares the symmetric products `a*a'` and `aref*aref'`.
 
 A positive level means that `a*b'` is larger than the reference on average.
 Multiplying either product by a constant `c` shifts the level by `±log(c)` and
 leaves the dispersion unchanged. Bounds that rest on the cover inequality depend
-on both, whereas cover-normalized quantities such as condition numbers depend
-only on the dispersion. Both are unchanged when `A` and all four scales are
+on both, whereas cover-normalized quantities such as condition numbers are
+unaffected by the level. Both are unchanged when `A` and all four scales are
 rescaled together, as under a change of units.
 
 The products need not be covers, but each must be positive and finite on every

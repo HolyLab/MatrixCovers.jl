@@ -1,7 +1,7 @@
 # Transversal-tight hard covers for `cover` on square, structurally nonsingular
 # matrices.
 #
-# Write α = log a and β = log b. Every hard cover has `∑α + ∑β >= log π*`, with
+# Write α = log a and β = log b. Every hard cover has `∑α + ∑β >= log P*`, with
 # equality exactly when it is tight on every entry of every maximum-product
 # transversal (see `cover_transversal`). Tightness on one such transversal `σ`
 # fixes `β[σ[i]] = log|A[i,σ[i]]| - α[i]`, which leaves a difference system on

@@ -401,7 +401,7 @@ any other failure throws. The accessors [`converged`](@ref MatrixCovers.converge
 # Fields
 
 - `labels::Vector{Symbol}`: the starts whose refinement succeeded, in the order
-  they ran: the strategy names, or for the soft covers names such as `:geomean`
+  they ran: the strategy names, or for the soft covers names such as `:diagonal`
   and `:rand1`.
 - `stats::Vector{S}`: the statistics of each of these refinements.
 - `objectives::Vector{T}`: the [`cover_objective`](@ref) of each refined cover.

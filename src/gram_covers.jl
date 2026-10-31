@@ -38,7 +38,7 @@ Every method is scale-covariant: replacing `A` by `D1*A*D2` and `W` by
 - **General weight** `W`: `s[j] = Σ_i v[i] * abs(A[i,j])`, where `v .>= 0`
   satisfies `abs(W[i,k]) <= v[i]*v[k]` for all `i`, `k`. `W` may be indefinite
   or asymmetric. This bound is looser than the other two: for diagonal `W` with
-  `w .>= 0` it exceeds `sqrt(G[j,j])` by up to a factor `sqrt(n_j)`, where `n_j`
+  `w .>= 0` it exceeds `sqrt(G[j,j])` by up to a factor `sqrt(m_j)`, where `m_j`
   is the number of nonzeros in column `j`. Prefer the `Diagonal` or `Cholesky`
   method whenever `W` has that structure. The default `v` is
   `symcover(max.(abs.(W), abs.(transpose(W))))`; a supplied `v` is checked for
@@ -46,7 +46,7 @@ Every method is scale-covariant: replacing `A` by `D1*A*D2` and `W` by
 
 `W` must be square with both axes equal to `axes(A, 1)`, and `s` has axes
 `(axes(A, 2),)`. The bounds hold in floating-point arithmetic: `s` is inflated
-by a relative `O(n_j * eps)` to absorb the rounding of the sums. For the
+by a relative `O(m_j * eps)` to absorb the rounding of the sums. For the
 `Cholesky` method the bound is relative to the computed factor. With a diagonal
 weight, `s[j]` has this accuracy whenever the largest
 `sqrt(abs(w[i])) * abs(A[i,j])` in column `j` is at least `floatmin`, even if

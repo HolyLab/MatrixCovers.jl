@@ -75,26 +75,33 @@ To override a solver's default penalty, pass a penalty as its first argument.
 | [`cover`](@ref) | no | hard (`r ≤ 1`) | heuristic | — |
 | [`symcover_min`](@ref) | yes | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
 | [`cover_min`](@ref) | no | hard (`r ≤ 1`) | `AbsLog{2}` (or `AbsLog{1}`, `AbsLinear`) | native for `AbsLog{2}`; else JuMP |
-| [`cover_transversal`](@ref) | no | hard, tight on a maximum-product transversal | `AbsLog{2}` (or `PowerMean{p}` with a target ratio, optionally max-balanced within blocks) | — |
+| [`cover_transversal`](@ref) | no | hard, tight on a maximum-product transversal | `AbsLog{2}` (or `PowerMean{p}` with a target ratio; with `maxbalance=true`, the max-balanced cover) | — |
 | [`soft_symcover`](@ref) | yes | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog`, `AbsLinear`) | native for `PowerMean`, `AbsLog{2}`; else JuMP |
 | [`soft_cover`](@ref) | no | soft (penalized) | `PowerMean{2}` (or `PowerMean{p}`, `AbsLog`, `AbsLinear`) | native for `PowerMean`, `AbsLog{2}`; else JuMP |
 
 For hard covers, [`symcover`](@ref) and [`cover`](@ref) are fast heuristics;
 their `_min` counterparts minimize the selected objective.
-[`cover_transversal`](@ref) minimizes the `AbsLog{2}` objective among the hard
-covers that are tight on a maximum-product transversal (see
-[Transversals and conditioning](@ref)); with a `PowerMean{p}` penalty and a
-`target` ratio `t`, it instead pushes the ratios of the entries off the
-transversal toward `t`, minimizing `∑ t^p ρ(z + log t)` over them with `ρ` the
-`PowerMean{p}` penalty, which is least at `z = -log t`, where `r = t`. Adding `maxbalance=true` replaces that objective within
-each fully indecomposable block by its limit as `t → 0` and then `p → ∞`,
-max-balancing (at a fixed `t`, large `p` alone need not reach this limit when a
-block holds ratios below `t`): across
-every partition of a block's rows, the largest ratio in one direction equals
-the largest in the other, which also minimizes the block's largest ratio. The
-`PowerMean{p}` objective then fixes only the scales between blocks. A soft cover has no constraint to
-satisfy, so there is no separate heuristic: [`soft_symcover`](@ref) and
-[`soft_cover`](@ref) always minimize the objective.
+[`cover_transversal`](@ref) returns the *transversal-tight minimal cover*: it
+minimizes the `AbsLog{2}` objective among the hard covers that are tight on a
+maximum-product transversal (see [Transversals and conditioning](@ref)). With a
+`PowerMean{p}` penalty and a `target` ratio, it instead pushes the ratios of the
+entries off the transversal toward `target`, minimizing
+`∑ target^p * ρ(z + log(target))` over them with `ρ` the `PowerMean{p}`
+penalty, which is least at `z = -log(target)`, where `r = target`. Adding
+`maxbalance=true` replaces that objective within each fully indecomposable
+block by its limit as `target → 0` and then `p → ∞`, max-balancing (at a fixed
+`target`, large `p` alone need not reach this limit when a block holds ratios
+below `target`): across every partition of a block's rows, the largest ratio in
+one direction equals the largest in the other, which also minimizes the
+block's largest ratio. The `PowerMean{p}` objective then fixes only the scales
+between blocks. With `p = 2`, the result is the *max-balanced cover*:
+
+```julia
+a, b, stats = cover_transversal(PowerMean{2}(), A; target=1e-2, maxbalance=true)
+```
+
+A soft cover has no constraint to satisfy, so there is no separate heuristic:
+[`soft_symcover`](@ref) and [`soft_cover`](@ref) always minimize the objective.
 
 The method used to minimize the objective depends on the penalty:
 
@@ -115,9 +122,12 @@ The method used to minimize the objective depends on the penalty:
 - `AbsLinear` is not convex; several starts are each refined to a local minimum
   with JuMP and Ipopt, and the best is returned.
 
-The heuristics cost ``O(mn)``, except that the transversal start of
-[`cover`](@ref) also solves an assignment problem by shortest augmenting paths.
-The native iterative solvers cost roughly ``O(mn)`` per iteration.
+The heuristics cost time proportional to the number of stored entries of `A`
+(`m*n` for a dense matrix, `nnz(A)` for a sparse one), except that the
+transversal start of [`cover`](@ref) also solves an assignment problem by
+shortest augmenting paths. A sweep of the power-mean iteration costs the
+same; the cost of the other native solvers depends on their linear solves (see
+the extended help of [`symcover_min`](@ref)).
 
 ## Objective-minimal covers
 
@@ -218,10 +228,13 @@ transversal* is one for which `∏ᵢ |A[i,π(i)]|` is largest.
 By the inequality above, the main diagonal of a symmetric positive-definite
 matrix is a maximum-product transversal.
 
-Transversals limit how well conditioned `Ahat` can be. If every transversal of
-`Ahat` contains an entry of magnitude at most `t`, then the smallest singular
-value of `Ahat` is at most `(n+1)/2 * t`, however well its rows and columns are
-otherwise balanced.
+Transversals limit how well conditioned `Ahat` can be. For a hard cover of an
+`n×n` matrix, let `τ` be the largest value such that the entries with
+`|Ahat[i,j]| ≥ τ` contain a transversal. Then the smallest singular value of
+`Ahat` is at most `min((n+1)/2, sqrt(q_r * q_c)) * τ`, where `q_r` and `q_c` are
+the largest numbers of nonzeros in a row and in a column of `A`, however well
+the rows and columns are otherwise balanced. A cover tight on a transversal has
+`τ = 1`.
 
 For any hard cover, `prod(a) * prod(b)` is at least the product of the
 magnitudes on any transversal of `A`, with equality exactly when

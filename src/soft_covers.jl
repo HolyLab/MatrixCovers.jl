@@ -256,7 +256,7 @@ For the convex penalties (`PowerMean`, `AbsLog`) the result is the minimizer
 returned by [`soft_cover`](@ref), with the same keywords, and does not depend on
 the start. For `AbsLinear` it is the local minimum reached from the start, and
 there are no keywords. The result uses the balance convention of
-[`cover_min`](@ref), so equivalent rescalings `(c*a, b/c)` give the same result.
+[`cover_min`](@ref), so equivalent rescalings `(λ*a, b/λ)` give the same result.
 
 See also: [`soft_cover`](@ref), [`initialize_cover`](@ref), [`soft_symcover!`](@ref).
 """
@@ -376,19 +376,19 @@ function _multistart_run(::Type{S}, inits_builder::F, refine!::G, objective::H, 
 end
 
 # Symmetric `AbsLinear` starts in selection order, followed by log-normal
-# perturbations of the geometric-mean point. `starts` truncates or extends the list.
+# perturbations of the `:diagonal` start. `starts` truncates or extends the list.
 function _soft_symcover_abslinear_inits(A::AbstractMatrix, starts::Int, σ::Real, rng)
     ax = axes(A, 1)
     T = float(real(eltype(A)))
     # The soft cover imposes no coverage constraint, so the starts are taken raw
     # (`feasible=:none`); `:inflate` is the one candidate that is deliberately a cover.
-    ag = initialize_symcover(A; strategy=:geomean, feasible=:none)   # also the perturbation base
-    labels = [:geomean]
+    ag = initialize_symcover(A; strategy=:diagonal, feasible=:none)   # also the perturbation base
+    labels = [:diagonal]
     inits = [copy(ag)]
     length(inits) < starts &&
         (push!(labels, :hardcover); push!(inits, initialize_symcover(A; strategy=:hardcover, feasible=:none)))
     length(inits) < starts &&
-        (push!(labels, :inflate); push!(inits, initialize_symcover(A; strategy=:geomean, feasible=:inflate)))
+        (push!(labels, :inflate); push!(inits, initialize_symcover(A; strategy=:diagonal, feasible=:inflate)))
     if length(inits) < starts
         # `:leaveout` is unavailable when no entry can be dropped; a multistart forfeits that
         # slot rather than fail, so it takes the start through the gated builder.

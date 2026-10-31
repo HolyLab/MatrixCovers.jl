@@ -48,7 +48,7 @@ entries toward `target`. In terms of the log slack `z = -log(r)`, it minimizes
     ∑ ((exp(-p*z) - 1)/p + target^p * z),
 
 the sum taken over the nonzero entries off the transversals, among the hard
-covers with `prod(a) * prod(b) == π*` (see [`cover_transversal(A)`](@ref
+covers with `prod(a) * prod(b) == P*` (see [`cover_transversal(A)`](@ref
 cover_transversal)). Each term is least at `r = target`, and the hard
 constraint keeps every ratio at most one. `0 < target <= 1` and `0 < p < ∞` are
 required; otherwise an `ArgumentError` is thrown.
@@ -68,7 +68,13 @@ entries off the transversal.
 With `maxbalance=true`, the scales within each fully indecomposable block of `A`
 are instead *max-balanced*, which minimizes the largest ratio within the block;
 `ρ` and `target` then fix only the scales between blocks. Raising `p` at a fixed
-`target` need not approach this result.
+`target` need not approach this result. The *max-balanced cover* with target
+ratio `r̄` is
+
+    a, b, stats = cover_transversal(PowerMean{2}(), A; target=r̄, maxbalance=true)
+
+Since `maxbalance` defaults to `false`, the default call instead minimizes the
+`PowerMean{p}` objective within blocks as well.
 
 `stats` is a [`BalancedCoverStats`](@ref MatrixCovers.BalancedCoverStats). The
 solver warns when [`MatrixCovers.converged(stats)`](@ref MatrixCovers.converged)

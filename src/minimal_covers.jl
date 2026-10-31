@@ -55,7 +55,7 @@ Supported ρ values:
 - `AbsLinear{1}()` and `AbsLinear{2}()`: require JuMP and Ipopt and return the
   best local minimum found from `strategies`, a collection of
   [`initialize_symcover`](@ref) strategy names (default
-  `(:hardcover, :geomean, :leaveout)`; a strategy that cannot build a start is
+  `(:hardcover, :diagonal, :leaveout)`; a strategy that cannot build a start is
   skipped).
 
 The `AbsLog` objectives are convex in the logarithms of the scales, so their
@@ -136,10 +136,10 @@ nonzero entries of `A`, subject to `a[i]*b[j] >= |A[i,j]|`. The default penalty
 is `AbsLog{2}()`, which gives the ℓ₂-minimal cover.
 
 The objective and the constraints depend only on the products `a[i]*b[j]`,
-which do not change when `a` is multiplied by `c` and `b` divided by `c` on one
+which do not change when `a` is multiplied by `λ` and `b` divided by `λ` on one
 connected component of the support of `A`. The returned factors are fixed by
-the balance convention `∑ nzaᵢ log a[i] = ∑ nzbⱼ log b[j]` within each
-component, where `nzaᵢ` and `nzbⱼ` are the nonzero counts of row `i` and
+the balance convention `∑ n_i log a[i] = ∑ m_j log b[j]` within each
+component, where `n_i` and `m_j` are the nonzero counts of row `i` and
 column `j`.
 
 The factors of a nonsymmetric band matrix can vary geometrically along the
@@ -221,7 +221,7 @@ be positive on supported rows and columns; unsupported scales are zeroed. The
 no-ρ form uses `AbsLog{2}()`; supported penalties, keywords, `stats`, and
 failure behavior match [`cover_min`](@ref).
 
-Equivalent starts `(c*a, b/c)` give the same balanced result.
+Equivalent starts `(λ*a, b/λ)` give the same balanced result.
 
 See also: [`initialize_cover`](@ref), [`cover_min`](@ref), [`symcover_min!`](@ref).
 """
@@ -2436,7 +2436,7 @@ function symcover_min_jump end
 function cover_min_jump end
 
 # JuMP references used to test `cover_transversal`, with HiGHS for `AbsLog{2}` and
-# Ipopt for `PowerMean`; each also returns `log π*`.
+# Ipopt for `PowerMean`; each also returns `log P*`.
 function cover_transversal_jump end
 
 """
