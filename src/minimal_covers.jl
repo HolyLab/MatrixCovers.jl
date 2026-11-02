@@ -1255,7 +1255,7 @@ const AL_CAP_CONTRACTION = 3
 function _warn_unconverged(fname::Symbol, stats, maxouter::Int)
     (stats.converged || maxouter == 0) && return nothing
     v = isempty(stats.kkt) ? oftype(stats.tol, NaN) : stats.kkt[end]
-    uncertified = stats.polish !== nothing && !stats.polish.certified
+    uncertified = stats.polished && !stats.polish.certified
     advice = uncertified ?
              "The active-set finish that follows the multiplier iteration did not certify a minimizer, so the result is the multiplier iterate." :
              stats.nouter < maxouter ? "The residual stopped contracting before the update limit, so a larger `maxouter` will not help; try a larger `θ`." :
@@ -1355,7 +1355,7 @@ function _difference_solve!(sol, x, f, czero, dfull, zedges, vpairs, dθ, dmin,
     end
     dmax = zero(T)
     maxdegV = 0
-    for p in eachindex(dg, czero, degV)
+    for p in _eachindex(dg, czero, degV)
         dg[p] = czero[p] + dθ * degV[p]
         dmax = max(dmax, dg[p])
         maxdegV = max(maxdegV, degV[p])
@@ -1431,7 +1431,10 @@ _dense_factor_type(::Type{T}) where {T} = LinearAlgebra.LU{T,Matrix{T},Vector{In
 # (full or forest), the number of LSQR solves preconditioned by the forest
 # factor (`nforest`), and the number `nzeroed` of positive multipliers zeroed
 # directly on entries with slack while the penalty sat at its cap. `precond` is
-# `:factor` (full factor), `:forest`, or `:none`.
+# `:factor` (full factor), `:forest`, or `:none`. `polished` is `false`, and
+# `polish` is a placeholder of the type that the minimal-cover workers write
+# when their active-set finish runs, so that the tuple has one concrete type
+# whether or not it does. The traces are vectors for the same reason.
 # With `zeroslack=false` the iteration stops at a stall at the penalty cap
 # instead of zeroing such multipliers, for callers that finish the solve by the
 # active-set method of `_polish_cover` or `_polish_symcover`.
@@ -1972,10 +1975,11 @@ function _abslog2_auglag(sys::SupportSystem{T}, x0;
             x[p] += γ
         end
     end
-    return x, (; multipliers=λ, nsolves=nsolves[], lsqriters=nlsqr[], lsqrtrace=Tuple(lsqrtrace), cgiters=ncg[],
-               cholsolves=nchol[], nouter=length(exits), exits=Tuple(exits),
-               drops=Tuple(drops), kkt=Tuple(viols), θs=Tuple(θtrace),
-               converged, tol=vtol, polish=nothing,
+    return x, (; multipliers=λ, nsolves=nsolves[], lsqriters=nlsqr[], lsqrtrace, cgiters=ncg[],
+               cholsolves=nchol[], nouter=length(exits), exits,
+               drops, kkt=viols, θs=θtrace,
+               converged, tol=vtol, polished=false,
+               polish=(; certified=false, nsteps=0, primal=T(NaN), ptol=T(NaN), dual=T(NaN), dtol=T(NaN)),
                linsolve=(use_lsqr ? :lsqr : use_cg ? :woodbury : :dense),
                precond=(!use_precond ? :none : use_factor ? :factor : :forest),
                nrefactor=nrefactor[], nforest=nforest[], fill_entries, factor_flops=flops, nzeroed)
@@ -1987,7 +1991,8 @@ end
 # multiplier iteration that stops before converging, and the iteration then
 # stops at its first stall at the penalty cap rather than zeroing slack
 # multipliers (`zeroslack`, which defaults to `!polish`). When the finish runs,
-# `stats.polish` holds `certified`, the step count `nsteps`, and the KKT check of
+# `stats.polished` is `true` and `stats.polish` holds `certified`, the step
+# count `nsteps`, and the KKT check of
 # `_polish_difference_qp` (`primal`, `ptol`, `dual`, `dtol`), and
 # `stats.converged == stats.polish.certified`. A certified finish replaces the
 # multiplier iterate, so `stats.kkt` then describes the iterate, not the result.
@@ -2097,7 +2102,9 @@ function _symcover_min_abslog2(A::AbstractMatrix; start=nothing, boost::Bool=tru
     if polish && !stats.converged && maxouter > 0
         α, certified, nsteps, kkt = _polish_symcover(α, supp; multipliers=stats.multipliers,
                                                      budgets=(; fillbudget, flopbudget))
-        stats = merge(stats, (; converged=certified, polish=(; certified, nsteps, kkt...)))
+        stats = merge(stats, (; converged=certified, polished=true,
+                              polish=(; certified, nsteps, primal=T(kkt.primal), ptol=T(kkt.ptol),
+                                      dual=T(kkt.dual), dtol=T(kkt.dtol))))
     end
     _warn_unconverged(fname, stats, maxouter)
     _check_representable(α, ip -> hassupp[ip], nothing, nothing, T, fname; gauge=false)
@@ -2322,7 +2329,9 @@ function _cover_min_abslog2(A::AbstractMatrix; start=nothing, boost::Bool=true,
     if polish && !stats.converged && maxouter > 0
         x, certified, nsteps, kkt = _polish_cover(x, supp, m; multipliers=stats.multipliers,
                                                   budgets=(; fillbudget, flopbudget))
-        stats = merge(stats, (; converged=certified, polish=(; certified, nsteps, kkt...)))
+        stats = merge(stats, (; converged=certified, polished=true,
+                              polish=(; certified, nsteps, primal=T(kkt.primal), ptol=T(kkt.ptol),
+                                      dual=T(kkt.dual), dtol=T(kkt.dtol))))
     end
     _warn_unconverged(fname, stats, maxouter)
     if tt

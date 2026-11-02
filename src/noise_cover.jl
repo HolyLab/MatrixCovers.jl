@@ -99,7 +99,12 @@ function noise_cover(V::AbstractMatrix; shrink::Real=0, tol::Union{Real,Nothing}
     for (j, cj) in zip(eachindex(β), c)
         β[j] = cj > 0 ? log(cj) - ls2 : zero(T)
     end
-    stats = _powermean_solve!(α, β, R, C, one(T), rtol; opts..., terms)
+    # One call per type of `terms`, so that each keyword set is concrete.
+    stats = if terms === nothing
+        _powermean_solve!(α, β, R, C, one(T), rtol; opts..., terms=nothing)
+    else
+        _powermean_solve!(α, β, R, C, one(T), rtol; opts..., terms)
+    end
     _warn_powermean_unconverged(:noise_cover, stats, :sweeps)
     _warn_powermean_unsettled(:noise_cover, stats)
 
@@ -198,7 +203,7 @@ function _check_noise_scaling_exists(R::GroupedSupport, colax::AbstractUnitRange
         # in its columns and require more than those columns can absorb.
         rows = [p + roff for p in 1:m if lr[p] >= 0]
         k, l = length(rows), count(>=(0), lc)
-        throw(SolverFailure("noise_cover: no scaling of `V` to these row and column sums exists, because no nonnegative matrix with the zero pattern of `V` has them: the $k row(s) $(_index_list(rows)) have their nonzero entries in only $l column(s), and $k*n′ = $(k*n′) exceeds $l*m′ = $(l*m′) (n′ = $(n′), m′ = $(m′)). Remove such rows or columns, or pass `shrink > 0`."))
+        throw(SolverFailure("noise_cover: no scaling of `V` to these row and column sums exists, because no nonnegative matrix with the zero pattern of `V` has them: the $(string(k)) row(s) $(_index_list(rows)) have their nonzero entries in only $(string(l)) column(s), and $(string(k))*n′ = $(string(k*n′)) exceeds $(string(l))*m′ = $(string(l*m′)) (n′ = $(string(n′)), m′ = $(string(m′))). Remove such rows or columns, or pass `shrink > 0`."))
     end
     comp = _noise_scc(rowptr, rowcol, colptr, colrow, coledge, flow)
     nbad, first_bad = 0, (0, 0)

@@ -1269,7 +1269,7 @@ end
 # Raise the log-scales by their accumulated shares. Scales with no share keep
 # their exact value rather than being rebuilt from their log.
 function _apply_boost!(a::AbstractVector, la::AbstractVector, r::AbstractVector)
-    for i in eachindex(a, la, r)
+    for i in _eachindex(a, la, r)
         ri = r[i]
         ri > zero(ri) || continue
         la[i] += ri

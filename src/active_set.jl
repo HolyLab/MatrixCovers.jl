@@ -224,12 +224,15 @@ function _TreeLaplacian(F::_Forest{T}, supp; budgets::NamedTuple=(;)) where {T}
     # triplet list of three entries per edge and analyzing the sparsity pattern.
     if nt^2 <= _nsupported(supp)
         idx, L = _tree_laplacian_dense(F, supp)
-    else
-        idx, L = _tree_laplacian_triplets(F, supp)
+        return _tree_laplacian(T, idx, _laplacian_factor(L), size(L, 1))
     end
-    fac = L isa SparseMatrixCSC ? _laplacian_factor(L; budgets...) : _laplacian_factor(L)
-    return _TreeLaplacian{T,typeof(fac)}(idx, fac, size(L, 1))
+    idx, L = _tree_laplacian_triplets(F, supp)
+    return _tree_laplacian(T, idx, _laplacian_factor(L; budgets...), size(L, 1))
 end
+# A function barrier, so that the type parameter comes from the factorization's
+# concrete type at each call.
+_tree_laplacian(::Type{T}, idx::Vector{Int}, fac::Fac, nfree::Int) where {T,Fac} =
+    _TreeLaplacian{T,Fac}(idx, fac, nfree)
 
 # Upper triangle of the Laplacian of the free trees, as a dense matrix.
 function _tree_laplacian_dense(F::_Forest{T}, supp::EdgeList) where {T}
@@ -358,12 +361,12 @@ end
 # in few iterations. A solve that refinement does not finish falls back to a
 # factorization: the analyzed CHOLMOD factor `F` in `Float64`, a dense Cholesky
 # factorization otherwise.
-struct _LaplacianCG{T}
+struct _LaplacianCG{T,FB}
     L::SparseMatrixCSC{T,Int}         # upper triangle
     S::SparseMatrixCSC{T,Int}         # both triangles, for products
     dg::Vector{T}
     F::Union{SparseCholesky,Nothing}  # analyzed, `Float64` only
-    fallback::Base.RefValue{Any}      # the factorization once CG gave up; `nothing` before
+    fallback::Base.RefValue{Union{Nothing,FB}}  # the factorization once CG gave up; `nothing` before
     maxiter::Int                      # CG iterations per pass
     err::Base.RefValue{T}             # estimated 2-norm forward error of the last solve
 end
@@ -380,8 +383,9 @@ function _laplacian_factor(L::SparseMatrixCSC{Float64,Int}; fillbudget::Real=LSQ
     size(L, 1) == 0 && return F
     analyze!(F, L)
     if sizeof(Float64) * factor_entries(F) > fillbudget || factor_flops(F) > flopbudget * nnz(L)
-        S = L + triu(L, 1)'
-        return _LaplacianCG{Float64}(L, S, Vector(diag(S)), F, Ref{Any}(nothing), cgmaxiter, Ref(0.0))
+        S = _symmetric_from_upper(L)
+        return _LaplacianCG{Float64,SparseCholesky}(L, S, Vector(diag(S)), F,
+                                                    Ref{Union{Nothing,SparseCholesky}}(nothing), cgmaxiter, Ref(0.0))
     end
     factorize!(F, L)
     return F
@@ -392,12 +396,52 @@ function _laplacian_factor(L::SparseMatrixCSC{T,Int}; fillbudget::Real=LSQR_FILL
     size(L, 1) == 0 && return _laplacian_factor(Matrix(L))
     return _laplacian_cg(L; cgmaxiter)
 end
+# `L + triu(L, 1)'` for a square `L` that stores only its upper triangle: the
+# full symmetric matrix, with stored zeros dropped as the sum drops them. It is
+# assembled directly because the `SparseArrays` transpose takes its element
+# function as an unspecialized `::Function`, which `juliac --trim=safe` cannot
+# resolve. Each column holds its own entries (rows up to the diagonal) followed
+# by the mirrored ones (rows below it), so its row indices stay sorted.
+function _symmetric_from_upper(L::SparseMatrixCSC{T,Int}) where {T}
+    n = LinearAlgebra.checksquare(L)
+    rv, nz = rowvals(L), nonzeros(L)
+    cnt = zeros(Int, n)
+    for j in 1:n, k in nzrange(L, j)
+        i = rv[k]
+        i <= j || throw(ArgumentError("_symmetric_from_upper: L stores entry ($(string(i)), $(string(j))) below the diagonal"))
+        iszero(nz[k]) && continue
+        cnt[j] += 1
+        i < j && (cnt[i] += 1)
+    end
+    colptr = Vector{Int}(undef, n + 1)
+    colptr[1] = 1
+    for j in 1:n
+        colptr[j+1] = colptr[j] + cnt[j]
+    end
+    rowval = Vector{Int}(undef, colptr[n+1] - 1)
+    nzval = Vector{T}(undef, length(rowval))
+    next = colptr[1:n]
+    for j in 1:n, k in nzrange(L, j)
+        v = nz[k]
+        iszero(v) && continue
+        i = rv[k]
+        rowval[next[j]], nzval[next[j]] = i, v
+        next[j] += 1
+        if i < j
+            rowval[next[i]], nzval[next[i]] = j, v
+            next[i] += 1
+        end
+    end
+    return SparseMatrixCSC(n, n, colptr, rowval, nzval)
+end
+
 # Conjugate-gradient solver for `L`, built without a symbolic analysis, for a
 # pattern presumed to exceed the budgets. The fallback factorization is analyzed
 # only if CG fails (see `_cg_fallback`).
 function _laplacian_cg(L::SparseMatrixCSC{T,Int}; cgmaxiter::Int=10 * size(L, 1) + 100) where {T}
-    S = L + triu(L, 1)'
-    return _LaplacianCG{T}(L, S, Vector(diag(S)), nothing, Ref{Any}(nothing), cgmaxiter, Ref(zero(T)))
+    S = _symmetric_from_upper(L)
+    FB = _cg_fallback_type(T)
+    return _LaplacianCG{T,FB}(L, S, Vector(diag(S)), nothing, Ref{Union{Nothing,FB}}(nothing), cgmaxiter, Ref(zero(T)))
 end
 # The factorization that replaces conjugate gradients once they fail. In
 # `Float64` it reuses the symbolic analysis in `C.F` when there is one.
@@ -410,6 +454,9 @@ function _cg_fallback(C::_LaplacianCG{Float64})
     return factorize!(F, C.L)
 end
 _cg_fallback(C::_LaplacianCG) = _laplacian_factor(Matrix(C.L))
+# The type `_cg_fallback` returns for element type `T`.
+_cg_fallback_type(::Type{Float64}) = SparseCholesky
+_cg_fallback_type(::Type{T}) where {T} = Cholesky{T,Matrix{T}}
 _laplacian_factor(L::Matrix) = LinearAlgebra.cholesky!(Symmetric(L, :U))
 
 # Solves `L x = b`. The keywords apply only to a `_LaplacianCG`: `rtol` is the
@@ -423,7 +470,8 @@ _laplacian_solve!(x, F::Cholesky, b; rtol=nothing, refine=true) = ldiv!(x, F, b)
 
 function _laplacian_solve!(x::Vector{T}, C::_LaplacianCG{T}, b::Vector{T}; rtol::Real=sqrt(eps(T)),
                            refine::Bool=true) where {T}
-    if C.fallback[] === nothing
+    fb = C.fallback[]
+    if fb === nothing
         n = length(b)
         fill!(x, zero(T))
         rdd, r, z, d, Ad, e = ntuple(_ -> zeros(T, n), 6)
@@ -457,10 +505,11 @@ function _laplacian_solve!(x::Vector{T}, C::_LaplacianCG{T}, b::Vector{T}; rtol:
             δ <= δprev / 100 || break
             δprev = δ
         end
-        C.fallback[] = _cg_fallback(C)
+        fb = _cg_fallback(C)
+        C.fallback[] = fb
     end
     C.err[] = zero(T)
-    return _laplacian_solve!(x, C.fallback[], b)
+    return _laplacian_solve!(x, fb, b)
 end
 
 # `r = b - S x` with every product and sum carried in twice the working

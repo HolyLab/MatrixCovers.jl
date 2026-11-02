@@ -19,6 +19,11 @@ end
     eachindex(E) == inds || _throw_eachindex_mismatch(inds, eachindex(E))
     return inds
 end
+@inline function _eachindex(A, B, C, D, E, F)
+    inds = _eachindex(A, B, C, D, E)
+    eachindex(F) == inds || _throw_eachindex_mismatch(inds, eachindex(F))
+    return inds
+end
 @noinline _throw_eachindex_mismatch(inds, other) =
     throw(DimensionMismatch(LazyString("all inputs to eachindex must have the same indices, got ", inds, " and ", other)))
 

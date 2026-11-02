@@ -54,7 +54,7 @@ function _GroupGraph(nc::Int, eh::Vector{Int}, et::Vector{Int}, ed::Vector{T}) w
     off = Vector{T}(undef, ns)
     lower = Vector{Bool}(undef, ns)
     cursor = ptr[1:nc]
-    for e in eachindex(eh, et, ed)
+    for e in _eachindex(eh, et, ed)
         h, t = eh[e], et[e]
         s = cursor[h]
         nbr[s], off[s], lower[s] = t, ed[e], true

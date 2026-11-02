@@ -82,9 +82,9 @@ end
     # Without the finish, the stalled iteration warns; an uncertified finish
     # says so. Any residual above the tolerance warns.
     @test_logs (:warn, r"Increase `maxouter` or `θ`") MatrixCovers._symcover_min_abslog2(A; maxouter=3, polish=false)
-    stats = (; converged=false, kkt=(1e-12,), tol=1e-13, nouter=32, polish=nothing)
+    stats = (; converged=false, kkt=[1e-12], tol=1e-13, nouter=32, polished=false, polish=(; certified=false, nsteps=0))
     @test_logs (:warn, r"Increase `maxouter` or `θ`") MatrixCovers._warn_unconverged(:symcover_min, stats, 32)
-    stats = merge(stats, (; polish=(; certified=false, nsteps=5)))
+    stats = merge(stats, (; polished=true, polish=(; certified=false, nsteps=5)))
     @test_logs (:warn, r"active-set finish .* did not certify") MatrixCovers._warn_unconverged(:symcover_min, stats, 32)
     # A certified finish reports a KKT check that meets its tolerances, and the
     # accessors describe it.

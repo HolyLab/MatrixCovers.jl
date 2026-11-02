@@ -107,6 +107,20 @@ end
     @test isnan(kkt.primal) && isnan(kkt.dual)
 end
 
+@testset "symmetric matrix from its upper triangle" begin
+    rng = StableRNG(3)
+    for n in (0, 1, 2, 7, 30), d in (0.1, 0.5, 1.0)
+        X = sprandn(rng, n, n, d)
+        U = triu(X + X')
+        n >= 2 && (U[1, 2] = 0.0)   # a stored zero, which the sum drops
+        S = MatrixCovers._symmetric_from_upper(U)
+        R = U + triu(U, 1)'
+        @test S == R
+        @test S.colptr == R.colptr && rowvals(S) == rowvals(R) && nonzeros(S) == nonzeros(R)
+    end
+    @test_throws "below the diagonal" MatrixCovers._symmetric_from_upper(sparse([2], [1], [1.0], 2, 2))
+end
+
 @testset "tree Laplacian assembly" begin
     # The dense and triplet assemblies of the tree-contracted Laplacian must
     # agree, including the choice of pinned tree in each connected component.

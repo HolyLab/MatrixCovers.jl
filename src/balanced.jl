@@ -315,7 +315,7 @@ function _balanced_gradient!(g, s, cnt, d, label, P, Q, p::T, ℓ::T, between::B
         cnt[G] += 1
         cnt[H] -= 1
     end
-    for k in eachindex(g, s, cnt)
+    for k in _eachindex(g, s, cnt)
         g[k] += cnt[k]
         s[k] += abs(cnt[k])
     end
