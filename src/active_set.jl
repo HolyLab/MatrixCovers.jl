@@ -369,6 +369,11 @@ struct _LaplacianCG{T,FB}
     fallback::Base.RefValue{Union{Nothing,FB}}  # the factorization once CG gave up; `nothing` before
     maxiter::Int                      # CG iterations per pass
     err::Base.RefValue{T}             # estimated 2-norm forward error of the last solve
+
+    # The only constructor: `FB` appears only in a `Union` with `Nothing`, so
+    # it cannot be determined from the arguments.
+    _LaplacianCG{T,FB}(L, S, dg, F, fallback, maxiter, err) where {T,FB} =
+        new{T,FB}(L, S, dg, F, fallback, maxiter, err)
 end
 
 # Estimated 2-norm forward error of the last `_laplacian_solve!`. A
