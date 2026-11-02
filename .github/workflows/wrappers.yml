@@ -1,0 +1,63 @@
+# Build the compiled Python and MATLAB packages in `lib/` and attach them to a
+# release. `workflow_dispatch` runs the same builds and smoke tests without
+# publishing; the results are then kept as workflow artifacts.
+name: Wrappers
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+permissions:
+  contents: write
+# Both jobs compile for the same CPU targets: a generic x86-64 baseline plus
+# Sandy Bridge and Haswell clones, so one build runs on any x86-64 machine and
+# runs fast on recent ones.
+jobs:
+  python:
+    uses: JuliaInterop/JuliaLibWrapping.jl/.github/workflows/build-wrappers.yml@JuliaLibWrapping-v0.3.0
+    with:
+      build-dir: lib
+      cpu-target: "generic;sandybridge,-xsaveopt,clone_all;haswell,-rdrnd,base(1)"
+      smoke-test: lib/test/python/test_smoke.py
+
+  matlab:
+    # The MEX file is specific to Linux x86-64, and the runner's glibc must be
+    # no newer than the user's.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.13'
+      - uses: julia-actions/cache@v3
+      - name: Build the library, its bundle, and the MATLAB sources
+        env:
+          JULIA_CPU_TARGET: "generic;sandybridge,-xsaveopt,clone_all;haswell,-rdrnd,base(1)"
+        run: |
+          julia --project=lib/build-env -e 'using Pkg; Pkg.instantiate()'
+          julia --project=lib/build-env lib/build.jl
+      # R2021a or later, for name=value arguments; building against an early
+      # release keeps the MEX file loadable in later ones.
+      - uses: matlab-actions/setup-matlab@v3
+        with:
+          release: R2021a
+      - name: Compile the gateway and run the smoke test
+        uses: matlab-actions/run-command@v3
+        with:
+          command: cd('lib/out'); build_mex; run('../test/matlab/smoke.m')
+      - name: Collect what a caller needs
+        run: |
+          cd lib/out
+          tar czf "$GITHUB_WORKSPACE/matrixcovers-matlab-glnxa64.tar.gz" \
+              +matrixcovers matrixcovers-bundle build_mex.m
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        run: gh release upload "${{ github.event.release.tag_name }}" matrixcovers-matlab-glnxa64.tar.gz --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@v7
+        if: github.event_name != 'release'
+        with:
+          name: matrixcovers-matlab-glnxa64
+          path: matrixcovers-matlab-glnxa64.tar.gz
+          if-no-files-found: error
