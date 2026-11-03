@@ -183,11 +183,13 @@ def soft_cover(A, *, penalty=Penalty.powermean2, maxiter=None, tol=None, newton=
 
 def noise_cover(V, *, shrink=0.0, maxiter=None, tol=None, newton=None, maxnewton=None,
                 maxpolish=None, linsolve=Linsolve.auto):
-    """Scales `(a, b, stats)` that normalize a data matrix whose entries have
-    noise variances estimated by `V`: every row and column of
-    `Y / np.outer(a, b)` has average noise variance one.
+    """Scales `(a, b, stats)` for a data matrix `Y` whose entries have noise
+    variances `V`: every nonzero row and column of `Y / np.outer(a, b)` has
+    average noise variance one.
 
-    `shrink` blends `V` with its rank-one fit; the other options are the
+    `shrink` blends `V` with its rank-one fit, which guarantees that the scales
+    exist; with `shrink=0`, some zero patterns of `V` admit no scales and raise
+    a `JLWError` that describes the obstruction. The other options are the
     `powermean` options of `soft_cover`.
     """
     return _split2(_generated.noise_cover(
