@@ -174,7 +174,7 @@ AugmentedLagrangianStats(A::AbstractMatrix, nt::NamedTuple) =
 
 function AugmentedLagrangianStats{T}(nt::NamedTuple) where {T}
     p = nt.polish
-    polish = p === nothing ? nothing :
+    polish = !nt.polished ? nothing :
              ActiveSetStats{T}(p.certified, p.nsteps, p.primal, p.ptol, p.dual, p.dtol)
     return AugmentedLagrangianStats{T}(nt.converged, nt.tol, nt.nouter, collect(T, nt.kkt),
                                        collect(T, nt.θs), collect(Symbol, nt.exits),

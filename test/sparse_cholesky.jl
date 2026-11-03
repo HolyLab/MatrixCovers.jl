@@ -56,13 +56,15 @@ using MatrixCovers: SparseCholesky, analyze!, factorize!, solve!, solve_ptl!, so
 end
 
 @testset "_eachindex" begin
-    a, b, c, d, e = zeros(3), zeros(3), zeros(3), zeros(3), zeros(3)
+    a, b, c, d, e, f = zeros(3), zeros(3), zeros(3), zeros(3), zeros(3), zeros(3)
     @test _eachindex(a, b, c) == eachindex(a)
     @test _eachindex(a, b, c, d) == eachindex(a)
     @test _eachindex(a, b, c, d, e) == eachindex(a)
+    @test _eachindex(a, b, c, d, e, f) == eachindex(a)
     oa, ob, oc = OffsetArray(zeros(3), -1), OffsetArray(zeros(3), -1), OffsetArray(zeros(3), -1)
     @test _eachindex(oa, ob, oc) == eachindex(oa)
     @test_throws "must have the same indices" _eachindex(a, b, zeros(4))
     @test_throws "must have the same indices" _eachindex(a, b, c, zeros(4))
     @test_throws "must have the same indices" _eachindex(a, b, c, d, oa)
+    @test_throws "must have the same indices" _eachindex(a, b, c, d, e, zeros(2))
 end

@@ -168,7 +168,7 @@ function _powermean_eval!(W, Wr, g, s, xt, d, t::T, W0, Wr0, sys::PowerMeanSyste
     fill!(g, zero(T))
     fill!(s, zero(T))
     ΔE = scale = zero(T)
-    for e in eachindex(sys.u, sys.v, sys.L, sys.mult, W, W0)
+    for e in _eachindex(sys.u, sys.v, sys.L, sys.mult, W, W0)
         a, b, w = sys.u[e], sys.v[e], sys.mult[e]
         δ = t * (d[a] + d[b])
         q = W0[e] * expm1(-p * δ)
@@ -190,7 +190,7 @@ end
 # `p` times the objective and its roundoff scale, which are returned.
 function _powermean_eval_terms!(Wr, g, s, xt, d, t::T, Wr0, sys::PowerMeanSystem{T}, p::T, ΔE::T, scale::T) where {T}
     if !isempty(sys.target)
-        for q in eachindex(g, d, sys.target, sys.count)
+        for q in _eachindex(g, d, sys.target, sys.count)
             sys.count[q] == 0 && continue
             c = sys.target[q] - sys.count[q]
             g[q] += c
@@ -204,7 +204,7 @@ function _powermean_eval_terms!(Wr, g, s, xt, d, t::T, Wr0, sys::PowerMeanSystem
     m = sys.nrow
     κ = exp(sys.lκ)
     SA = SB = SA0 = SB0 = ΔA = ΔB = zero(T)
-    for q in eachindex(Wr, Wr0, xt, d, sys.lw)
+    for q in _eachindex(Wr, Wr0, xt, d, sys.lw)
         w0 = Wr0[q]
         w = exp(sys.lw[q] - xt[q])
         Wr[q] = w
@@ -215,7 +215,7 @@ function _powermean_eval_terms!(Wr, g, s, xt, d, t::T, Wr0, sys::PowerMeanSystem
             SB += w; SB0 += w0; ΔB += Δ
         end
     end
-    for q in eachindex(Wr, g, s)
+    for q in _eachindex(Wr, g, s)
         h = κ * Wr[q] * (q <= m ? SB : SA)
         s[q] += h
         g[q] -= h
@@ -239,7 +239,7 @@ end
 function _powermean_newton_imbalance(s, sys::PowerMeanSystem)
     isempty(sys.target) && return _powermean_newton_imbalance(s, sys.count)
     imb = zero(eltype(s))
-    for q in eachindex(s, sys.count, sys.target)
+    for q in _eachindex(s, sys.count, sys.target)
         sys.count[q] > 0 && (imb = max(imb, abs(s[q] / sys.target[q] - 1)))
     end
     return imb
@@ -339,11 +339,11 @@ function _powermean_direction!(d, ls::PowerMeanLinsolve{T}, sys::PowerMeanSystem
                                pinned, imb::T, p::T) where {T}
     N = length(d)
     f, dg = ls.f, ls.dg
-    for q in eachindex(f, g, pinned)
+    for q in _eachindex(f, g, pinned)
         f[q] = pinned[q] ? zero(T) : -g[q]
     end
     fill!(dg, zero(T))
-    for e in eachindex(sys.u, sys.v, W)
+    for e in _eachindex(sys.u, sys.v, W)
         a, b = sys.u[e], sys.v[e]
         h = p * sys.mult[e] * W[e]
         dg[a] += h
@@ -370,7 +370,7 @@ function _powermean_direction!(d, ls::PowerMeanLinsolve{T}, sys::PowerMeanSystem
     if ls.kind === :dense
         H = ls.H
         fill!(H, zero(T))
-        for e in eachindex(sys.u, sys.v, W)
+        for e in _eachindex(sys.u, sys.v, W)
             a, b = sys.u[e], sys.v[e]
             (a == b || pinned[a] || pinned[b]) && continue
             h = p * sys.mult[e] * W[e]
@@ -394,7 +394,7 @@ function _powermean_direction!(d, ls::PowerMeanLinsolve{T}, sys::PowerMeanSystem
     elseif ls.kind === :cholesky
         M = ls.M
         nzv = nonzeros(M)
-        for e in eachindex(sys.u, sys.v, W, ls.epos)
+        for e in _eachindex(sys.u, sys.v, W, ls.epos)
             a, b = sys.u[e], sys.v[e]
             a == b && continue
             nzv[ls.epos[e]] = (pinned[a] || pinned[b]) ? zero(T) : p * sys.mult[e] * W[e]
@@ -412,7 +412,7 @@ function _powermean_direction!(d, ls::PowerMeanLinsolve{T}, sys::PowerMeanSystem
     Hmul! = function (y, xx)
         nmul[] += 1
         fill!(y, zero(T))
-        for e in eachindex(sys.u, sys.v, W)
+        for e in _eachindex(sys.u, sys.v, W)
             a, b = sys.u[e], sys.v[e]
             h = p * sys.mult[e] * W[e]
             # Not named `z`: the CG work vector `z` bound below would make a
@@ -426,7 +426,7 @@ function _powermean_direction!(d, ls::PowerMeanLinsolve{T}, sys::PowerMeanSystem
             for q in eachindex(Wr, xx)
                 q <= m ? (DA += Wr[q] * xx[q]) : (DB += Wr[q] * xx[q])
             end
-            for q in eachindex(y, Wr, xx)
+            for q in _eachindex(y, Wr, xx)
                 y[q] += κ * Wr[q] * (q <= m ? SB * xx[q] + DB : SA * xx[q] + DA)
             end
         end
@@ -583,7 +583,7 @@ function _powermean_symgraph(sys::PowerMeanSystem{T}) where {T}
     v = Vector{Int}(undef, ne)
     L = Vector{T}(undef, ne)
     k = 0
-    for e in eachindex(sys.u, sys.v, sys.L)
+    for e in _eachindex(sys.u, sys.v, sys.L)
         a, b, l = sys.u[e], sys.v[e], sys.L[e]
         k += 1
         u[k], v[k], L[k] = a, n + b, l
@@ -638,7 +638,7 @@ end
 
 # Log weights `-p z` of every entry.
 function _powermean_logweights!(lw, y, G::PowerMeanGraph, p)
-    for e in eachindex(lw, G.u, G.v, G.L)
+    for e in _eachindex(lw, G.u, G.v, G.L)
         lw[e] = -p * (y[G.u[e]] - y[G.v[e]] - G.L[e])
     end
     return lw
