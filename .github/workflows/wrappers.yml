@@ -1,10 +1,12 @@
-# Build the compiled Python and MATLAB packages in `lib/` and attach them to a
-# release. `workflow_dispatch` runs the same builds and smoke tests without
-# publishing; the results are then kept as workflow artifacts.
+# Build the compiled Python and MATLAB packages in `lib/`, run their smoke
+# tests, and keep them as workflow artifacts. A run for a version tag (pushed by
+# TagBot, or started by hand with `--ref <tag>`) also attaches them to that
+# tag's release. The trigger is the tag push, not the release: TagBot creates
+# releases with `GITHUB_TOKEN`, whose events start no workflows.
 name: Wrappers
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
   workflow_dispatch:
 permissions:
   contents: write
@@ -44,20 +46,30 @@ jobs:
       - name: Compile the gateway and run the smoke test
         uses: matlab-actions/run-command@v3
         with:
-          command: cd('lib/out'); build_mex; run('../test/matlab/smoke.m')
+          command: cd('lib/out'); build_mex; addpath(pwd); run('../test/matlab/smoke.m')
       - name: Collect what a caller needs
         run: |
           cd lib/out
           tar czf "$GITHUB_WORKSPACE/matrixcovers-matlab-glnxa64.tar.gz" \
               +matrixcovers matrixcovers-bundle build_mex.m
-      - name: Attach to the release
-        if: github.event_name == 'release'
-        run: gh release upload "${{ github.event.release.tag_name }}" matrixcovers-matlab-glnxa64.tar.gz --clobber
-        env:
-          GH_TOKEN: ${{ github.token }}
       - uses: actions/upload-artifact@v7
-        if: github.event_name != 'release'
         with:
           name: matrixcovers-matlab-glnxa64
           path: matrixcovers-matlab-glnxa64.tar.gz
           if-no-files-found: error
+
+  attach:
+    # TagBot creates the release right after pushing the tag; if it does not
+    # exist yet, the upload fails and this job can be rerun.
+    needs: [python, matlab]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Attach to the release
+        run: gh release upload "$GITHUB_REF_NAME" assets/* --clobber --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}
