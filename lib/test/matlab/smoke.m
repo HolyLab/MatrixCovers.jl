@@ -1,5 +1,6 @@
-% Smoke test for the matrixcovers MATLAB package. Run from the build output
-% directory after `build_mex`. Reference values are those of MatrixCovers.jl.
+% Smoke test for the matrixcovers MATLAB package. Run `build_mex` in the build
+% output directory and add that directory to the path first. Reference values
+% are those of MatrixCovers.jl.
 
 As = [4 1 0.5; 1 3 0.2; 0.5 0.2 2];
 Aa = [1 2 3; 6 5 4; 0.5 0 2];

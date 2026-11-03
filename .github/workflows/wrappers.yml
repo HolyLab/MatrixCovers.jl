@@ -46,7 +46,7 @@ jobs:
       - name: Compile the gateway and run the smoke test
         uses: matlab-actions/run-command@v3
         with:
-          command: cd('lib/out'); build_mex; run('../test/matlab/smoke.m')
+          command: cd('lib/out'); build_mex; addpath(pwd); run('../test/matlab/smoke.m')
       - name: Collect what a caller needs
         run: |
           cd lib/out
