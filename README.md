@@ -82,3 +82,12 @@ true
 
 See the [documentation](https://HolyLab.github.io/MatrixCovers.jl/stable/) for the
 algorithm guide and API reference.
+
+## Python and MATLAB
+
+Compiled Python and MATLAB packages, which do not require a Julia installation,
+are attached to each [release](https://github.com/HolyLab/MatrixCovers.jl/releases)
+starting with 2.0.1. They run on Linux x86-64 only. See
+[Python and MATLAB](https://HolyLab.github.io/MatrixCovers.jl/stable/python_matlab/)
+in the documentation for installation, usage, and differences from the Julia
+package.
