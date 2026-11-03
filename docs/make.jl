@@ -24,6 +24,7 @@ makedocs(;
         "Solver invariants" => "invariants.md",
         "Starting points and convergence" => "solvers.md",
         "Noise covers and biwhitening" => "noise.md",
+        "Python and MATLAB" => "python_matlab.md",
         "Reference" => "reference.md",
     ],
 )
