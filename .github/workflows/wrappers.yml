@@ -15,7 +15,7 @@ permissions:
 # runs fast on recent ones.
 jobs:
   python:
-    uses: JuliaInterop/JuliaLibWrapping.jl/.github/workflows/build-wrappers.yml@JuliaLibWrapping-v0.3.0
+    uses: JuliaInterop/JuliaLibWrapping.jl/.github/workflows/build-wrappers.yml@JuliaLibWrapping-v0.3.3
     with:
       build-dir: lib
       cpu-target: "generic;sandybridge,-xsaveopt,clone_all;haswell,-rdrnd,base(1)"
