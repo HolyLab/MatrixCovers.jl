@@ -418,7 +418,7 @@ end
 # Returns the row support counts.
 function _sym_unconstrained!(a::AbstractVector{T}, foreach_entries::F) where {T,F}
     ax = eachindex(a)
-    nza = zeros(Int, ax)
+    nza = _fill(0, ax)
     logref = fill!(similar(a, T), T(NaN))   # NaN marks a row without a reference
     foreach_entries() do i, j, lv
         nza[i] += 1
@@ -557,8 +557,8 @@ function unconstrained_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, A
     axes(A, 2) == eachindex(b) || throw(DimensionMismatch("`unconstrained_min!(ρ, a, b, A)` requires column indices of `A` to match `b`, got axes(A, 2)=$(string(axes(A, 2))), axes(b)=$(string(axes(b)))"))
     loga = fill!(similar(a, T), zero(T))
     logb = fill!(similar(b, T), zero(T))
-    nza  = zeros(Int, axes(A, 1))
-    nzb  = zeros(Int, axes(A, 2))
+    nza  = _fill(0, axes(A, 1))
+    nzb  = _fill(0, axes(A, 2))
     foreach_support(A) do i, j, v
         lAij = log(T(v))
         loga[i] += lAij
@@ -590,8 +590,8 @@ function unconstrained_min!(::AbsLog{2}, a::AbstractVector, b::AbstractVector, s
     is, js, lv = sup.is, sup.js, sup.lv
     loga = fill!(similar(a, T), zero(T))
     logb = fill!(similar(b, T), zero(T))
-    nza  = zeros(Int, eachindex(a))
-    nzb  = zeros(Int, eachindex(b))
+    nza  = _fill(0, eachindex(a))
+    nzb  = _fill(0, eachindex(b))
     for k in _eachindex(is, js, lv)
         i, j, lAij = is[k], js[k], lv[k]
         loga[i] += lAij
@@ -844,8 +844,8 @@ end
 function _cg_refine!(lα::AbstractVector{T}, lβ::AbstractVector{T}, foreach_entries::F, maxiter::Int) where {T,F}
     maxiter > 0 || return lα, lβ
     axa, axb = eachindex(lα), eachindex(lβ)
-    na = zeros(Int, axa)
-    nb = zeros(Int, axb)
+    na = _fill(0, axa)
+    nb = _fill(0, axb)
     ra = fill!(similar(lα, T), zero(T))
     rb = fill!(similar(lβ, T), zero(T))
     # Accumulate support counts and off-diagonal residuals.
@@ -1036,8 +1036,8 @@ function tighten_cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
     T = float(promote_type(eltype(a), eltype(b)))
     eachindex(a) == axes(A, 1) || throw(DimensionMismatch("indices of a must match row-indexing of A"))
     eachindex(b) == axes(A, 2) || throw(DimensionMismatch("indices of b must match column-indexing of A"))
-    lratioa = fill(T(Inf), eachindex(a))
-    lratiob = fill(T(Inf), eachindex(b))
+    lratioa = _fill(T(Inf), eachindex(a))
+    lratiob = _fill(T(Inf), eachindex(b))
     la, lb = similar(a, T), similar(b, T)
     for _ in 1:maxiter
         map!(log, la, a)   # log(0) = -Inf marks zero scales; see below
@@ -1074,8 +1074,8 @@ end
 function tighten_cover!(a::AbstractVector, b::AbstractVector, sup::FlatSupport; maxiter::Int=3)
     T = float(promote_type(eltype(a), eltype(b)))
     is, js, lv = sup.is, sup.js, sup.lv
-    lratioa = fill(T(Inf), eachindex(a))
-    lratiob = fill(T(Inf), eachindex(b))
+    lratioa = _fill(T(Inf), eachindex(a))
+    lratiob = _fill(T(Inf), eachindex(b))
     la, lb = similar(a, T), similar(b, T)
     for _ in 1:maxiter
         map!(log, la, a)   # log(0) = -Inf marks zero scales; see the matrix method
@@ -1134,7 +1134,7 @@ function boost_feasible!(a::AbstractVector{T}, A::AbstractMatrix) where T
     # Growing log-scales directly (rather than multiplying by exp(z)) stays
     # finite even when exp(z) alone would overflow.
     la = map(log, a)
-    s = fill(zero(T), eachindex(a))
+    s = _fill(zero(T), eachindex(a))
     foreach_support_sym(A) do i, j, v
         z = _pos_deficit(log(T(v)), la[i], la[j])
         s[i] += z
@@ -1145,7 +1145,7 @@ function boost_feasible!(a::AbstractVector{T}, A::AbstractMatrix) where T
     all(isfinite, s) ||
         throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row"))
     map!(sqrt, s, s)
-    r = fill(zero(T), eachindex(a))
+    r = _fill(zero(T), eachindex(a))
     foreach_support_sym(A) do i, j, v
         z = _pos_deficit(log(T(v)), la[i], la[j])
         zi, zj = _split_deficit(z, s[i], s[j])
@@ -1164,7 +1164,7 @@ end
 function boost_feasible!(a::AbstractVector{T}, sup::FlatSupport) where T
     is, js, lv = sup.is, sup.js, sup.lv
     la = map(log, a)
-    s = fill(zero(T), eachindex(a))
+    s = _fill(zero(T), eachindex(a))
     for k in _eachindex(is, js, lv)
         i, j = is[k], js[k]
         z = _pos_deficit(lv[k], la[i], la[j])
@@ -1174,7 +1174,7 @@ function boost_feasible!(a::AbstractVector{T}, sup::FlatSupport) where T
     all(isfinite, s) ||
         throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row"))
     map!(sqrt, s, s)
-    r = fill(zero(T), eachindex(a))
+    r = _fill(zero(T), eachindex(a))
     for k in _eachindex(is, js, lv)
         i, j = is[k], js[k]
         z = _pos_deficit(lv[k], la[i], la[j])
@@ -1196,8 +1196,8 @@ end
 function boost_feasible!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix)
     T = float(promote_type(eltype(a), eltype(b)))
     la, lb = map(log, a), map(log, b)
-    sa = fill(zero(T), eachindex(a))
-    sb = fill(zero(T), eachindex(b))
+    sa = _fill(zero(T), eachindex(a))
+    sb = _fill(zero(T), eachindex(b))
     foreach_support(A) do i, j, v
         z = _pos_deficit(log(T(v)), la[i], lb[j])
         sa[i] += z
@@ -1207,8 +1207,8 @@ function boost_feasible!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix
         throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row/column"))
     map!(sqrt, sa, sa)
     map!(sqrt, sb, sb)
-    ra = fill(zero(T), eachindex(a))
-    rb = fill(zero(T), eachindex(b))
+    ra = _fill(zero(T), eachindex(a))
+    rb = _fill(zero(T), eachindex(b))
     foreach_support(A) do i, j, v
         z = _pos_deficit(log(T(v)), la[i], lb[j])
         zi, zj = _split_deficit(z, sa[i], sb[j])
@@ -1225,8 +1225,8 @@ function boost_feasible!(a::AbstractVector, b::AbstractVector, sup::FlatSupport)
     T = float(promote_type(eltype(a), eltype(b)))
     is, js, lv = sup.is, sup.js, sup.lv
     la, lb = map(log, a), map(log, b)
-    sa = fill(zero(T), eachindex(a))
-    sb = fill(zero(T), eachindex(b))
+    sa = _fill(zero(T), eachindex(a))
+    sb = _fill(zero(T), eachindex(b))
     for k in _eachindex(is, js, lv)
         z = _pos_deficit(lv[k], la[is[k]], lb[js[k]])
         sa[is[k]] += z
@@ -1236,8 +1236,8 @@ function boost_feasible!(a::AbstractVector, b::AbstractVector, sup::FlatSupport)
         throw(ArgumentError("boost_feasible! requires a start with positive scale on every supported row/column"))
     map!(sqrt, sa, sa)
     map!(sqrt, sb, sb)
-    ra = fill(zero(T), eachindex(a))
-    rb = fill(zero(T), eachindex(b))
+    ra = _fill(zero(T), eachindex(a))
+    rb = _fill(zero(T), eachindex(b))
     for k in _eachindex(is, js, lv)
         i, j = is[k], js[k]
         z = _pos_deficit(lv[k], la[i], lb[j])
