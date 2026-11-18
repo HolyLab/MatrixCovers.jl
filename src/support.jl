@@ -27,6 +27,11 @@ end
 @noinline _throw_eachindex_mismatch(inds, other) =
     throw(DimensionMismatch(LazyString("all inputs to eachindex must have the same indices, got ", inds, " and ", other)))
 
+# Mutable buffer indexed by `ax` with every entry `x`. Not `fill(x, ax)` or
+# `zeros(T, ax)`: for some axis types (StaticArrays' `SOneTo`) those return an
+# immutable array.
+_fill(x, ax) = fill!(similar(Array{typeof(x)}, ax), x)
+
 """
     foreach_support(f, A)
 

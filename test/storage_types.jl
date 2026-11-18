@@ -271,3 +271,24 @@ end
         @test length(emitted) == length(unique(e -> (e[1], e[2]), emitted))
     end
 end
+
+# Static axes (`SOneTo`) make `zeros`/`fill` return immutable arrays, so the
+# solvers' scratch buffers must be allocated with `similar`.
+@testset "StaticArrays" begin
+    Ssym = SMatrix{3,3}([4.0 1 0.5; 1 9 2; 0.5 2 16])
+    Ssq = SMatrix{3,3}([1.0 2 3; 6 5 4; 0.1 7 2])
+    Srect = SMatrix{2,3}([1.0 2 3; 6 5 4])
+    @test symcover(Ssym) ≈ symcover(Matrix(Ssym))
+    @test symcover!(MVector{3,Float64}(undef), Ssym) ≈ symcover(Matrix(Ssym))
+    @test initialize_symcover(Ssym) ≈ initialize_symcover(Matrix(Ssym))
+    @test soft_symcover(Ssym)[1] ≈ soft_symcover(Matrix(Ssym))[1]
+    @test symcover_min(AbsLog{2}(), Ssym)[1] ≈ symcover_min(AbsLog{2}(), Matrix(Ssym))[1]
+    for A in (Ssq, Srect)
+        @test all(map(≈, cover(A), cover(Matrix(A))))
+        @test all(map(≈, cover(A; start=:geomean), cover(Matrix(A); start=:geomean)))
+        @test all(map(≈, initialize_cover(A), initialize_cover(Matrix(A))))
+        @test soft_cover(A)[1] ≈ soft_cover(Matrix(A))[1]
+        @test cover_min(AbsLog{2}(), A)[1] ≈ cover_min(AbsLog{2}(), Matrix(A))[1]
+    end
+    @test cover_transversal(Ssq)[1] ≈ cover_transversal(Matrix(Ssq))[1]
+end
