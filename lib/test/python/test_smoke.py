@@ -54,6 +54,24 @@ check("cover(start='geomean')", close(a2, [1.2579400817731892, 4.317698277786294
 a3, b3 = mc.cover(Aa, [1.0, 2.0, 3.0])
 check("cover with fixed rows", close(a3, [1.0, 2.0, 3.0]) and close(b3, [3.0, 2.5, 3.0]))
 
+# Power-of-two covers and their exponents.
+a = mc.symcover(As, pow2=True)
+check("symcover(pow2=True)", np.array_equal(a, [2.0, 2.0, 2.0]) and mc.iscover(a, As))
+check("symcover_exponents", list(mc.symcover_exponents(As)) == [1, 1, 1])
+d = np.array([4.0, 0.125, 2.0])
+check("symcover(pow2=True) is exactly covariant",
+      np.array_equal(mc.symcover(d[:, None] * As * d[None, :], pow2=True), d * a))
+a, b = mc.cover(Aa, pow2=True)
+alpha, beta = mc.cover_exponents(Aa)
+check("cover(pow2=True)", np.array_equal(a, np.ldexp(1.0, alpha)) and np.array_equal(b, np.ldexp(1.0, beta))
+      and mc.iscover(a, Aa, b))
+check("cover_exponents is integer", alpha.dtype == np.int64 and beta.dtype == np.int64)
+alpha, beta = mc.cover_exponents(Aa, start="unconstrained")
+check("cover_exponents(start='unconstrained')", mc.iscover(np.ldexp(1.0, alpha), Aa, np.ldexp(1.0, beta)))
+raises("cover(pow2=True, start='geomean') is rejected", mc.JLWError,
+       lambda: mc.cover(Aa, pow2=True, start="geomean"),
+       lambda e: "does not support start=:geomean" in str(e))
+
 # Arrays of another dtype or memory order are converted.
 check("integer input", close(mc.symcover(np.array([[4, 1], [1, 4]])), [2.0, 2.0]))
 check("C- and Fortran-order input agree",

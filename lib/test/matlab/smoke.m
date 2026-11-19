@@ -13,6 +13,13 @@ assert(matrixcovers.iscover_sym(a, As), "iscover_sym")
 [a, b] = matrixcovers.cover(Aa);
 assert(matrixcovers.iscover_ab(a, b, Aa), "cover covers")
 
+a = matrixcovers.symcover(As, pow2=true);
+assert(isequal(a, [2; 2; 2]), "symcover(pow2=true)")
+assert(isequal(double(matrixcovers.symcover_exponents(As)), [1; 1; 1]), "symcover_exponents")
+[a, b] = matrixcovers.cover(Aa, pow2=true);
+[alpha, beta] = matrixcovers.cover_exponents(Aa);
+assert(isequal(a, pow2(double(alpha))) && isequal(b, pow2(double(beta))), "cover(pow2=true)")
+
 [a, converged, iterations] = matrixcovers.symcover_min(As);
 assert(near(a, [2.0; 1.7320508075688787; 1.4142135623730965], 1e-6), "symcover_min")
 assert(converged && iterations > 0, "symcover_min stats")

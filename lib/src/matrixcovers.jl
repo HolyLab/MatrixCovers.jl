@@ -113,25 +113,59 @@ include("conversions.jl")
 """
 Heuristic symmetric hard cover of the symmetric matrix `A`: `a` with
 `a[i]*a[j] >= abs(A[i, j])`. `maxiter` (default 3) is the number of tightening
-iterations.
+iterations. With `pow2 = true`, every factor is an integer power of two (or
+zero), so scaling by the cover is free of rounding, and the cover is exactly
+covariant under power-of-two rescaling.
 """
-symcover(A::Matrix{Float64}; maxiter::Union{Int64, Nothing} = nothing) =
-    MatrixCovers.symcover(A; maxiter = something(maxiter, SYMCOVER_MAXITER))
+symcover(A::Matrix{Float64}; maxiter::Union{Int64, Nothing} = nothing, pow2::Bool = false) =
+    MatrixCovers.symcover(A; maxiter = something(maxiter, SYMCOVER_MAXITER), pow2)
 
-@api symcover(A::Matrix{Float64}; maxiter::Union{Int64, Nothing} = nothing)::Vector{Float64}
+@api symcover(A::Matrix{Float64}; maxiter::Union{Int64, Nothing} = nothing,
+              pow2::Bool = false)::Vector{Float64}
 
 """
 Heuristic hard cover of `A`: `(a, b)` with `a[i]*b[j] >= abs(A[i, j])`.
 `start` selects the kind of cover (`auto`, `transversal`, `unconstrained`, or
 `geomean`); `maxiter` and `cgiter` default to values that depend on `start`.
+With `pow2 = true`, every factor is an integer power of two (or zero), so
+scaling by the cover is free of rounding, and the cover products are exactly
+covariant under power-of-two rescaling; `start = geomean` is then not
+supported.
 """
 cover(A::Matrix{Float64}; maxiter::Union{Int64, Nothing} = nothing,
-      cgiter::Union{Int64, Nothing} = nothing, start::Start = Starts.auto) =
-    MatrixCovers.cover(A; maxiter, cgiter, start = _symbol(start))
+      cgiter::Union{Int64, Nothing} = nothing, start::Start = Starts.auto, pow2::Bool = false) =
+    MatrixCovers.cover(A; maxiter, cgiter, start = _symbol(start), pow2)
 
 @api cover(A::Matrix{Float64}; maxiter::Union{Int64, Nothing} = nothing,
            cgiter::Union{Int64, Nothing} = nothing,
-           start::Start = Starts.auto)::Tuple{Vector{Float64}, Vector{Float64}}
+           start::Start = Starts.auto, pow2::Bool = false)::Tuple{Vector{Float64}, Vector{Float64}}
+
+"""
+Integer exponents `α` of the power-of-two symmetric cover of `A`:
+`2^(α[i] + α[j]) >= abs(A[i, j])`, the cover returned by
+`symcover(A, pow2 = true)` before conversion to floating point, which can
+overflow or underflow. A row with no nonzero entry gets `typemin(Int64)`.
+"""
+symcover_exponents(A::Matrix{Float64}; maxiter::Union{Int64, Nothing} = nothing) =
+    MatrixCovers.symcover_exponents(A; maxiter = something(maxiter, SYMCOVER_MAXITER))
+
+@api symcover_exponents(A::Matrix{Float64}; maxiter::Union{Int64, Nothing} = nothing)::Vector{Int64}
+
+"""
+Integer exponents `(α, β)` of the power-of-two cover of `A`:
+`2^(α[i] + β[j]) >= abs(A[i, j])`, the cover returned by
+`cover(A, pow2 = true)` before conversion to floating point, which can
+overflow or underflow. A row or column with no nonzero entry gets
+`typemin(Int64)`. `start` (`auto`, `transversal`, or `unconstrained`),
+`maxiter`, and `cgiter` are as for `cover`.
+"""
+cover_exponents(A::Matrix{Float64}; maxiter::Union{Int64, Nothing} = nothing,
+                cgiter::Union{Int64, Nothing} = nothing, start::Start = Starts.auto) =
+    MatrixCovers.cover_exponents(A; maxiter, cgiter, start = _symbol(start))
+
+@api cover_exponents(A::Matrix{Float64}; maxiter::Union{Int64, Nothing} = nothing,
+                     cgiter::Union{Int64, Nothing} = nothing,
+                     start::Start = Starts.auto)::Tuple{Vector{Int64}, Vector{Int64}}
 
 """
 The column scale `b` of the tightest cover of `A` with row scale `a` held
