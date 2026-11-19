@@ -35,7 +35,9 @@ The module provides the Julia functions under the same names: `symcover`,
 `cover`, `symcover_min`, `cover_min`, `cover_transversal`, `soft_symcover`,
 `soft_cover`, `noise_cover`, `initialize_symcover`, `initialize_cover`,
 `gramcover`, `iscover`, `cover_objective`, `max_coverage_ratio`, and
-`level_dispersion`. `help(mc.cover_min)` shows the documentation for each.
+`level_dispersion`, together with the power-of-two exponent solvers
+`symcover_exponents` and `cover_exponents`, which return `int64` arrays.
+`help(mc.cover_min)` shows the documentation for each.
 A few conventions differ from Julia:
 
 - Options are keyword arguments, and those left at `None` take the Julia

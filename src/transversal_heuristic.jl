@@ -68,8 +68,8 @@ end
 
 # Root each connected component at its highest-degree vertex (lowest index on
 # ties), with value zero. Every other vertex averages `u[w] + off` over its
-# neighbors `w` in the preceding breadth-first layer. Fills `gcomp` with
-# component labels and returns their count.
+# neighbors `w` in the preceding breadth-first layer (see `_layer_mean`). Fills
+# `gcomp` with component labels and returns their count.
 function _tt_layer_start!(u::Vector{T}, gcomp::Vector{Int}, Gg::_GroupGraph{T}) where {T}
     nc = length(u)
     deg = [length(_tt_slots(Gg, v)) for v in 1:nc]
@@ -100,7 +100,7 @@ function _tt_layer_start!(u::Vector{T}, gcomp::Vector{Int}, Gg::_GroupGraph{T}) 
                         cnt += 1
                     end
                 end
-                u[v] = tot / cnt
+                u[v] = _layer_mean(tot, cnt)
             end
             for s in _tt_slots(Gg, v)
                 w = Gg.nbr[s]

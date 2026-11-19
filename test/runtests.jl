@@ -23,6 +23,7 @@ include("helpers.jl")               # isbalanced, covaries, PENALTIES
     include("support.jl")           # foreach_support(_sym) traversal
     include("iscover.jl")           # the cover predicate
     include("heuristic_covers.jl")  # symcover/cover and their internals
+    include("pow2_covers.jl")       # symcover_exponents and pow2=true: power-of-two factors
     include("gram_covers.jl")       # gramcover/gramcover!: symmetric covers of A'*W*A
     include("soft_covers.jl")       # soft_symcover/soft_cover for AbsLog and AbsLinear
     include("powermean.jl")         # the PowerMean soft covers (the soft default)

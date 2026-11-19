@@ -28,8 +28,10 @@ from ._generated import (  # noqa: F401
     Strategy,
     SymStrategy,
     initialize_cover,
+    cover_exponents,
     initialize_symcover,
     symcover,
+    symcover_exponents,
 )
 from ._lowlevel import JLWError  # noqa: F401
 
@@ -70,23 +72,26 @@ def _reject(fname, why, **kwargs):
 
 # --- Heuristic hard covers ---------------------------------------------------
 
-def cover(A, a=None, *, maxiter=None, cgiter=None, start=None):
+def cover(A, a=None, *, maxiter=None, cgiter=None, start=None, pow2=None):
     """Heuristic hard cover `(a, b)` of `A`: `a[i]*b[j] >= abs(A[i, j])`.
 
     `start` (`"auto"`, `"transversal"`, `"unconstrained"`, or `"geomean"`)
     selects the kind of cover; `maxiter` and `cgiter` default to values that
-    depend on `start`.
+    depend on `start`. With `pow2=True`, every factor is an integer power of
+    two (or zero), so scaling by the cover is free of rounding; `"geomean"` is
+    then not supported.
 
     With a row scale `a`, return the tightest cover with `a` held fixed:
     `(a, b)` with `b[j] = max_i abs(A[i, j]) / a[i]`.
     """
     if a is not None:
         _reject("cover", "cannot be combined with a fixed row scale `a`",
-                maxiter=maxiter, cgiter=cgiter, start=start)
+                maxiter=maxiter, cgiter=cgiter, start=start, pow2=pow2)
         a = np.ascontiguousarray(a, dtype=np.float64)
         return a, _generated.cover_given_rows(A, a)
     return _generated.cover(A, maxiter=maxiter, cgiter=cgiter,
-                            start=Start.auto if start is None else start)
+                            start=Start.auto if start is None else start,
+                            pow2=bool(pow2))
 
 
 # --- Minimal hard covers ------------------------------------------------------
@@ -278,6 +283,7 @@ __all__ = [
     "Strategy",
     "SymStrategy",
     "cover",
+    "cover_exponents",
     "cover_min",
     "cover_objective",
     "cover_transversal",
@@ -291,5 +297,6 @@ __all__ = [
     "soft_cover",
     "soft_symcover",
     "symcover",
+    "symcover_exponents",
     "symcover_min",
 ]

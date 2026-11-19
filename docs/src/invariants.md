@@ -39,6 +39,31 @@ julia> round.(extrema(P2 ./ P1); digits=3)
 For symmetric support components without a nonzero diagonal entry, use
 [`symcover_min`](@ref) when covariance is required.
 
+The ratios above are 1 only up to rounding; the factors are not bitwise equal.
+With `pow2=true`, [`symcover`](@ref) returns factors that are integer powers of
+two, and under the same condition on the support its covariance is exact for
+power-of-two rescalings, which are the rescalings that `D * A * D` computes
+without rounding (barring overflow and underflow):
+
+```jldoctest covariance
+julia> d2 = [4.0, 0.125, 2.0]; D2 = Diagonal(d2);
+
+julia> p1 = symcover(A; pow2=true)
+3-element Vector{Float64}:
+ 1.0
+ 1.0
+ 1.0
+
+julia> symcover(D2 * A * D2; pow2=true) == d2 .* p1
+true
+```
+
+Because the factors are powers of two, `A ./ (p1 .* p1')` is also computed
+without rounding. The price is a looser cover: each factor is rounded up to a
+power of two. Because `a[i]^2` is an even power of two, a diagonal entry with
+`2^(2m) < |A[i, i]| ≤ 2^(2m+1)` for some integer `m` is covered with slack of
+at least a factor of two.
+
 [`cover`](@ref) is covariant on any support: positive diagonal rescaling of
 `A` rescales the cover products identically wherever `A` is nonzero. This holds
 for both the default transversal start (square, structurally nonsingular `A`)
@@ -73,6 +98,20 @@ julia> covariance_spread(0; start=:geomean)
 
 julia> covariance_spread(4; start=:geomean)
 (1.0, 1.0)
+```
+
+With `pow2=true`, the cover products of [`cover`](@ref) are exactly covariant
+for power-of-two rescalings, on any support and for either supported start
+(`:geomean` is not supported). The factors themselves need not be, because the
+balance convention is rounded to integer exponents:
+
+```jldoctest covariance
+julia> e2 = [0.5, 8.0, 1.0]; E2 = Diagonal(e2);
+
+julia> q1, r1 = cover(A; pow2=true); q2, r2 = cover(D2 * A * E2; pow2=true);
+
+julia> q2 .* r2' == (d2 .* q1) .* (e2 .* r1)'
+true
 ```
 
 The [`PowerMean`](@ref) soft covers are covariant in exact arithmetic, since the
