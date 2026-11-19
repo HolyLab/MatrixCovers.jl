@@ -100,6 +100,20 @@ julia> covariance_spread(4; start=:geomean)
 (1.0, 1.0)
 ```
 
+With `pow2=true`, the cover products of [`cover`](@ref) are exactly covariant
+for power-of-two rescalings, on any support and for either supported start
+(`:geomean` is not supported). The factors themselves need not be, because the
+balance convention is rounded to integer exponents:
+
+```jldoctest covariance
+julia> e2 = [0.5, 8.0, 1.0]; E2 = Diagonal(e2);
+
+julia> q1, r1 = cover(A; pow2=true); q2, r2 = cover(D2 * A * E2; pow2=true);
+
+julia> q2 .* r2' == (d2 .* q1) .* (e2 .* r1)'
+true
+```
+
 The [`PowerMean`](@ref) soft covers are covariant in exact arithmetic, since the
 objective depends only on the ratios `|A[i,j]|/(a[i]*b[j])`. In floating point,
 the hard part is the log products `log(a[i]*b[j])` across clusters of rows and

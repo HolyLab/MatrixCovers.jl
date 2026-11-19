@@ -111,8 +111,8 @@ function _symcover!(a::AbstractVector, A::AbstractMatrix; maxiter::Int=3, pow2::
 end
 
 """
-    a, b = cover(ρ, A; maxiter, cgiter, start=:auto)
-    a, b = cover(A; maxiter, cgiter, start=:auto)
+    a, b = cover(ρ, A; maxiter, cgiter, start=:auto, pow2=false)
+    a, b = cover(A; maxiter, cgiter, start=:auto, pow2=false)
 
 Given a matrix `A`, return vectors `a` and `b` such that `a[i] * b[j] >=
 abs(A[i, j])` for all `i`, `j`. This is a fast heuristic; for the cover that
@@ -141,6 +141,13 @@ steps costs time proportional to the number of stored entries of `A`; the
 
 The factors use the per-component balance convention described by
 [`cover_min`](@ref). `ρ` is accepted for API compatibility but is ignored.
+
+With `pow2=true`, every factor is an integer power of two (or zero), so
+`A ./ (a .* b')` is computed without rounding, and the cover products are
+exactly covariant under power-of-two rescaling. The factors are those of
+[`MatrixCovers.cover_exponents`](@ref cover_exponents), which describes the
+method; `start=:geomean` is not supported, and an exponent outside the normal
+range of the element type of `a` or `b` throws an error.
 
 See also: [`cover!`](@ref), [`cover_transversal`](@ref), [`cover_min`](@ref), [`symcover`](@ref).
 
@@ -223,8 +230,8 @@ function cover(A::Transpose; kwargs...)
 end
 
 """
-    a, b = cover!(ρ, a, b, A; maxiter, cgiter, start=:auto)
-    a, b = cover!(a, b, A; maxiter, cgiter, start=:auto)
+    a, b = cover!(ρ, a, b, A; maxiter, cgiter, start=:auto, pow2=false)
+    a, b = cover!(a, b, A; maxiter, cgiter, start=:auto, pow2=false)
 
 Mutating counterpart of [`cover`](@ref): writes the hard cover into `a` and
 `b` and returns them, rather than allocating new vectors. `eachindex(a)` must
@@ -245,7 +252,13 @@ end
 
 function _cover!(a::AbstractVector, b::AbstractVector, A::AbstractMatrix;
                  maxiter::Union{Int,Nothing}=nothing, cgiter::Union{Int,Nothing}=nothing,
-                 start::Symbol=:auto, fname::Symbol=:cover)
+                 start::Symbol=:auto, fname::Symbol=:cover, pow2::Bool=false)
+    if pow2
+        α, β = _cover_exponents(A, maxiter, cgiter, start, fname)
+        _pow2_factors!(a, α, fname, "row")
+        _pow2_factors!(b, β, fname, "column")
+        return a, b
+    end
     _check_cover_start(start)
     T = float(promote_type(eltype(a), eltype(b)))
     if start === :auto || start === :transversal
@@ -676,9 +689,16 @@ mutable struct _BFSWork{T}
     cnt::Int       # number of terms in it
 end
 
+# Mean of `cnt` layer terms summing to `tot`. Integer values take the floored
+# mean, which keeps them integers and shifts by exactly `k` when every term
+# shifts by the integer `k`.
+_layer_mean(tot::Integer, cnt::Int) = fld(tot, cnt)
+_layer_mean(tot, cnt::Int) = tot / cnt
+
 # Root each support component at its highest-degree vertex (lowest index on
 # ties), with value zero. Other vertices average `log|A_uv| - value[u]` over
-# neighbors in the preceding BFS layer. Fill `comp` and return its count.
+# neighbors in the preceding BFS layer (see `_layer_mean`). Fill `comp` and
+# return its count.
 function _bfs_levels!(value::Vector{T}, comp::Vector{Int}, na::Vector{Int},
                       nb::Vector{Int}, foreach_neighbor::F) where {T,F}
     m, n = length(na), length(nb)
@@ -725,7 +745,7 @@ function _bfs_levels!(value::Vector{T}, comp::Vector{Int}, na::Vector{Int},
             work.cnt = 0
             foreach_neighbor(layerterm, v)
             work.cnt > 0 || error("support graph vertex $(string(v)) has no neighbor in the preceding breadth-first layer")
-            value[v] = work.tot / work.cnt
+            value[v] = _layer_mean(work.tot, work.cnt)
         end
     end
     return ncomp

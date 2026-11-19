@@ -128,8 +128,13 @@ end
 # `α[i] + β[j] >= log|A[i,j]|` on the support, with equality on the transversal,
 # up to roundoff. A structurally singular support throws an `ArgumentError`, or
 # returns `nothing` when `throw_singular` is false.
+#
+# `lg` maps a stored value to its log magnitude. With `lg = identity` and
+# integer-valued `G.val` (below `2^53` in magnitude for `Float64`), every
+# operation is exact, so the duals are integers and the transversal is a
+# maximum-weight one for those values.
 function _max_product_transversal(G::GroupedSupport, axc::AbstractUnitRange, fname;
-                                  throw_singular::Bool=true)
+                                  throw_singular::Bool=true, lg::F=log) where {F}
     T = eltype(G.val)
     axr = G.ax
     n = length(axr)
@@ -141,7 +146,7 @@ function _max_product_transversal(G::GroupedSupport, axc::AbstractUnitRange, fna
     cmax = fill(T(-Inf), n)
     for (ip, i) in enumerate(axr)
         for s in _slots(G, i)
-            lv = log(G.val[s])
+            lv = lg(G.val[s])
             isfinite(lv) || throw(ArgumentError("$fname requires finite entries, got abs(A[$i, $(G.idx[s])]) = $(G.val[s])"))
             jp = G.idx[s] - oc
             jcol[s] = jp
@@ -292,7 +297,7 @@ function _max_product_transversal(G::GroupedSupport, axc::AbstractUnitRange, fna
     for (ip, i) in enumerate(axr)
         for s in _slots(G, i)
             if jcol[s] == σ[ip]
-                logπ += log(G.val[s])
+                logπ += lg(G.val[s])
                 break
             end
         end

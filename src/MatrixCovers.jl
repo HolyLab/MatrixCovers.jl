@@ -19,7 +19,7 @@ export noise_cover
 
 # `public` is parsed as a keyword only from Julia 1.11; this package supports 1.10.
 @static if VERSION >= v"1.11"
-    eval(Meta.parse("public AbstractCoverPenalty, symcover_exponents, foreach_support, foreach_support_sym, scalar_type, SupportComponents, support_components, ncomponents, rowcomponent, colcomponent, SolverFailure, AbstractCoverStats, AugmentedLagrangianStats, ActiveSetStats, LeastSquaresStats, PowerMeanStats, BalancedCoverStats, ExternalSolverStats, MultistartStats, converged, iterations, residual, tolerance"))
+    eval(Meta.parse("public AbstractCoverPenalty, symcover_exponents, cover_exponents, foreach_support, foreach_support_sym, scalar_type, SupportComponents, support_components, ncomponents, rowcomponent, colcomponent, SolverFailure, AbstractCoverStats, AugmentedLagrangianStats, ActiveSetStats, LeastSquaresStats, PowerMeanStats, BalancedCoverStats, ExternalSolverStats, MultistartStats, converged, iterations, residual, tolerance"))
 end
 
 include("penalties.jl")
@@ -29,7 +29,6 @@ include("iscover.jl")
 include("fastlog.jl")
 include("heuristic_covers.jl")
 include("dense_heuristic.jl")  # full-grid kernels for the heuristic covers
-include("pow2_covers.jl")      # heuristic covers with power-of-two factors
 include("gram_covers.jl")    # symmetric covers of A'*W*A, and the cover of A for a fixed row scale
 include("initializers.jl")   # the start menu; consumed by both solver families below
 include("powermean.jl")        # the PowerMean soft covers, the soft-cover default
@@ -42,6 +41,7 @@ include("transversal.jl")      # transversal-tight minimal covers
 include("balanced.jl")         # transversal-tight covers pushed toward a target ratio
 include("maxbalance.jl")       # max-balancing within the fully indecomposable blocks
 include("transversal_heuristic.jl") # the transversal-tight start of `cover`
+include("pow2_covers.jl")      # heuristic covers with power-of-two factors
 include("powermean_newton.jl") # Newton refinement of the PowerMean soft covers
 include("noise_cover.jl")      # scalings that equalize average noise variance, from variance estimates
 include("sparse_support.jl")  # sparse traversal and the sparse solver defaults
