@@ -283,6 +283,9 @@ tight on the transversal, max-balances the ratios within each diagonal block
 and pushes the ratios of the entries between blocks toward `target` (see
 [Functions and their objectives](@ref)).
 
+When `A ./ (a .* a')` must be computed without rounding, `symcover(A; pow2=true)`
+returns factors that are powers of two (see [Covariance](@ref)).
+
 For applications that standardize data rather than precondition a solver,
 consider [`soft_cover`](@ref) and [`soft_symcover`](@ref). A soft cover need not
 satisfy every inequality `|A[i,j]| ≤ a[i] * b[j]`; with the default

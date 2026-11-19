@@ -6,8 +6,8 @@
 # ============================================================
 
 """
-    a = symcover(ρ, A; maxiter=3)
-    a = symcover(A; maxiter=3)
+    a = symcover(ρ, A; maxiter=3, pow2=false)
+    a = symcover(A; maxiter=3, pow2=false)
 
 Return a vector `a` whose outer product `a*a'` is a hard cover of the square,
 symmetric matrix `A`: `a[i] * a[j] >= abs(A[i, j])` for all `i`, `j`. This is a
@@ -20,6 +20,13 @@ normalized entries `abs(A[i, j]) / sqrt(abs(A[i, i] * A[j, j]))`, rescaled by
 It then raises the scales until every entry is covered and applies `maxiter`
 tightening iterations. The cost is proportional to the number of stored
 entries of `A`.
+
+With `pow2=true`, every factor is an integer power of two (or zero), so
+`A ./ (a .* a')` is computed without rounding, and the cover is exactly
+covariant under power-of-two rescaling (see the extended help). The factors
+are those of [`MatrixCovers.symcover_exponents`](@ref symcover_exponents),
+which describes the method; an exponent outside the normal range of the
+element type of `a` throws an error.
 
 `ρ` is accepted for API compatibility but is ignored.
 
@@ -46,12 +53,17 @@ julia> a * a'   # covers |A|: a[i]*a[j] >= abs(A[i, j])
 The result is scale-covariant up to floating-point round-off (covering
 `D * A * D` for positive diagonal `D` gives `diag(D) .* a`) whenever every
 connected component of the support has a nonzero diagonal entry; rows with a
-zero diagonal take their reference from neighbors that have one. Covariance is
-not exact even for power-of-two scalings, because the method works with
-logarithms of the entries.
+zero diagonal take their reference from neighbors that have one. With the
+default `pow2=false`, covariance is not exact even for power-of-two scalings,
+because the method works with logarithms of the entries. With `pow2=true` and
+the same condition on the support, it is exact for power-of-two scalings:
+if `D = Diagonal(2.0 .^ k)` for an integer vector `k`, and `D * A * D` is
+computed without overflow or underflow, then covering `D * A * D` gives exactly
+`diag(D) .* a`.
 
-The result is also permutation-equivariant up to floating-point round-off:
-covering `A[p, p]` for a permutation `p` gives `a[p]`.
+With `pow2=false`, the result is also permutation-equivariant up to
+floating-point round-off: covering `A[p, p]` for a permutation `p` gives
+`a[p]`.
 """
 symcover(ρ::AbstractCoverPenalty, A::AbstractMatrix; kwargs...) = symcover(A; kwargs...)
 
@@ -63,8 +75,8 @@ function symcover(A::AbstractMatrix; kwargs...)
 end
 
 """
-    a = symcover!(ρ, a, A; maxiter=3)
-    a = symcover!(a, A; maxiter=3)
+    a = symcover!(ρ, a, A; maxiter=3, pow2=false)
+    a = symcover!(a, A; maxiter=3, pow2=false)
 
 Mutating counterpart of [`symcover`](@ref): writes the symmetric hard cover
 into `a` and returns it, rather than allocating a new vector. `eachindex(a)`
@@ -83,7 +95,8 @@ function symcover!(a::AbstractVector, A::AbstractMatrix; kwargs...)
     return _symcover!(a, A; kwargs...)
 end
 
-function _symcover!(a::AbstractVector, A::AbstractMatrix; maxiter::Int=3)
+function _symcover!(a::AbstractVector, A::AbstractMatrix; maxiter::Int=3, pow2::Bool=false)
+    pow2 && return _pow2_factors!(a, _symcover_exponents(A, maxiter, :symcover), :symcover)
     T = float(real(eltype(a)))
     if _use_dense_grid(A, T)
         _symcover_dense!(a, A, T, maxiter)

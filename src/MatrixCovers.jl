@@ -19,7 +19,7 @@ export noise_cover
 
 # `public` is parsed as a keyword only from Julia 1.11; this package supports 1.10.
 @static if VERSION >= v"1.11"
-    eval(Meta.parse("public AbstractCoverPenalty, foreach_support, foreach_support_sym, scalar_type, SupportComponents, support_components, ncomponents, rowcomponent, colcomponent, SolverFailure, AbstractCoverStats, AugmentedLagrangianStats, ActiveSetStats, LeastSquaresStats, PowerMeanStats, BalancedCoverStats, ExternalSolverStats, MultistartStats, converged, iterations, residual, tolerance"))
+    eval(Meta.parse("public AbstractCoverPenalty, symcover_exponents, foreach_support, foreach_support_sym, scalar_type, SupportComponents, support_components, ncomponents, rowcomponent, colcomponent, SolverFailure, AbstractCoverStats, AugmentedLagrangianStats, ActiveSetStats, LeastSquaresStats, PowerMeanStats, BalancedCoverStats, ExternalSolverStats, MultistartStats, converged, iterations, residual, tolerance"))
 end
 
 include("penalties.jl")
@@ -29,6 +29,7 @@ include("iscover.jl")
 include("fastlog.jl")
 include("heuristic_covers.jl")
 include("dense_heuristic.jl")  # full-grid kernels for the heuristic covers
+include("pow2_covers.jl")      # heuristic covers with power-of-two factors
 include("gram_covers.jl")    # symmetric covers of A'*W*A, and the cover of A for a fixed row scale
 include("initializers.jl")   # the start menu; consumed by both solver families below
 include("powermean.jl")        # the PowerMean soft covers, the soft-cover default
