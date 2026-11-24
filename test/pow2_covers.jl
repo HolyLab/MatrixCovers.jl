@@ -180,6 +180,26 @@ end
         α, β = cover_exponents(A; start=:transversal)
         @test sum(α) + sum(β) == max_transversal_weight(E)
     end
+
+    # The slacks of the transversal start cancel at every group, so the
+    # least-squares stage of the heuristic has a zero right-hand side and a
+    # singular Laplacian; its iterates must stay bounded.
+    A = zeros(18, 18)
+    for i in 1:12
+        A[i, i] = A[i, i+6] = 1
+    end
+    cols = [3:6; 10:12; 17:18]
+    for (r, es) in ((13, [-1, -1, -2, -1, -1, 0, 0, 0, 0]), (16, [0, 0, 1, 1, 0, 0, -2, -1, -1])), s in 0:2
+        A[r+s, cols .- s] = ldexp.(1.0, es)
+    end
+    α, β = cover_exponents(A; start=:transversal)
+    @test maximum(abs, α) <= 2 && maximum(abs, β) <= 2
+    a, b = cover(A; pow2=true)
+    @test a == ldexp.(1.0, α) && b == ldexp.(1.0, β)
+    @test iscover(a, b, A)
+    a, b = cover(A)
+    @test iscover(a, b, A)
+    @test all(x -> 1/4 <= x <= 4, a) && all(x -> 1/4 <= x <= 4, b)
 end
 
 @testset "cover_exponents storage and element types" begin
@@ -218,4 +238,6 @@ end
     @test_throws "cover_exponents requires finite entries" cover_exponents([Inf 1; 1 1.0])
     @test_throws "requires floating-point or integer entries" cover_exponents([1//2 1; 1 1])
     @test_throws "the factor 2^167 for row 1 is not a normal Float32; `MatrixCovers.cover_exponents`" cover!(zeros(Float32, 2), zeros(Float32, 2), [1e100 0; 0 1]; pow2=true)
+    # Balancing exponents whose weighted sums exceed `Int` throws.
+    @test_throws OverflowError MatrixCovers._balance_exponents!([2^62], [0], [4], [4], [1, 1], 1)
 end

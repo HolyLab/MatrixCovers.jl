@@ -141,14 +141,16 @@ end
 
 # Up to `maxiter` Jacobi-preconditioned CG iterations on the normal equations
 # `L u = rhs` of `∑ (u[h] - u[t] - d)²`, stopping once the residual, measured
-# in the inverse of the preconditioner, falls below a fixed fraction of `rhs`.
-# The preconditioner is the diagonal of `L` (the vertex degrees). Degrees can
-# span orders of magnitude, and without it truncated CG amplifies roundoff
-# enough to break scale-covariance; it depends only on the support, so the
-# iteration remains covariant in exact arithmetic. `L` is singular, with each
-# component's constants in its null space; the system is consistent, and the
-# iterates keep each component's degree-weighted sum of `u`.
-function _tt_cg!(u::Vector{T}, Gg::_GroupGraph{T}, maxiter::Int) where {T}
+# in the inverse of the preconditioner, falls below a fixed fraction of the
+# larger of `rhs` and the initial residual. The preconditioner is the diagonal
+# of `L` (the vertex degrees). Degrees can span orders of magnitude, and without
+# it truncated CG amplifies roundoff enough to break scale-covariance; it
+# depends only on the support, so the iteration remains covariant in exact
+# arithmetic. `L` is singular, with each component's constants in its null
+# space; `gcomp` labels the `ncomp` components. The system is consistent, and
+# the iterates keep each component's degree-weighted sum of `u`.
+function _tt_cg!(u::Vector{T}, Gg::_GroupGraph{T}, gcomp::Vector{Int}, ncomp::Int,
+                 maxiter::Int) where {T}
     maxiter == 0 && return u
     nc = length(u)
     rhs = zeros(T, nc)
@@ -160,16 +162,23 @@ function _tt_cg!(u::Vector{T}, Gg::_GroupGraph{T}, maxiter::Int) where {T}
             rhs[v] += Gg.off[s]
         end
     end
+    csize = zeros(Int, ncomp)
+    for v in eachindex(gcomp)
+        csize[gcomp[v]] += 1
+    end
+    csum = zeros(T, ncomp)
     r = similar(u)
     _tt_laplacian!(r, Gg, u)
     r .= rhs .- r
+    _tt_project_range!(r, gcomp, csize, csum)
     z = dinv .* r
     p = copy(z)
     q = similar(u)
     rz = _tt_dot(r, z)
-    # A test relative to `rhs` stays meaningful once the iterates have converged;
-    # continuing past that point amplifies roundoff.
-    tol = eps(T)^(T(3) / 2) * _tt_dot(rhs, dinv .* rhs)
+    # Continuing once the iterates have converged amplifies roundoff. The test
+    # includes the initial residual because `rhs` can vanish, and `L u` does not
+    # change under a shift of `u` on a component.
+    tol = eps(T)^(T(3) / 2) * max(_tt_dot(rhs, dinv .* rhs), rz)
     for _ in 1:maxiter
         rz <= tol && break
         _tt_laplacian!(q, Gg, p)
@@ -178,12 +187,30 @@ function _tt_cg!(u::Vector{T}, Gg::_GroupGraph{T}, maxiter::Int) where {T}
         γ = rz / pq
         u .+= γ .* p
         r .-= γ .* q
+        _tt_project_range!(r, gcomp, csize, csum)
         z .= dinv .* r
         rznew = _tt_dot(r, z)
         p .= z .+ (rznew / rz) .* p
         rz = rznew
     end
     return u
+end
+
+# Subtract from `r` its mean on each component, projecting it onto the range of
+# the group-graph Laplacian. Roundoff leaves a residual component along each
+# component's constants, which `p' L p` does not see; left in place, it inflates
+# the CG step without bound once the rest of the residual has converged.
+function _tt_project_range!(r::Vector{T}, gcomp::Vector{Int}, csize::Vector{Int},
+                            csum::Vector{T}) where {T}
+    fill!(csum, zero(T))
+    for v in eachindex(r, gcomp)
+        csum[gcomp[v]] += r[v]
+    end
+    for v in eachindex(r, gcomp)
+        c = gcomp[v]
+        r[v] -= csum[c] / csize[c]
+    end
+    return r
 end
 
 # Split each constraint's deficit `-(u[h] - u[t] - d)` between raising `u[h]`
@@ -333,7 +360,7 @@ function _cover_transversal_heuristic!(a::AbstractVector, b::AbstractVector, A::
     u = Vector{T}(undef, nc)
     gcomp = Vector{Int}(undef, nc)
     ncomp = _tt_layer_start!(u, gcomp, Gg)
-    _tt_cg!(u, Gg, cgiter)
+    _tt_cg!(u, Gg, gcomp, ncomp, cgiter)
     _tt_boost!(u, Gg)
     _tt_raise!(u, Gg)
     _tt_sweep!(u, Gg, sweeps)

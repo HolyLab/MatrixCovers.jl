@@ -1,5 +1,6 @@
 module MatrixCovers
 
+using Base.Checked: checked_add, checked_mul, checked_sub
 using LinearAlgebra: LinearAlgebra, Adjoint, Bidiagonal, Cholesky, Diagonal, Hermitian,
                      SymTridiagonal, Symmetric, Transpose, Tridiagonal, bunchkaufman!,
                      diag, dot, ldiv!, lmul!, lu!, mul!, norm

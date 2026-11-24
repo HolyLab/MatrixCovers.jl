@@ -364,7 +364,9 @@ end
 # Shift `α` up and `β` down by the same integer on each support component, so
 # that `∑ na[i] α[i]` and `∑ nb[j] β[j]` differ by at most the component's
 # entry count; this is the balance convention of `cover_min`, rounded to
-# integers. `comp` labels rows `1:m` and columns `m+1:m+n`.
+# integers. `comp` labels rows `1:m` and columns `m+1:m+n`. The weighted sums
+# use checked arithmetic, so exponents too large to balance throw an
+# `OverflowError` instead of wrapping around.
 function _balance_exponents!(α::Vector{Int}, β::Vector{Int}, na::Vector{Int}, nb::Vector{Int},
                              comp::Vector{Int}, ncomp::Int)
     m = length(α)
@@ -374,19 +376,21 @@ function _balance_exponents!(α::Vector{Int}, β::Vector{Int}, na::Vector{Int}, 
     for p in eachindex(α, na)
         iszero(na[p]) && continue
         c = comp[p]
-        Lα[c] += na[p] * α[p]
+        Lα[c] = checked_add(Lα[c], checked_mul(na[p], α[p]))
         cnt[c] += na[p]
     end
     for q in eachindex(β, nb)
         iszero(nb[q]) && continue
-        Lβ[comp[m+q]] += nb[q] * β[q]
+        c = comp[m+q]
+        Lβ[c] = checked_add(Lβ[c], checked_mul(nb[q], β[q]))
     end
-    t = [iszero(cnt[c]) ? 0 : fld(Lβ[c] - Lα[c] + cnt[c], 2 * cnt[c]) for c in 1:ncomp]
+    t = [iszero(cnt[c]) ? 0 : fld(checked_add(checked_sub(Lβ[c], Lα[c]), cnt[c]), 2 * cnt[c])
+         for c in 1:ncomp]
     for p in eachindex(α, na)
-        iszero(na[p]) || (α[p] += t[comp[p]])
+        iszero(na[p]) || (α[p] = checked_add(α[p], t[comp[p]]))
     end
     for q in eachindex(β, nb)
-        iszero(nb[q]) || (β[q] -= t[comp[m+q]])
+        iszero(nb[q]) || (β[q] = checked_sub(β[q], t[comp[m+q]]))
     end
     return α, β
 end
@@ -596,13 +600,18 @@ function _cover_exponents_transversal(A::AbstractMatrix, cgiter::Int, sweeps::In
     Ggi = _GroupGraph(nc, eh, et, edc)
     Ggf = _GroupGraph(nc, eh, et, Float64.(edc))
     u = Vector{Float64}(undef, nc)
-    _tt_layer_start!(u, Vector{Int}(undef, nc), Ggf)
-    _tt_cg!(u, Ggf, cgiter)
+    _tt_layer_start!(u, gcomp, Ggf)
+    _tt_cg!(u, Ggf, gcomp, ncomp, cgiter)
     _tt_boost!(u, Ggf)
     _tt_raise!(u, Ggf)
     _tt_sweep!(u, Ggf, sweeps)
-    # `floor(x + 1/2)` commutes with integer shifts and preserves the integer
-    # difference constraints wherever `u` satisfies them.
+    # Below 2^52 in magnitude, `x + 1/2` is exact, and `floor(x + 1/2)` commutes
+    # with integer shifts and preserves the integer difference constraints
+    # wherever `u` satisfies them.
+    for x in u
+        abs(x) < 2.0^52 ||
+            error("$fname: internal error, the group offset $(string(x)) of the transversal start is too large to round exactly")
+    end
     v = [Int(floor(x + 0.5)) for x in u]
     _tt_raise!(v, Ggi)
     _tt_sweep_int!(v, Ggi)
